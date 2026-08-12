@@ -1,0 +1,131 @@
+[project]
+name = "mini-erp"
+version = "0.1.0"
+description = "A minimal, correctness-obsessed open-source ERP kernel — Order-to-Cash + multi-company/multi-currency/UoM groundwork. Phase 1 (Kernel) of the open-erp master plan."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "open-erp contributors" }]
+
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.32,<0.33",
+    "sqlalchemy[asyncio]>=2.0.36,<2.1",
+    "asyncpg>=0.30,<0.31",
+    "alembic>=1.14,<1.15",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<0.25",
+    "httpx>=0.27,<0.28",
+    "ruff>=0.7,<0.8",
+    "mypy>=1.13,<1.14",
+    "import-linter>=2.1,<3",
+    "testcontainers[postgres]>=4.8,<5",
+    # Fallback embedded-Postgres backend for local/sandboxed test runs where a
+    # Docker daemon is not available (see tests/conftest.py). Real CI always
+    # uses a Postgres service container, never this fallback.
+    "pgserver>=0.1.0",
+    "asgi-lifespan>=2.1,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# --------------------------------------------------------------------------
+# ruff — lint + format
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "I", "UP", "B", "C4", "SIM", "ARG", "PL", "RUF", "N", "W",
+]
+ignore = [
+    "PLR0913", # too many arguments — routers/services legitimately take several DTOs
+    "PLR0912",
+    "PLR2004", # magic value comparison — noisy for status codes / small constants
+    "PLW0603", # `global` for lazily-initialized module-level singletons (engine/session factory)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG001", "PLR2004", "S101"]
+"alembic/*" = ["ARG001", "N999"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --------------------------------------------------------------------------
+# mypy — strict
+# --------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["^alembic/"]
+warn_unused_ignores = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*", "pgserver.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------
+# pytest
+# --------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:testcontainers.*",
+    "ignore::DeprecationWarning:pgserver.*",
+]
+
+# --------------------------------------------------------------------------
+# import-linter — enforce modular-monolith boundaries (CI-gated)
+# --------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "app"
+
+[[tool.importlinter.contracts]]
+name = "core must not import business modules"
+type = "forbidden"
+source_modules = ["app.core"]
+forbidden_modules = ["app.modules"]
+
+[[tool.importlinter.contracts]]
+name = "business modules are independent (no cross-module model/repository imports)"
+type = "independence"
+modules = [
+    "app.modules.masterdata",
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+]
+
+[[tool.importlinter.contracts]]
+name = "masterdata must not import other business modules"
+type = "forbidden"
+source_modules = ["app.modules.masterdata"]
+forbidden_modules = [
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+]

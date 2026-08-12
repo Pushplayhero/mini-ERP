@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # Single source of truth: the Postgres service container below.
+  DATABASE_URL: postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp
+
+jobs:
+  lint:
+    name: ruff (lint + format check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  typecheck:
+    name: mypy --strict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - run: uv run mypy app
+
+  import-boundaries:
+    name: import-linter (modular monolith boundaries)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - run: uv run lint-imports
+
+  test:
+    name: pytest (integration, real Postgres)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, import-boundaries]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mini_erp
+          POSTGRES_PASSWORD: mini_erp
+          POSTGRES_DB: mini_erp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mini_erp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      # The Postgres *service container* above satisfies "tests run against
+      # real Postgres in CI" per the brief. tests/conftest.py additionally
+      # spins up its own ephemeral database via testcontainers (Docker is
+      # available on GitHub-hosted runners) so the same suite is runnable
+      # identically on a contributor's machine without wiring env vars by
+      # hand — see tests/conftest.py docstring.
+      - run: uv run alembic upgrade head
+      - run: uv run pytest -v

@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mini_erp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini_erp}
+      POSTGRES_DB: ${POSTGRES_DB:-mini_erp}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - mini_erp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mini_erp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mini_erp}:${POSTGRES_PASSWORD:-mini_erp}@postgres:5432/${POSTGRES_DB:-mini_erp}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    # Run migrations then start the API — fine for a Week-1 single-instance
+    # setup; a real deployment would run migrations as a separate release
+    # step rather than on every container start.
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  mini_erp_pgdata:
