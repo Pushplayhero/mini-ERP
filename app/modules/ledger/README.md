@@ -1,27 +1,37 @@
-# ledger — Week 2
+# ledger — Week 2 + Week 3
 
-Journal entries, accounting periods, and the trial balance report, per
-`docs/adr/ADR-005-ledger-journal-design.md` (Consensus Status: APPROVED).
-Chart of accounts (`accounts`) lives in `masterdata` — this module only
-consumes `account_id` by reference (see "Design decisions" below), it never
-imports `masterdata`'s models.
+Journal entries, accounting periods, the trial balance report (Week 2, per
+`docs/adr/ADR-005-ledger-journal-design.md`), and the posting engine (Week
+3, per `docs/adr/ADR-003-posting-engine.md`, alongside `app/core/events.py`
+per `docs/adr/ADR-004-event-bus.md`). Chart of accounts (`accounts`) lives
+in `masterdata` — this module only consumes `account_id` by reference (see
+"Design decisions" below), it never imports `masterdata`'s models.
 
 ## What's here
 
 - `models.py` — `AccountingPeriod`, `LedgerSequence`, `JournalEntry`,
   `JournalLine`. See migration `0002_ledger_initial` for the DB-level half
   of the invariants (CHECK constraints, the deferred balance constraint
-  trigger, the immutability triggers).
+  trigger, the immutability triggers), and `0003_posting_source_index` for
+  the Week 3 idempotency index.
 - `schemas.py` — DTOs. `entry_no`, `company_id`, `reversal_of_id`,
   `posted_at`, `period_id` are always server-decided, never client-supplied.
 - `service.py` — period create/close, journal entry create/reverse, trial
-  balance aggregation. This is where ADR-005 R1-R4 are actually enforced in
-  Python (the DB triggers are defense in depth, not the primary mechanism).
+  balance aggregation. `post_journal_entry` (ADR-003 R1) is the
+  non-committing core both the HTTP layer (`create_journal_entry`) and the
+  posting engine (`posting.handle_posting_event`) call; commit/rollback is
+  always the caller's decision, never this module's.
 - `router.py` — thin FastAPI routes. No UPDATE/DELETE endpoints for entries
   or lines, by design (see Decision 3 in the ADR) — corrections are
   reversal entries only.
 - `events.py` — placeholder; ledger publishes nothing in Phase 1 (see file
-  docstring).
+  docstring). Not to be confused with `posting.py`, which *subscribes* to
+  other modules' events.
+- `posting.py` — the posting engine (ADR-003): declarative `POSTING_RULES`,
+  per-company account-code resolution, and the SAVEPOINT-wrapped handler
+  that turns an event into a balanced journal entry. Week 3 ships exactly
+  one synthetic self-validation event (`test.synthetic_sale`, see the
+  module docstring) since no real business module publishes events yet.
 
 ## Design decisions carried over from ADR-005
 
@@ -70,10 +80,11 @@ want to:
   multi-currency posting needs each company's actual functional currency —
   likely via a published snapshot/event rather than a live import.
 
-## Not implemented (Week 3+)
+## Not implemented (Week 4+)
 
-The posting engine (`core/posting.py`, business events -> journal entries),
-the in-process event bus (`core/events.py`), outbox writes from ledger
-itself, real multi-currency conversion, period reopening, and any admin
-data-repair escape hatch — all explicitly out of scope for Week 2 per the
-brief.
+Real business events (`sales.goods_shipped`, `receivables.invoice_issued`,
+...) and their posting rules — Week 3 ships the pipeline and one synthetic
+self-validation event only (see `posting.py`'s module docstring). Also
+still out of scope: real multi-currency conversion, period reopening, any
+admin data-repair escape hatch, and per-company rule overrides (deferred to
+the Phase 2 plugin system per ADR-003's Consequences section).

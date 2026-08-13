@@ -1,9 +1,11 @@
 """FastAPI application entrypoint.
 
 Wires together: settings, the tenancy middleware (§10.2), exception ->
-HTTP-status mapping, and module routers. Week 1 mounted `masterdata`; Week 2
-adds `ledger` (ADR-005). `sales` / `inventory` / `receivables` are still
-empty shells (see their `README.md`) and have no routers yet.
+HTTP-status mapping, module routers, and (Week 3) the event bus's
+registration/subscription wiring. Week 1 mounted `masterdata`; Week 2 added
+`ledger` (ADR-005); Week 3 adds the event bus + posting engine (ADR-003/
+ADR-004). `sales` / `inventory` / `receivables` are still empty shells (see
+their `README.md`) and have no routers yet.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from app.core import events
 from app.core.exceptions import (
     ConflictError,
     DomainValidationError,
@@ -22,6 +25,7 @@ from app.core.exceptions import (
 )
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
+from app.modules.ledger import posting as ledger_posting
 from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
 
@@ -102,3 +106,21 @@ async def health() -> dict[str, str]:
 
 app.include_router(masterdata_router, prefix="/api/v1")
 app.include_router(ledger_router, prefix="/api/v1")
+
+
+# ---------------------------------------------------------------------------
+# Event bus wiring (Week 3, ADR-004 §"Handler ordering" / ADR-003 Action Item 3)
+#
+# Registration happens once, at import time, module-level — same as router
+# `include_router` above — so subscription order is deterministic (ADR-004:
+# "handlers run in subscription order, which is deterministic because
+# subscription happens once at app startup"). This is also the wiring the
+# replay CLI (`app.cli.replay_outbox`) reuses by importing this module, so
+# both the live API process and a replay run always see identical
+# event_type -> schema/handler bindings.
+# ---------------------------------------------------------------------------
+events.register_event(ledger_posting.SYNTHETIC_SALE_EVENT_TYPE, ledger_posting.SyntheticSalePayload)
+events.subscribe(
+    ledger_posting.SYNTHETIC_SALE_EVENT_TYPE,
+    ledger_posting.make_posting_handler(ledger_posting.SYNTHETIC_SALE_EVENT_TYPE),
+)

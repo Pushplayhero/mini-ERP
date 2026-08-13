@@ -319,7 +319,21 @@ async def close_period(session: AsyncSession, period_id: uuid.UUID) -> Accountin
 # ---------------------------------------------------------------------------
 
 
-async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) -> JournalEntry:
+async def post_journal_entry(session: AsyncSession, data: JournalEntryCreate) -> JournalEntry:
+    """Non-committing core of journal-entry creation (ADR-003 R1).
+
+    Validates balance, locks the target period (R4), allocates the gapless
+    entry number (R2), builds the entry + its lines, and `flush()`es —
+    **never commits or rolls back**. Normative rule (ADR-003 R1): "the
+    transaction is owned by whoever opened it" — the HTTP route
+    (`create_journal_entry` below), the posting engine's SAVEPOINT
+    (`ledger.posting.handle_posting_event`), or a future job all decide
+    their own commit/rollback boundary around this call.
+
+    Raises `DomainValidationError`/`PeriodNotOpenError` (fast-fail, before
+    any write) exactly as the pre-refactor `create_journal_entry` did; those
+    are unchanged for both callers.
+    """
     company_id = require_current_company_id()
 
     _validate_lines(data.lines)
@@ -342,6 +356,20 @@ async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) 
     )
     entry.lines = _build_lines(company_id, data.lines, entry_date=data.entry_date)
     session.add(entry)
+    await session.flush()
+    return entry
+
+
+async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) -> JournalEntry:
+    """HTTP-facing wrapper: `post_journal_entry` core + commit/409 semantics.
+
+    ADR-003 R1: this is a *thin* wrapper — same `_commit_or_conflict`
+    behavior as Week 2, so the API contract (and all Week 2 tests) are
+    unaffected by the R1 refactor. The posting engine calls the core
+    (`post_journal_entry`) directly and never this wrapper, because it owns
+    its own (SAVEPOINT) transaction boundary instead.
+    """
+    entry = await post_journal_entry(session, data)
     await _commit_or_conflict(session, entity="JournalEntry")
     await session.refresh(entry, attribute_names=["lines"])
     return entry
@@ -368,10 +396,13 @@ async def list_journal_entries(session: AsyncSession) -> Sequence[JournalEntry]:
     return result.scalars().all()
 
 
-async def reverse_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
-    """ADR-005 R3: create a new entry with debit/credit swapped, linked via
+async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
+    """Non-committing core of ADR-005 R3 reversal creation (ADR-003 R1).
 
-    `reversal_of_id`.
+    Same "never commit" contract as `post_journal_entry` — extracted so
+    both `reverse_journal_entry` (HTTP wrapper, below) and any future
+    non-HTTP caller (e.g. a posting-engine reversal path) can reuse it
+    without owning the transaction boundary themselves.
 
     `entry_date` choice: the reversal is dated *today* (the day the
     correction is made), not backdated into the original entry's period —
@@ -428,6 +459,16 @@ async def reverse_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> J
     )
     reversal.lines = _build_lines(company_id, swapped_inputs, entry_date=reversal_date, swap=True)
     session.add(reversal)
+    await session.flush()
+    return reversal
+
+
+async def reverse_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
+    """HTTP-facing wrapper around `_post_reversal` — commit/409 semantics
+
+    unchanged from Week 2 (ADR-003 R1, same pattern as `create_journal_entry`).
+    """
+    reversal = await _post_reversal(session, entry_id)
     await _commit_or_conflict(session, entity="JournalEntry (reversal)")
     await session.refresh(reversal, attribute_names=["lines"])
     return reversal

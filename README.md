@@ -99,6 +99,32 @@ endpoint, company A creates a resource and company B is proven unable to
 read/update/delete it (404) or see it in a list — plus a DB-layer test that
 the ORM filter itself raises (fail-closed) when no company context is bound.
 
+## Event bus + posting engine (Week 3)
+
+`app/core/events.py` is a synchronous, in-process event bus (ADR-004):
+`publish(session, event_type, payload)` validates the payload against a
+registered pydantic schema, writes one row to `outbox` in the caller's own
+transaction, then calls every subscribed handler inline — a handler
+exception aborts the whole transaction (fail-closed). `app/modules/ledger/
+posting.py` is the one subscriber this week (ADR-003): it turns an event
+into a balanced journal entry via a declarative `POSTING_RULES` table,
+resolving account codes per-company, wrapped in a `SAVEPOINT` so a duplicate
+delivery of the same `(company_id, source_type, source_id)` is a DB-enforced
+no-op (migration `0003_posting_source_index`) rather than a double post.
+There is no real business module publishing events yet (Week 4+), so Week 3
+proves the whole pipeline with one synthetic self-validation event
+(`test.synthetic_sale` — see `app/modules/ledger/posting.py`'s docstring).
+
+**Replay the outbox** (`app.cli.replay_outbox`, ADR-004 R1): re-dispatches
+every `outbox` row with `dispatched_at IS NULL` directly to its handler(s),
+bypassing `publish` (so a replay never re-writes the queue it's draining).
+Each row gets its own transaction and its own tenancy context bound from
+`payload["company_id"]` — no HTTP request needed:
+
+```bash
+uv run python -m app.cli.replay_outbox
+```
+
 ## Design Decisions
 
 **Multi-company isolation (master-plan §10.2).** `app/core/tenancy.py`
