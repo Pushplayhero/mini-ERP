@@ -66,3 +66,20 @@ class ReversalNotAllowedError(ConflictError):
     Either the target entry has already been reversed once (`reversal_of_id`
     is `UNIQUE`), or the target entry is itself a reversal entry.
     """
+
+
+class CreditLimitExceededError(ConflictError):
+    """A sales order confirm was vetoed by the credit-limit plugin (HTTP 409).
+
+    Lives here rather than in `app.plugins.credit_limit` itself, following
+    this file's established convention of housing shared-but-specific
+    business errors centrally (`PeriodNotOpenError`/`ReversalNotAllowedError`
+    are ledger-specific yet live here too) so `app.main` keeps registering
+    exactly one set of exception handlers regardless of which layer
+    (kernel, module, or — new this week — plugin) raised the error. Plugins
+    are free to define exceptions in their own files instead (ADR-006
+    Decision 2 places no restriction either way); this one is central
+    because a 409 raised from inside a hook handler needs to be
+    indistinguishable, to `app.main`'s handlers, from any other
+    `ConflictError` a module might raise.
+    """

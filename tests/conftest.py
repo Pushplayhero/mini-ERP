@@ -182,7 +182,8 @@ async def _clean_tenant_tables(
         await conn.execute(
             text(
                 "TRUNCATE TABLE journal_lines, journal_entries, ledger_sequences, "
-                "accounting_periods, customers, products, accounts, outbox, companies "
+                "accounting_periods, sales_order_lines, sales_orders, sales_sequences, "
+                "customers, products, accounts, outbox, companies "
                 "RESTART IDENTITY CASCADE"
             )
         )

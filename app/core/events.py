@@ -33,6 +33,14 @@ Three normative rules from ADR-004 (Decision 1/2/3, Consensus Revisions R1-R3):
 registered handlers directly, *without* touching `outbox` again — going
 through `publish` during replay would re-insert every replayed row and make
 the queue self-propagate forever.
+
+`unregister`/`reset` (ADR-006 R3, added Week 4): the original Week 3
+`_schemas`/`_handlers` dicts were append-only, which `tests/core/test_events.py`
+dodged by giving every test a uniquely-named `event_type` rather than ever
+cleaning up after itself — a latent test-isolation gap the ADR-006 review
+flagged. Both additions are purely additive: no existing behavior of
+`register_event`/`subscribe`/`publish`/`redispatch` changes, so the Week 3
+test suite passes unmodified against this file.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -144,6 +153,45 @@ def subscribe(event_type: str, handler: EventHandler) -> None:
     pub/sub mechanism for arbitrary side effects.
     """
     _handlers.setdefault(event_type, []).append(handler)
+
+
+def unregister(event_type: str, handler: EventHandler) -> None:
+    """Remove `handler` from `event_type`'s subscriber list (ADR-006 R3).
+
+    Silently no-ops if `event_type` has no subscribers at all, or if
+    `handler` was never subscribed to it — mirrors `list.remove` guarded
+    into `set.discard`-style "removing something already absent is not an
+    error" semantics rather than raising. A caller that unregisters
+    something twice, or unregisters a handler it never registered, almost
+    certainly wants "make sure this is not listening" as its postcondition;
+    that postcondition already holds, so raising would only punish a
+    defensive caller (e.g. a test's teardown running after the test body
+    already unregistered explicitly). See `app.core.hooks.unregister` for
+    the same choice, made once and documented in both places.
+    """
+    handlers = _handlers.get(event_type)
+    if handlers is None:
+        return
+    with suppress(ValueError):
+        handlers.remove(handler)
+
+
+def reset() -> None:
+    """Clear every registered schema and subscriber (test-only, ADR-006 R3).
+
+    Not called by any application code path — `app.main` registers schemas/
+    subscribers once at import time and that wiring is meant to live for the
+    process's whole lifetime. Exists so tests can start from a guaranteed-
+    empty registry instead of relying on unique `event_type` naming to avoid
+    collisions (Week 3's `tests/core/test_events.py` still uses the naming
+    convention and is unaffected by this addition; new tests may use either
+    approach). Callers that use this in a shared test session must be
+    careful not to wipe out real process-level registrations another test
+    depends on — see `tests/core/test_events.py`'s reset-test fixture for
+    the save/restore pattern that avoids that trap.
+    """
+    _schemas.clear()
+    _handlers.clear()
 
 
 def _validate_payload(event_type: str, payload: dict[str, Any]) -> BaseModel:

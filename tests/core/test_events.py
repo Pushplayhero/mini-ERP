@@ -23,6 +23,28 @@ from app.modules.masterdata.models import Currency, OutboxEvent
 from tests.ledger._helpers import create_company
 
 
+@pytest.fixture(autouse=True)
+def _isolated_event_registry():
+    """Snapshot + restore `app.core.events`' registries around every test here.
+
+    Added alongside the new `unregister()`/`reset()` tests below (ADR-006
+    R3): `reset()` wipes *every* registered event schema/subscriber
+    process-wide, including `app.main`'s real, import-time-only
+    registrations (`ledger_posting.SYNTHETIC_SALE_EVENT_TYPE` and its
+    posting subscriber, `sales.order_confirmed`'s schema). Every pre-existing
+    test in this file already avoids collisions via unique `event_type`
+    naming and is unaffected by this fixture wrapping them too (save/restore
+    around a test that never touches `reset()`/`unregister()` is a no-op).
+    """
+    saved_schemas = dict(events._schemas)
+    saved_handlers = {event_type: list(fns) for event_type, fns in events._handlers.items()}
+    yield
+    events._schemas.clear()
+    events._schemas.update(saved_schemas)
+    events._handlers.clear()
+    events._handlers.update(saved_handlers)
+
+
 class _ValidPayload(BaseModel):
     company_id: uuid.UUID
     amount: Decimal
@@ -202,3 +224,74 @@ async def test_redispatch_does_not_write_outbox(
         select(OutboxEvent).where(OutboxEvent.event_type == "core_events_test.redispatch")
     )
     assert result.scalar_one_or_none() is None
+
+
+# ---------------------------------------------------------------------------
+# unregister / reset (ADR-006 R3, added Week 4 — purely additive; none of the
+# tests above were modified to make room for these)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unregister_stops_handler_from_being_called(
+    db_session: AsyncSession, client: AsyncClient
+) -> None:
+    events.register_event("core_events_test.unregister", _ValidPayload)
+    company_id = await create_company(client, "EVTUNREG")
+
+    calls: list[str] = []
+
+    async def handler(_session: AsyncSession, _payload: BaseModel) -> None:
+        calls.append("called")
+
+    events.subscribe("core_events_test.unregister", handler)
+    events.unregister("core_events_test.unregister", handler)
+
+    with company_context(company_id):
+        await events.publish(
+            db_session,
+            "core_events_test.unregister",
+            {"company_id": str(company_id), "amount": "1"},
+        )
+    await db_session.rollback()
+
+    assert calls == []
+
+
+def test_unregister_of_a_handler_never_subscribed_is_a_silent_no_op() -> None:
+    async def never_subscribed(_session: AsyncSession, _payload: BaseModel) -> None:
+        pass
+
+    # Unknown event_type entirely.
+    events.unregister("core_events_test.unknown_event_type", never_subscribed)
+
+    # Known event_type, but this handler was never subscribed to it.
+    events.register_event("core_events_test.discard_semantics", _ValidPayload)
+    events.subscribe("core_events_test.discard_semantics", never_subscribed)
+    events.unregister("core_events_test.discard_semantics", never_subscribed)
+    # A second unregister of the same (now-removed) handler must also
+    # silently no-op, not raise.
+    events.unregister("core_events_test.discard_semantics", never_subscribed)
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_schemas_and_handlers(db_session: AsyncSession) -> None:
+    events.register_event("core_events_test.reset_me", _ValidPayload)
+
+    calls: list[str] = []
+
+    async def handler(_session: AsyncSession, _payload: BaseModel) -> None:
+        calls.append("called")
+
+    events.subscribe("core_events_test.reset_me", handler)
+
+    events.reset()
+
+    assert "core_events_test.reset_me" not in events._schemas
+    with pytest.raises(events.UnknownEventTypeError):
+        await events.publish(
+            db_session,
+            "core_events_test.reset_me",
+            {"company_id": str(uuid.uuid4()), "amount": "1"},
+        )
+    assert calls == []

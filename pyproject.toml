@@ -133,3 +133,18 @@ forbidden_modules = [
     "app.modules.receivables",
     "app.modules.ledger",
 ]
+
+# ADR-006 Decision 2: plugins may import core/modules freely; the reverse is
+# forbidden — these two contracts are what makes that direction CI-enforced
+# physics instead of a review-time convention.
+[[tool.importlinter.contracts]]
+name = "core must not import plugins"
+type = "forbidden"
+source_modules = ["app.core"]
+forbidden_modules = ["app.plugins"]
+
+[[tool.importlinter.contracts]]
+name = "business modules must not import plugins"
+type = "forbidden"
+source_modules = ["app.modules"]
+forbidden_modules = ["app.plugins"]
