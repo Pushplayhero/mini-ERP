@@ -26,7 +26,8 @@ from app.core.db import Base  # noqa: E402
 from app.core.settings import get_settings  # noqa: E402
 
 # Import every module's models so their tables register on Base.metadata
-# before autogenerate/upgrade run. Week 1: masterdata only.
+# before autogenerate/upgrade run. Week 1: masterdata. Week 2: + ledger.
+from app.modules.ledger import models as ledger_models  # noqa: E402, F401
 from app.modules.masterdata import models as masterdata_models  # noqa: E402, F401
 
 # this is the Alembic Config object, which provides

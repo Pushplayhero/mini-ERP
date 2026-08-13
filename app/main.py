@@ -1,9 +1,9 @@
 """FastAPI application entrypoint.
 
 Wires together: settings, the tenancy middleware (§10.2), exception ->
-HTTP-status mapping, and module routers. Week 1 only mounts `masterdata`;
-`sales` / `inventory` / `receivables` / `ledger` are empty shells (see their
-`README.md`) and have no routers yet.
+HTTP-status mapping, and module routers. Week 1 mounted `masterdata`; Week 2
+adds `ledger` (ADR-005). `sales` / `inventory` / `receivables` are still
+empty shells (see their `README.md`) and have no routers yet.
 """
 
 from __future__ import annotations
@@ -14,9 +14,15 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from app.core.exceptions import ConflictError, NotFoundError, TenancyContextError
+from app.core.exceptions import (
+    ConflictError,
+    DomainValidationError,
+    NotFoundError,
+    TenancyContextError,
+)
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
+from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
 
 settings = get_settings()
@@ -26,7 +32,7 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "A minimal, correctness-obsessed open-source ERP kernel. "
-        "Phase 1 / Week 1: masterdata module + multi-company tenancy groundwork."
+        "Phase 1 / Week 2: masterdata + ledger modules, multi-company tenancy groundwork."
     ),
 )
 
@@ -79,9 +85,20 @@ async def conflict_handler(_request: Request, exc: ConflictError) -> JSONRespons
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 
+@app.exception_handler(DomainValidationError)
+async def domain_validation_handler(_request: Request, exc: DomainValidationError) -> JSONResponse:
+    # 422, matching FastAPI's own request-body-validation status code: this
+    # is the same "syntactically fine, semantically rejected" class of
+    # error, just caught by a domain rule instead of the pydantic schema.
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
+    )
+
+
 @app.get("/health", tags=["ops"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 app.include_router(masterdata_router, prefix="/api/v1")
+app.include_router(ledger_router, prefix="/api/v1")

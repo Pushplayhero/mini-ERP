@@ -31,6 +31,10 @@ dev = [
     # uses a Postgres service container, never this fallback.
     "pgserver>=0.1.0",
     "asgi-lifespan>=2.1,<3",
+    # Property-based testing for ledger's balance invariant (ADR-005 Action
+    # Item 4 / Week 2 brief): random-but-balanced line generation, asserting
+    # the trial balance holds for every generated sequence of entries.
+    "hypothesis>=6.100,<7",
 ]
 
 [build-system]

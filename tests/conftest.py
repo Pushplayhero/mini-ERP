@@ -172,9 +172,17 @@ async def _clean_tenant_tables(
     requires isolation of tenant-scoped rows).
     """
     async with db_engine.begin() as conn:
+        # journal_entries/journal_lines carry `BEFORE UPDATE OR DELETE`
+        # triggers (ADR-005 Decision 3) that unconditionally raise — but
+        # those only fire for row-level UPDATE/DELETE statements. TRUNCATE
+        # is neither (it's its own DDL-like statement with its own trigger
+        # class, ON TRUNCATE, which nothing here defines), so it still
+        # works for per-test cleanup despite the tables being immutable
+        # from the application's point of view.
         await conn.execute(
             text(
-                "TRUNCATE TABLE customers, products, accounts, outbox, companies "
+                "TRUNCATE TABLE journal_lines, journal_entries, ledger_sequences, "
+                "accounting_periods, customers, products, accounts, outbox, companies "
                 "RESTART IDENTITY CASCADE"
             )
         )
