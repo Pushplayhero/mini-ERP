@@ -10,10 +10,12 @@ values are*.
 
 `unit_price` is the one deliberate exception to "server decides everything
 about money": ADR-006 P3 calls this "manual price override, so a quote can
-be fixed" — omitting it just means "use today's `product.list_price`",
-resolved by `service._build_lines` at the moment the line is written
-(create or update), not deferred to confirm. See `service.py`'s module
-docstring for the fuller quoted-price-freezing rationale.
+be fixed" — omitting it just means "use today's `product.list_price`" at
+write time, but (diff-review fix) that resolved value is not final for a
+non-override line: `confirm_order` re-resolves it against the product's
+*current* `list_price` at confirm time, per ADR-006 Decision 3. See
+`service.py`'s module docstring for the fuller quoted-price-freezing
+rationale.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ class SalesOrderLineRead(BaseModel):
     qty: Decimal
     uom_id: uuid.UUID
     unit_price: Decimal
+    unit_price_is_override: bool
     snapshot_sku: str | None
     snapshot_product_name: str | None
     amount: Decimal

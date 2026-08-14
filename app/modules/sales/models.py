@@ -49,6 +49,9 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean as SQLBoolean,
+)
+from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
@@ -72,6 +75,14 @@ class SalesOrderStatus(str, enum.Enum):
     DRAFT = "draft"
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
+    # ADR-007 "Order lifecycle update": `confirmed -> shipped` via
+    # `service.ship_order`. `cancel` stops being legal once an order is
+    # `shipped` (the goods left; Phase 2+ returns/RMA is the undo
+    # mechanism, not cancel) — see `service.cancel_order`'s updated
+    # docstring. Added to the native Postgres enum by migration 0005's
+    # `ALTER TYPE ... ADD VALUE` (R3: see that migration for why nothing
+    # else in it may reference this value).
+    SHIPPED = "shipped"
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +115,22 @@ class SalesOrder(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     __table_args__ = (
         UniqueConstraint("company_id", "order_no", name="uq_sales_orders_company_order_no"),
         CheckConstraint("total >= 0", name="ck_sales_orders_total_nonneg"),
+        # Diff-review fix (migration 0006): DB-layer backstop for ADR-006
+        # Decision 3's "snapshots frozen at confirm" promise — a bypass
+        # writer could otherwise persist a CONFIRMED (or SHIPPED, which can
+        # only be reached via CONFIRMED) order with a blank customer
+        # snapshot, which `sales.service.confirm_order`'s own write path
+        # never allows. `status::text` (not `'SHIPPED'::sales_order_status`)
+        # — see migration 0006's docstring for why: this project's
+        # `alembic upgrade head` runs every pending migration in one
+        # transaction, and 'SHIPPED' is a new enum value added by migration
+        # 0005, so a typed comparison against it here is "unsafe" (per
+        # Postgres) in that same transaction; text comparison sidesteps it.
+        CheckConstraint(
+            "status::text NOT IN ('CONFIRMED', 'SHIPPED') "
+            "OR (snapshot_customer_code IS NOT NULL AND snapshot_customer_name IS NOT NULL)",
+            name="ck_sales_orders_confirmed_has_snapshot",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -156,6 +183,16 @@ class SalesOrderLine(Base, TenantScopedMixin):
         PGUUID(as_uuid=True), ForeignKey("uom.id"), nullable=False
     )
     unit_price: Mapped[Decimal] = mapped_column(AMOUNT, nullable=False)
+    # Diff-review fix (migration 0007): distinguishes "client explicitly set
+    # unit_price" (a manual quote override, ADR-006 P3) from "service
+    # defaulted it from product.list_price" — without this flag,
+    # `confirm_order` cannot tell the two apart and so cannot honor ADR-006
+    # Decision 3's "confirms at current prices unless lines carried manual
+    # overrides" for the only case that matters (a defaulted line whose
+    # product's price changed since the line was written).
+    unit_price_is_override: Mapped[bool] = mapped_column(
+        SQLBoolean, nullable=False, default=False, server_default="false"
+    )
     snapshot_sku: Mapped[str | None] = mapped_column(String(64), nullable=True)
     snapshot_product_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     amount: Mapped[Decimal] = mapped_column(AMOUNT, nullable=False)

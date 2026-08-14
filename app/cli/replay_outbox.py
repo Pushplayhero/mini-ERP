@@ -52,19 +52,43 @@ from app.core.tenancy import company_context
 
 logger = logging.getLogger("app.cli.replay_outbox")
 
-# Lightweight Core reference to `journal_entries` (same pattern as
-# `ledger.service._ACCOUNTS`/`ledger.posting._ACCOUNTS`) used only to tell
-# "posted a new entry" apart from "skipped, already posted" for the summary
-# line below. Week 3 simplification, documented in the completion report:
-# there is exactly one bus consumer (posting) this week, so this heuristic
-# does not need to be generic yet — it will need revisiting if/when a
-# non-posting consumer is ever replayed.
+# Lightweight Core references (same pattern as `ledger.service._ACCOUNTS`/
+# `ledger.posting._ACCOUNTS`) used only to tell "this replay did real work"
+# apart from "skipped, already fully processed" for the summary line below.
+#
+# Week 3 simplification, revisited (diff-review fix): the original version
+# of this counted `journal_entries` alone, on the documented assumption that
+# there was exactly one bus consumer (posting) to check. Week 5 made that
+# assumption false — `sales.goods_shipped` now has a second subscriber
+# (inventory's stock deduction), and ADR-007's zero-cost skip means a
+# genuinely successful dispatch can move stock *without* ever posting a
+# journal entry (all products on the shipment have `standard_cost=0`).
+# Counting `journal_entries` alone would misclassify that replay — and the
+# mirror case, where the journal entry already exists but a stock move was
+# missing and just got repaired — as "skipped" even though real,
+# once-only work happened. Summing across every side-effect table a
+# replayed event's known consumers can write to, keyed by the same
+# `(company_id, source_type=event_type, source_id)` triple
+# `uq_journal_entries_source`/`uq_stock_moves_source` both already use as
+# their own idempotency key, fixes both cases without needing to know which
+# specific consumer did the work.
+#
+# Still not fully generic — a future third consumer with its own
+# source-keyed side-effect table needs adding to `_SOURCE_KEYED_TABLES`
+# below, same as this one did. Deliberately additive, not a redesign.
 _JOURNAL_ENTRIES = sa_table(
     "journal_entries",
     sa_column("company_id", PGUUID(as_uuid=True)),
     sa_column("source_type"),
     sa_column("source_id", PGUUID(as_uuid=True)),
 )
+_STOCK_MOVES = sa_table(
+    "stock_moves",
+    sa_column("company_id", PGUUID(as_uuid=True)),
+    sa_column("source_type"),
+    sa_column("source_id", PGUUID(as_uuid=True)),
+)
+_SOURCE_KEYED_TABLES = (_JOURNAL_ENTRIES, _STOCK_MOVES)
 
 
 @dataclass
@@ -78,10 +102,13 @@ class ReplaySummary:
         return self.succeeded + self.skipped + self.failed
 
 
-async def _count_posted(
+async def _count_effects(
     session: AsyncSession, company_id: uuid.UUID, event_type: str, source_id: object
 ) -> int | None:
-    """Count journal entries already posted for this `(company, event, source_id)`.
+    """Count source-keyed rows already recorded across every known
+    side-effect table (`_SOURCE_KEYED_TABLES`) for this `(company, event,
+    source_id)`. See that constant's comment for why this sums across
+    tables rather than checking `journal_entries` alone.
 
     Returns `None` ("cannot classify") when the payload has no `source_id`
     to key off — the caller then defaults the row to "succeeded" rather
@@ -93,16 +120,19 @@ async def _count_posted(
         source_uuid = uuid.UUID(str(source_id))
     except ValueError:
         return None
-    result = await session.execute(
-        select(func.count())
-        .select_from(_JOURNAL_ENTRIES)
-        .where(
-            _JOURNAL_ENTRIES.c.company_id == company_id,
-            _JOURNAL_ENTRIES.c.source_type == event_type,
-            _JOURNAL_ENTRIES.c.source_id == source_uuid,
+    total = 0
+    for table in _SOURCE_KEYED_TABLES:
+        result = await session.execute(
+            select(func.count())
+            .select_from(table)
+            .where(
+                table.c.company_id == company_id,
+                table.c.source_type == event_type,
+                table.c.source_id == source_uuid,
+            )
         )
-    )
-    return int(result.scalar_one())
+        total += int(result.scalar_one())
+    return total
 
 
 async def replay_outbox() -> ReplaySummary:
@@ -123,10 +153,18 @@ async def replay_outbox() -> ReplaySummary:
         rows = result.all()
 
     for row in rows:
-        payload = dict(row.payload)
+        # Diff-review fix (ADR-004 R3, poison-row isolation): `dict(row.payload)`
+        # used to run *before* this try/except, so a NULL, scalar, or
+        # otherwise malformed JSONB payload (`dict(None)` -> TypeError,
+        # `dict("x")` -> ValueError, ...) raised outside any per-row
+        # handling and aborted the whole `replay_outbox()` call, taking
+        # every row after the poisoned one down with it — exactly the
+        # failure mode R3 exists to prevent. Both the `dict()` conversion
+        # and the `company_id` lookup are now inside the same guarded block.
         try:
+            payload = dict(row.payload)
             company_id = uuid.UUID(str(payload["company_id"]))
-        except (KeyError, ValueError) as exc:
+        except (TypeError, KeyError, ValueError) as exc:
             logger.error("outbox row %s: payload missing/invalid company_id: %s", row.id, exc)
             summary.failed += 1
             continue
@@ -135,9 +173,9 @@ async def replay_outbox() -> ReplaySummary:
             try:
                 source_id = payload.get("source_id")
                 with company_context(company_id):
-                    before = await _count_posted(session, company_id, row.event_type, source_id)
+                    before = await _count_effects(session, company_id, row.event_type, source_id)
                     await events.redispatch(session, row.event_type, payload)
-                    after = await _count_posted(session, company_id, row.event_type, source_id)
+                    after = await _count_effects(session, company_id, row.event_type, source_id)
                 await session.execute(
                     update(events.OUTBOX_TABLE)
                     .where(events.OUTBOX_TABLE.c.id == row.id)

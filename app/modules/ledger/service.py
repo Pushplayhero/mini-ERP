@@ -363,14 +363,26 @@ async def post_journal_entry(session: AsyncSession, data: JournalEntryCreate) ->
 async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) -> JournalEntry:
     """HTTP-facing wrapper: `post_journal_entry` core + commit/409 semantics.
 
-    ADR-003 R1: this is a *thin* wrapper — same `_commit_or_conflict`
-    behavior as Week 2, so the API contract (and all Week 2 tests) are
-    unaffected by the R1 refactor. The posting engine calls the core
-    (`post_journal_entry`) directly and never this wrapper, because it owns
-    its own (SAVEPOINT) transaction boundary instead.
+    ADR-003 R1: this is a *thin* wrapper — same conflict-handling behavior
+    as Week 2, so the API contract (and all Week 2 tests) are unaffected by
+    the R1 refactor. The posting engine calls the core (`post_journal_entry`)
+    directly and never this wrapper, because it owns its own (SAVEPOINT)
+    transaction boundary instead.
+
+    Diff-review fix: the try/except must wrap `post_journal_entry` itself,
+    not just the later `commit()` — `post_journal_entry`'s own `flush()`
+    can raise `IntegrityError` on its own (e.g. a duplicate
+    `(company_id, source_type, source_id)` submitted directly through this
+    HTTP path). `_commit_or_conflict` alone only ever saw exceptions from
+    `session.commit()`; a flush-time failure bypassed it entirely and
+    surfaced as an unhandled 500 instead of the promised 409.
     """
-    entry = await post_journal_entry(session, data)
-    await _commit_or_conflict(session, entity="JournalEntry")
+    try:
+        entry = await post_journal_entry(session, data)
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise ConflictError("JournalEntry violates a uniqueness or reference constraint") from exc
     await session.refresh(entry, attribute_names=["lines"])
     return entry
 
@@ -414,6 +426,23 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
     entry requires an *open* period for today's year/month to already
     exist, same as any other posting — documented as a judgment call in the
     Week 2 completion report (the brief left this an open choice).
+
+    `source_type`/`source_id` are deliberately left `None` on the reversal
+    (diff-review fix), never copied from `original` — migration 0003's
+    `uq_journal_entries_source` is scoped to `(company_id, source_type,
+    source_id)`, so copying the original's non-null source would make the
+    reversal collide with the very entry it reverses (they'd share the same
+    triple) and every reversal of an event-sourced entry would fail with a
+    unique-violation, defeating ADR-005 R3's "reversal is the only
+    correction mechanism" for any entry the posting engine ever created.
+    No traceability is lost: `reversal_of_id` already links the reversal to
+    `original`, and `original.source_type`/`original.source_id` are reached
+    by following that FK — a reversal has no source *event* of its own (a
+    human/service action triggered it directly, not a replayed event), so
+    `None` here is also the semantically honest value, matching the partial
+    index's own `WHERE source_type IS NOT NULL` exclusion for exactly this
+    "no source event" case (the same reasoning already applied to manual,
+    non-event-sourced entries).
     """
     company_id = require_current_company_id()
     original = await get_journal_entry(session, entry_id)
@@ -452,8 +481,8 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
         entry_no=entry_no,
         entry_date=reversal_date,
         period_id=period.id,
-        source_type=original.source_type,
-        source_id=original.source_id,
+        source_type=None,
+        source_id=None,
         reversal_of_id=original.id,
         custom_data={},
     )
@@ -464,12 +493,22 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
 
 
 async def reverse_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
-    """HTTP-facing wrapper around `_post_reversal` — commit/409 semantics
+    """HTTP-facing wrapper around `_post_reversal` — commit/409 semantics,
 
-    unchanged from Week 2 (ADR-003 R1, same pattern as `create_journal_entry`).
+    same pattern as `create_journal_entry` (ADR-003 R1), including that
+    diff-review fix: the try/except wraps `_post_reversal` itself, not just
+    the later `commit()`, so an `IntegrityError` from `_post_reversal`'s own
+    `flush()` still gets translated to a 409 instead of bypassing conflict
+    handling and surfacing as an unhandled 500.
     """
-    reversal = await _post_reversal(session, entry_id)
-    await _commit_or_conflict(session, entity="JournalEntry (reversal)")
+    try:
+        reversal = await _post_reversal(session, entry_id)
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise ConflictError(
+            "JournalEntry (reversal) violates a uniqueness or reference constraint"
+        ) from exc
     await session.refresh(reversal, attribute_names=["lines"])
     return reversal
 
@@ -492,14 +531,22 @@ async def get_trial_balance(
     covers the month-end trial balance workflow that matters at Phase 1);
     revisit if/when a caller needs an arbitrary as-of-date report.
 
-    `company_id` is filtered explicitly here (rather than relying solely on
-    the automatic `do_orm_execute` tenant filter) because this query's
+    `company_id` is filtered explicitly on *both* `JournalEntry` and
+    `_ACCOUNTS` (rather than relying solely on the automatic
+    `do_orm_execute` tenant filter) — diff-review fix: this predicate used
+    to only cover `JournalEntry`, and the docstring claimed the `_ACCOUNTS`
+    half existed when it didn't. `JournalLine.account_id` has only a plain
+    (cross-company) foreign key to `accounts.id` — the application-layer
+    `_ensure_accounts_belong_to_company` check normally prevents a line from
+    ever referencing another company's account, but this query's
     FROM-clause anchor is a plain `sqlalchemy.table()` reference to
-    `accounts`, not an ORM-mapped, `TenantScopedMixin`-registered class —
-    see module docstring on why. `JournalEntry`/`JournalLine` are still
-    ORM-mapped and tenant-scoped, so the automatic filter also applies to
-    them; this explicit predicate is belt-and-suspenders for the one join
-    target the automatic mechanism cannot see.
+    `accounts`, not an ORM-mapped, `TenantScopedMixin`-registered class (see
+    module docstring on why), so it is NOT covered by the automatic
+    `do_orm_execute` tenant filter the way `JournalEntry`/`JournalLine`
+    (still ORM-mapped) are. Filtering `_ACCOUNTS.c.company_id` explicitly
+    closes that gap for any bypass writer that skips the application-layer
+    check — the same defense-in-depth doctrine `_ensure_accounts_belong_to_company`
+    itself already applies at write time, now also applied at read time.
     """
     company_id = require_current_company_id()
     stmt = (
@@ -514,7 +561,7 @@ async def get_trial_balance(
         .select_from(JournalLine)
         .join(JournalEntry, JournalLine.entry_id == JournalEntry.id)
         .join(_ACCOUNTS, JournalLine.account_id == _ACCOUNTS.c.id)
-        .where(JournalEntry.company_id == company_id)
+        .where(JournalEntry.company_id == company_id, _ACCOUNTS.c.company_id == company_id)
         .group_by(_ACCOUNTS.c.id, _ACCOUNTS.c.code, _ACCOUNTS.c.name, _ACCOUNTS.c.type)
         .order_by(_ACCOUNTS.c.code)
     )

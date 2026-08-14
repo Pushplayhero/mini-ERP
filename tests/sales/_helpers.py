@@ -51,11 +51,18 @@ async def create_product(
     sku: str,
     *,
     list_price: str = "100",
+    standard_cost: str = "0",
 ) -> uuid.UUID:
     uom = await uom_id(client, company_id)
     response = await client.post(
         "/api/v1/products",
-        json={"sku": sku, "name": f"{sku} widget", "uom_id": str(uom), "list_price": list_price},
+        json={
+            "sku": sku,
+            "name": f"{sku} widget",
+            "uom_id": str(uom),
+            "list_price": list_price,
+            "standard_cost": standard_cost,
+        },
         headers=company_headers(company_id),
     )
     assert response.status_code == 201, response.text
@@ -98,4 +105,10 @@ async def confirm_order(client: AsyncClient, company_id: uuid.UUID, order_id: st
 async def cancel_order(client: AsyncClient, company_id: uuid.UUID, order_id: str):
     return await client.post(
         f"/api/v1/sales-orders/{order_id}/cancel", headers=company_headers(company_id)
+    )
+
+
+async def ship_order(client: AsyncClient, company_id: uuid.UUID, order_id: str):
+    return await client.post(
+        f"/api/v1/sales-orders/{order_id}/ship", headers=company_headers(company_id)
     )

@@ -17,18 +17,21 @@ foreign key alone would prove the row exists, not that it belongs to the
 requesting company, which is why the explicit `company_id` predicate below
 matters.
 
-**Quoted-price freezing (ADR-006 P3, resolved here)**: `unit_price` is
-resolved — client override, or `product.list_price` if omitted — at the
-moment a line is *written* (`create_order` or `update_order`), not deferred
-to `confirm_order`. A draft that sits untouched for a week and is then
-confirmed keeps whatever `unit_price` its lines already carry; re-editing a
-draft (PATCH, full line replacement) re-resolves any line that still omits
-`unit_price` against *current* `product.list_price`, which is how "a draft
-confirms at current prices unless lines carried manual overrides" (ADR-006
-Decision 3) actually happens in this implementation — through re-editing,
-not through `confirm` silently repricing anything. `confirm_order` never
-touches `unit_price`/`amount`/`total`; it only re-freezes the
-name/code/sku *snapshot* fields (see that function's docstring).
+**Quoted-price freezing (ADR-006 P3 + Decision 3, diff-review fix)**:
+`unit_price` is resolved — client override, or `product.list_price` if
+omitted — at the moment a line is *written* (`create_order`/`update_order`),
+and `SalesOrderLine.unit_price_is_override` records which case it was.
+That flag is what makes ADR-006 Decision 3's actual promise possible: "a
+draft that sat for a week confirms at *current* prices unless lines carried
+manual overrides". `confirm_order` re-resolves every non-override line's
+`unit_price`/`amount` against the product's *current* `list_price` (and
+recomputes `order.total` from the result) as part of its snapshot-freezing
+step; override lines, and the resolved value on non-override lines at
+draft-write time, are otherwise untouched. (An earlier version of this
+module resolved prices only at draft-write time and left `confirm_order`
+untouched, on the theory that re-editing a draft was how repricing would
+happen — that reading did not match ADR-006's own "confirms at current
+prices" text and has been corrected.)
 """
 
 from __future__ import annotations
@@ -51,7 +54,10 @@ from app.core import events, hooks
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.hooks import HookContext
 from app.core.tenancy import require_current_company_id
-from app.modules.sales.events import SALES_ORDER_CONFIRMED_EVENT_TYPE
+from app.modules.sales.events import (
+    SALES_GOODS_SHIPPED_EVENT_TYPE,
+    SALES_ORDER_CONFIRMED_EVENT_TYPE,
+)
 from app.modules.sales.models import SalesOrder, SalesOrderLine, SalesOrderStatus, SalesSequence
 from app.modules.sales.schemas import SalesOrderCreate, SalesOrderLineCreate, SalesOrderUpdate
 
@@ -78,6 +84,9 @@ _PRODUCTS = sa_table(
     sa_column("name"),
     sa_column("list_price"),
     sa_column("uom_id"),
+    # ADR-007 Decision 3: `ship_order` reads this to snapshot per-line
+    # `unit_cost` into `sales.goods_shipped`'s payload — see that function.
+    sa_column("standard_cost"),
 )
 
 
@@ -123,6 +132,7 @@ async def _fetch_products(
             _PRODUCTS.c.name,
             _PRODUCTS.c.list_price,
             _PRODUCTS.c.uom_id,
+            _PRODUCTS.c.standard_cost,
         ).where(_PRODUCTS.c.id.in_(product_ids), _PRODUCTS.c.company_id == company_id)
     )
     found: dict[uuid.UUID, Any] = {row.id: row for row in result.all()}
@@ -144,7 +154,8 @@ def _build_lines(
     total = Decimal("0")
     for idx, line_in in enumerate(lines_in, start=1):
         product = products[line_in.product_id]
-        unit_price = line_in.unit_price if line_in.unit_price is not None else product.list_price
+        is_override = line_in.unit_price is not None
+        unit_price = line_in.unit_price if is_override else product.list_price
         uom_id = line_in.uom_id if line_in.uom_id is not None else product.uom_id
         amount = line_in.qty * unit_price
         built.append(
@@ -155,6 +166,7 @@ def _build_lines(
                 qty=line_in.qty,
                 uom_id=uom_id,
                 unit_price=unit_price,
+                unit_price_is_override=is_override,
                 snapshot_sku=product.sku,
                 snapshot_product_name=product.name,
                 amount=amount,
@@ -324,16 +336,29 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
        observes `status=confirmed` and 409s. Same doctrine as ADR-005 R4.
     2. Require at least one line and `total > 0` (R2) — before hooks run,
        so a plugin never even sees an order that cannot legally confirm.
+       Checked against the *current* `order.total` (pre-repricing) purely
+       to reject empty/zero-line orders early and cheaply; repricing in
+       step 3 recomputes the real total hooks then see.
     3. Re-freeze `snapshot_customer_*`/`snapshot_sku`/`snapshot_product_name`
        from *current* masterdata — this is the actual "freeze" moment
-       (ADR-006 Decision 3); pricing (`unit_price`/`amount`/`total`) is
-       deliberately NOT touched here (see module docstring).
-    4. Run `hooks.SALES_ORDER_VALIDATE_CONFIRM` handlers — any exception
-       propagates, aborting the whole transaction (nothing committed yet).
+       (ADR-006 Decision 3). **Diff-review fix**: pricing is now also
+       resolved here, not deferred to draft-editing as this module's prior
+       docstring claimed — ADR-006 Decision 3's own words are "a draft that
+       sat for a week confirms at *current* prices unless lines carried
+       manual overrides", which only actually holds if confirm itself
+       reprices. Every line with `unit_price_is_override=False` (never had
+       a client-supplied price) gets `unit_price`/`amount` recomputed from
+       the product's *current* `list_price`; override lines are left
+       untouched. `order.total` is then recomputed as the sum of every
+       line's (possibly just-updated) `amount` — never the pre-repricing
+       value.
+    4. Run `hooks.SALES_ORDER_VALIDATE_CONFIRM` handlers (seeing the
+       *repriced* total) — any exception propagates, aborting the whole
+       transaction (nothing committed yet).
     5. Set `status=confirmed`, `confirmed_at=now()`.
     6. `events.publish(...)` the `sales.order_confirmed` event (outbox write
        + synchronous dispatch, still inside this same uncommitted
-       transaction).
+       transaction) — carries the repriced total.
     7. `flush()` — **never commit or rollback**. ADR-003 R1's "the
        transaction belongs to whoever opened it" applies here exactly as it
        does to `ledger.service.post_journal_entry`: the HTTP route
@@ -356,10 +381,10 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
             f"SalesOrder {order_id} is not a draft (status={order.status.value}); cannot confirm"
         )
 
-    if not order.lines or order.total <= 0:
+    if not order.lines:
         raise DomainValidationError(
-            f"SalesOrder {order_id} cannot be confirmed: at least one line and a positive "
-            "total are required (ADR-006 R2)"
+            f"SalesOrder {order_id} cannot be confirmed: at least one line is required "
+            "(ADR-006 R2)"
         )
 
     customer = await _fetch_customer(session, company_id, order.customer_id)
@@ -367,10 +392,33 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
     order.snapshot_customer_name = customer.name
 
     products = await _fetch_products(session, company_id, {line.product_id for line in order.lines})
+    new_total = Decimal("0")
     for line in order.lines:
         product = products[line.product_id]
         line.snapshot_sku = product.sku
         line.snapshot_product_name = product.name
+        if not line.unit_price_is_override:
+            line.unit_price = product.list_price
+            line.amount = line.qty * product.list_price
+        new_total += line.amount
+    order.total = new_total
+
+    # Diff-review fix: the "positive total" half of R2 must be checked
+    # *after* repricing, against the just-recomputed `order.total` — not
+    # the stale pre-reprice value. Checking before repricing has two wrong
+    # outcomes: a positively-priced draft whose product got repriced to 0
+    # would confirm with `total == 0` (R2 violated), and a genuinely
+    # zero-priced draft whose product got repriced above 0 would be
+    # wrongly rejected before ever seeing its real, positive total. Nothing
+    # has been flushed/committed yet at this point (see the docstring's
+    # step 7), so raising here still discards every mutation made above —
+    # same "nothing partial ever persists" guarantee as the original,
+    # earlier check had.
+    if order.total <= 0:
+        raise DomainValidationError(
+            f"SalesOrder {order_id} cannot be confirmed: a positive total is required "
+            "(ADR-006 R2) — recomputed from current prices, not the pre-confirm total"
+        )
 
     context = HookContext(
         company_id=company_id,
@@ -405,24 +453,106 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
     return order
 
 
+async def ship_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
+    """Non-committing core of order shipment (ADR-007 Decision 1, R1 doctrine).
+
+    1. `SELECT ... FOR UPDATE` on the order row, then re-check
+       `status == confirmed` under the lock — identical doctrine to
+       `confirm_order`/`cancel_order` (ADR-006 R1): a concurrent
+       ship-vs-ship or ship-vs-cancel attempt serializes on this lock, and
+       whichever caller acquires it second observes whatever status the
+       first left behind and 409s if it is no longer `confirmed`.
+    2. Build the `sales.goods_shipped` payload: `unit_cost` per line is read
+       from `products.standard_cost` (Core-level reference — see module
+       docstring) and snapshotted into the payload alongside the computed
+       `total_cost`, so the resulting journal entry (and this event itself)
+       stays reproducible from the event alone forever, independent of any
+       later edit to the product's standard cost (ADR-007 Decision 3).
+    3. `events.publish(...)` — this single call is what makes shipping
+       atomic across three modules in one transaction: inventory's
+       deduction handler runs first, ledger's posting handler runs second
+       (ADR-007 Decision 1, subscription order wired in `app.main` —
+       "move the goods, then account for them"). Either handler's
+       exception (insufficient stock, missing posting accounts) propagates
+       unchanged and aborts the whole `ship` call: the order stays
+       `confirmed`, no stock moves, no journal entry — all-or-nothing.
+    4. Set `status=shipped`. Full-order shipment only (ADR-007 Decision 5)
+       — there is no partial-ship/backorder path in Phase 1.
+    5. `flush()` — **never commit or rollback**, same ADR-003 R1 division
+       of labor as `confirm_order`: the HTTP route
+       (`router.ship_sales_order`) owns the commit boundary.
+    """
+    company_id = require_current_company_id()
+    result = await session.execute(
+        select(SalesOrder)
+        .where(SalesOrder.id == order_id)
+        .options(selectinload(SalesOrder.lines))
+        .with_for_update()
+    )
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise NotFoundError("SalesOrder", order_id)
+    if order.status is not SalesOrderStatus.CONFIRMED:
+        raise ConflictError(
+            f"SalesOrder {order_id} is not confirmed (status={order.status.value}); cannot ship"
+        )
+
+    products = await _fetch_products(session, company_id, {line.product_id for line in order.lines})
+
+    lines_payload: list[dict[str, Any]] = []
+    total_cost = Decimal("0")
+    for line in order.lines:
+        product = products[line.product_id]
+        unit_cost: Decimal = product.standard_cost
+        total_cost += line.qty * unit_cost
+        lines_payload.append(
+            {
+                "product_id": str(line.product_id),
+                "qty": str(line.qty),
+                "unit_cost": str(unit_cost),
+            }
+        )
+
+    shipped_at = datetime.now(timezone.utc)  # noqa: UP017 — see confirm_order's comment
+
+    await events.publish(
+        session,
+        SALES_GOODS_SHIPPED_EVENT_TYPE,
+        {
+            "company_id": company_id,
+            "source_id": order.id,
+            "order_no": order.order_no,
+            "lines": lines_payload,
+            "total_cost": str(total_cost),
+            "shipped_at": shipped_at.isoformat(),
+        },
+    )
+
+    order.status = SalesOrderStatus.SHIPPED
+
+    await session.flush()
+    return order
+
+
 async def cancel_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
     """`draft` or `confirmed` -> `cancelled`. `SELECT ... FOR UPDATE` first (R1),
 
-    same doctrine as `confirm_order`. Week 4 has no downstream shipment to
-    conflict with a cancelled-but-confirmed order (ADR-006 Decision 3), so
-    both source statuses are legal.
+    same doctrine as `confirm_order`/`ship_order`. `shipped` orders can no
+    longer cancel (ADR-007 "Order lifecycle update" — cancel-from-confirmed
+    ends the moment the goods actually left; Phase 2+ returns/RMA is the
+    undo mechanism for a shipped order, not cancel), so only `draft` and
+    `confirmed` remain legal source statuses.
 
     Not idempotent: cancelling an already-cancelled order is a 409, not a
     silent no-op — a deliberate divergence from `ledger.service.close_period`
     (which treats a repeat close as idempotent). `close_period` has no
     "wrong request" story worth flagging (Week 2 has no reopen workflow, so
     a duplicate close request is just... satisfied twice, harmlessly);
-    `cancel` sits in the same state-machine family `confirm` does, where
-    ADR-006 R1's whole point is that an illegal transition from the current
-    state must be visible to the caller as a 409, not silently swallowed —
-    a client re-cancelling something it does not realize is already
-    cancelled deserves to find out, the same way a client re-confirming
-    something already confirmed does.
+    `cancel` sits in the same state-machine family `confirm`/`ship` do,
+    where ADR-006 R1's whole point is that an illegal transition from the
+    current state must be visible to the caller as a 409, not silently
+    swallowed — a client re-cancelling something it does not realize is
+    already cancelled (or has since shipped) deserves to find out.
     """
     result = await session.execute(
         select(SalesOrder).where(SalesOrder.id == order_id).with_for_update()
@@ -432,6 +562,11 @@ async def cancel_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder
         raise NotFoundError("SalesOrder", order_id)
     if order.status is SalesOrderStatus.CANCELLED:
         raise ConflictError(f"SalesOrder {order_id} is already cancelled")
+    if order.status is SalesOrderStatus.SHIPPED:
+        raise ConflictError(
+            f"SalesOrder {order_id} has already shipped and cannot be cancelled "
+            "(ADR-007 Decision 5 — Phase 2+ returns/RMA is the undo mechanism, not cancel)"
+        )
 
     order.status = SalesOrderStatus.CANCELLED
     order.cancelled_at = datetime.now(timezone.utc)  # noqa: UP017 — see confirm_order's comment

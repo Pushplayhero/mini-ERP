@@ -3,12 +3,11 @@
 Lives in `ledger` (not `core`) per ADR-003 Decision 1: `core` must never
 import business modules (import-linter contract), and turning events into
 entries is ledger's own domain competence — it already owns entry creation,
-periods, and numbering. Publishers (future `sales`/`inventory`/
-`receivables`) know nothing about this module; they just call
-`app.core.events.publish`. `app.core.events` itself knows nothing about
-`ledger` either — it dispatches to whatever registered `event_type ->
-handler` mapping exists, which is exactly the decoupling ADR-004 Decision 3
-is built on.
+periods, and numbering. Publishers (`sales`, future `receivables`) know
+nothing about this module; they just call `app.core.events.publish`.
+`app.core.events` itself knows nothing about `ledger` either — it dispatches
+to whatever registered `event_type -> handler` mapping exists, which is
+exactly the decoupling ADR-004 Decision 3 is built on.
 
 Rule format (ADR-003 Decision 2): declarative, in code, referencing accounts
 by `code` — resolved to this posting company's actual `accounts.id` at
@@ -23,16 +22,35 @@ Idempotency (ADR-003 Decision 3 / R2): duplicate delivery of the same
 inside a `SAVEPOINT` so only the duplicate insert rolls back — never the
 publisher's whole transaction.
 
-Week 3 self-validation event — NOT the final rule set
--------------------------------------------------------
-There is no real `sales`/`inventory`/`receivables` module yet (Week 4+).
-`POSTING_RULES["test.synthetic_sale"]` and `SyntheticSalePayload` below are
-a synthetic, self-contained stand-in whose only job is to prove the full
-pipeline works end to end: publish -> outbox write -> handler dispatch ->
-rule lookup -> per-company account resolution -> balanced journal entry ->
-idempotent re-delivery. When Week 4 lands the real `sales.goods_shipped` /
-`receivables.invoice_issued` events (see ADR-003 Decision 2's example rule
-set), this synthetic entry is deleted/replaced, not extended.
+Week 5: `sales.goods_shipped` is the first real posting event (ADR-007)
+---------------------------------------------------------------------------
+Week 3's `test.synthetic_sale` self-validation event — a synthetic,
+self-contained stand-in whose only job was to prove the full pipeline works
+end to end (publish -> outbox write -> handler dispatch -> rule lookup ->
+per-company account resolution -> balanced journal entry -> idempotent
+re-delivery) — is retired in this deploy: its schema, rule, and event_type
+constant are deleted outright, not merely superseded (ADR-007 "Synthetic
+event retirement"; see migration 0005's R1 for how already-outboxed rows of
+that event_type are neutralized rather than left to poison replay forever).
+`sales.goods_shipped` (published by `sales.service.ship_order`) takes its
+place as the first posting rule driven by a real business event: debit
+`5000 COGS` / credit `1300 Inventory`, amount = the event's `total_cost`.
+
+`GoodsShippedPayload` is defined here, not in `sales.events` (where
+`sales.order_confirmed`'s `SalesOrderConfirmedPayload` lives) — a deliberate
+asymmetry, not an inconsistency: `sales.order_confirmed` has zero
+subscribers and its schema is purely descriptive of what sales did.
+`sales.goods_shipped` has two subscribers (`inventory`, this module) and
+this module additionally needs the payload shape at rule-definition time
+(`POSTING_RULES`'s `amount_field="total_cost"` reads a key that must exist
+on whatever schema gets registered for this event_type) — so the schema
+lives next to the rule that consumes it, exactly as `SyntheticSalePayload`
+used to live next to its own rule. `sales.service.ship_order` never imports
+this class: it publishes a plain `dict` shaped to match it, and
+`app.core.events.publish` validates that dict against whichever schema
+`app.main` registered for `"sales.goods_shipped"` (this one) — the
+independence boundary holds because the *string* `event_type` is the only
+thing both modules need to agree on, never a shared Python type.
 """
 
 from __future__ import annotations
@@ -40,7 +58,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel
@@ -103,38 +121,52 @@ class AccountResolutionError(DomainValidationError):
 
 # ---------------------------------------------------------------------------
 # Standard chart-of-account codes the kernel rules assume (ADR-003 Action
-# Item 4). Companies that want kernel-posted entries (this synthetic rule
-# today; real sales/receivables rules from Week 4) must seed accounts with
+# Item 4). Companies that want kernel-posted entries must seed accounts with
 # these codes. Documented here, next to the rules that depend on them, since
 # there is no seed-data module yet to own this list.
 #
-#   1100  Accounts Receivable (asset)
-#   4000  Revenue             (revenue)
+#   1100  Accounts Receivable (asset)     -- reserved for receivables (Week 6)
+#   4000  Revenue             (revenue)   -- reserved for receivables (Week 6)
+#   5000  COGS                (expense)   -- sales.goods_shipped (ADR-007)
+#   1300  Inventory           (asset)     -- sales.goods_shipped (ADR-007)
 # ---------------------------------------------------------------------------
 
-SYNTHETIC_SALE_EVENT_TYPE = "test.synthetic_sale"
+GOODS_SHIPPED_EVENT_TYPE = "sales.goods_shipped"
 
 
-class SyntheticSalePayload(BaseModel):
-    """Payload contract for `test.synthetic_sale` — Week 3 self-validation only.
+class GoodsShippedLine(BaseModel):
+    """One shipped line's cost detail — kept in the payload alongside the
+    total (ADR-007 "per-line `unit_cost` + total `total_cost` payload
+    redundancy is deliberate") so the entry is derivable from the event
+    alone, forever, without re-querying `products.standard_cost` at replay
+    time (a product's standard cost can change after the fact).
+    """
 
-    Mirrors the shape a real `receivables.invoice_issued`-style event would
-    have (`company_id` + a traceable `source_id` + an `amount`), without
-    being tied to any real business module.
+    product_id: uuid.UUID
+    qty: Decimal
+    unit_cost: Decimal
+
+
+class GoodsShippedPayload(BaseModel):
+    """Payload contract for `sales.goods_shipped` (ADR-007). See module
+    docstring for why this schema is defined here rather than in
+    `sales.events`.
     """
 
     company_id: uuid.UUID
     source_id: uuid.UUID
-    amount: Decimal
-    event_date: date | None = None
+    order_no: str
+    lines: list[GoodsShippedLine]
+    total_cost: Decimal
+    shipped_at: datetime
 
 
 POSTING_RULES: dict[str, list[PostingRule]] = {
-    SYNTHETIC_SALE_EVENT_TYPE: [
+    GOODS_SHIPPED_EVENT_TYPE: [
         PostingRule(
-            debit_account_code="1100",
-            credit_account_code="4000",
-            amount_field="amount",
+            debit_account_code="5000",
+            credit_account_code="1300",
+            amount_field="total_cost",
         ),
     ],
 }
@@ -190,13 +222,14 @@ def _line(account_id: uuid.UUID, *, debit: Decimal, credit: Decimal) -> JournalL
 async def handle_posting_event(session: AsyncSession, event_type: str, payload: BaseModel) -> None:
     """Turn one event into (at most) one balanced journal entry.
 
-    Normative flow (ADR-003 "Posting flow"): rule lookup -> per-company
-    account resolution -> build lines -> `post_journal_entry` inside a
-    `SAVEPOINT` (R2) -> a duplicate `(company_id, source_type, source_id)`
-    hits `uq_journal_entries_source` and no-ops (only the savepoint rolls
-    back); any other failure propagates and aborts the caller's whole
-    transaction (rule/account resolution failures never even reach the
-    savepoint — nothing has been written yet at that point).
+    Normative flow (ADR-003 "Posting flow"): rule lookup -> zero-cost skip
+    check (ADR-007 Decision 3, new this week) -> per-company account
+    resolution -> build lines -> `post_journal_entry` inside a `SAVEPOINT`
+    (R2) -> a duplicate `(company_id, source_type, source_id)` hits
+    `uq_journal_entries_source` and no-ops (only the savepoint rolls back);
+    any other failure propagates and aborts the caller's whole transaction
+    (rule/account resolution failures never even reach the savepoint —
+    nothing has been written yet at that point).
     """
     rules = POSTING_RULES.get(event_type)
     if not rules:
@@ -208,19 +241,55 @@ async def handle_posting_event(session: AsyncSession, event_type: str, payload: 
     company_id = require_current_company_id()
     payload_dict = payload.model_dump()
 
+    # Zero-cost skip (ADR-007 Decision 3): computed *before* touching
+    # accounts or the DB at all. If every rule's amount for this event is
+    # zero (e.g. a shipment of products that all have `standard_cost=0`),
+    # there is nothing of value to post — a zero-amount journal line would
+    # (correctly) be rejected by `ledger.service._validate_lines`'s own
+    # "must have a nonzero debit or credit" rule, so attempting the entry
+    # would just trade a legitimate no-op for a confusing 422. This check
+    # deliberately precedes `_resolve_account_ids` too: a company whose
+    # shipments always net to zero cost should not be required to have the
+    # standard chart of accounts seeded just to ship. The stock still
+    # moves — this function is never in that transaction's path at all
+    # for the inventory side; only the journal-entry half is skipped.
+    amounts = {rule.amount_field: Decimal(str(payload_dict[rule.amount_field])) for rule in rules}
+    if all(amount == 0 for amount in amounts.values()):
+        logger.info(
+            "event %s source_id=%s has zero posting amount(s) %s; skipping journal entry "
+            "(ADR-007 Decision 3 zero-cost skip)",
+            event_type,
+            payload_dict.get("source_id"),
+            amounts,
+        )
+        return
+
     codes = {code for rule in rules for code in (rule.debit_account_code, rule.credit_account_code)}
     account_ids = await _resolve_account_ids(session, company_id, codes)
 
     lines: list[JournalLineCreate] = []
     zero = Decimal("0")
     for rule in rules:
-        amount = Decimal(str(payload_dict[rule.amount_field]))
+        amount = amounts[rule.amount_field]
         debit_account_id = account_ids[rule.debit_account_code]
         credit_account_id = account_ids[rule.credit_account_code]
         lines.append(_line(debit_account_id, debit=amount, credit=zero))
         lines.append(_line(credit_account_id, debit=zero, credit=amount))
 
-    entry_date = payload_dict.get("event_date") or date.today()
+    # `entry_date` resolution stays generic across future event types: a
+    # payload may carry an explicit `event_date` (the original
+    # self-validation event's shape); `sales.goods_shipped` instead carries
+    # `shipped_at` (a full timestamp — the actual business moment goods
+    # left), which is more accurate than defaulting to "today" whenever it
+    # is present. Only falls all the way back to `date.today()` for a
+    # payload shape that supplies neither.
+    entry_date = payload_dict.get("event_date")
+    if entry_date is None:
+        shipped_at = payload_dict.get("shipped_at")
+        if isinstance(shipped_at, datetime):
+            entry_date = shipped_at.date()
+    if entry_date is None:
+        entry_date = date.today()
     source_id = payload_dict.get("source_id")
 
     data = JournalEntryCreate(

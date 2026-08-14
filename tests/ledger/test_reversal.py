@@ -8,6 +8,7 @@ resolution rather than exercising the behaviour under test.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
@@ -102,3 +103,51 @@ async def test_reversing_a_reversal_entry_itself_is_409(client: AsyncClient) -> 
         f"/api/v1/journal-entries/{reversal['id']}/reverse", headers=headers
     )
     assert reverse_of_reversal.status_code == 409, reverse_of_reversal.text
+
+
+@pytest.mark.asyncio
+async def test_reversing_an_event_sourced_entry_succeeds(client: AsyncClient) -> None:
+    """Diff-review regression (Week 2-4 consensus review, Critical finding):
+    `_post_reversal` used to copy `source_type`/`source_id` from the
+    original entry onto the reversal, colliding with
+    `uq_journal_entries_source` (scoped to `(company_id, source_type,
+    source_id)`) — every reversal of an event-sourced entry (i.e. every
+    entry the posting engine ever creates, including all of Week 5's
+    shipment COGS postings) failed. The fix sets the reversal's
+    `source_type`/`source_id` to `None`; traceability is preserved via
+    `reversal_of_id` alone.
+    """
+    company_id = await create_company(client, "REVC4")
+    headers = company_headers(company_id)
+    cash = await create_account(client, company_id, "1000", "Cash")
+    revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
+    today = date.today()
+    await create_period(client, company_id, today.year, today.month)
+
+    original_response = await client.post(
+        "/api/v1/journal-entries",
+        json={
+            "entry_date": today.isoformat(),
+            "source_type": "sales.goods_shipped",
+            "source_id": str(uuid.uuid4()),
+            "lines": balanced_lines(cash, revenue, "300.00"),
+        },
+        headers=headers,
+    )
+    assert original_response.status_code == 201, original_response.text
+    original = original_response.json()
+    assert original["source_type"] == "sales.goods_shipped"
+
+    reverse_response = await client.post(
+        f"/api/v1/journal-entries/{original['id']}/reverse", headers=headers
+    )
+    assert reverse_response.status_code == 201, reverse_response.text
+    reversal = reverse_response.json()
+
+    assert reversal["reversal_of_id"] == original["id"]
+    # The reversal carries no source of its own — it wasn't triggered by
+    # replaying an event, a human/service action reversed it directly.
+    # Traceability to the original event is still available by following
+    # reversal_of_id -> original.source_type/source_id.
+    assert reversal["source_type"] is None
+    assert reversal["source_id"] is None

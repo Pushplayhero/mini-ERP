@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -96,18 +95,27 @@ def register(hook_name: str, fn: HookHandler) -> None:
 
 
 def unregister(hook_name: str, fn: HookHandler) -> None:
-    """Remove `fn` from `hook_name`'s handler list (ADR-006 R3).
+    """Remove every registration of `fn` from `hook_name`'s handler list (ADR-006 R3).
 
     Silently no-ops if `hook_name` has no registered handlers, or if `fn`
     was never registered for it — same "discard, don't punish an
     already-true postcondition" choice as `app.core.events.unregister`,
     documented once there.
+
+    Diff-review fix: removes *every* occurrence of `fn`, not just the
+    first. `list.remove()` only strips one match, so if `fn` had somehow
+    been registered twice, a single `unregister` call used to leave it
+    still active — silently contradicting this function's own documented
+    postcondition ("this is not listening"). No normal path double-
+    registers (`app.main` registers the credit-limit plugin exactly once,
+    at import time), but nothing enforced that invariant either, and the
+    postcondition should hold regardless of how many times something was
+    registered.
     """
     handlers = _handlers.get(hook_name)
     if handlers is None:
         return
-    with suppress(ValueError):
-        handlers.remove(fn)
+    _handlers[hook_name] = [h for h in handlers if h != fn]
 
 
 def reset() -> None:

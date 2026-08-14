@@ -258,6 +258,39 @@ async def test_unregister_stops_handler_from_being_called(
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_unregister_removes_every_occurrence_of_a_duplicate_subscription(
+    db_session: AsyncSession, client: AsyncClient
+) -> None:
+    """Diff-review regression: `unregister` used to call `list.remove()`,
+    which only strips the *first* match. If `handler` had somehow been
+    subscribed twice to the same event_type, one `unregister` call left it
+    still active — contradicting `unregister`'s own documented "this is not
+    listening" postcondition.
+    """
+    events.register_event("core_events_test.dup_unregister", _ValidPayload)
+    company_id = await create_company(client, "EVTDUPUNREG")
+
+    calls: list[str] = []
+
+    async def handler(_session: AsyncSession, _payload: BaseModel) -> None:
+        calls.append("called")
+
+    events.subscribe("core_events_test.dup_unregister", handler)
+    events.subscribe("core_events_test.dup_unregister", handler)
+    events.unregister("core_events_test.dup_unregister", handler)
+
+    with company_context(company_id):
+        await events.publish(
+            db_session,
+            "core_events_test.dup_unregister",
+            {"company_id": str(company_id), "amount": "1"},
+        )
+    await db_session.rollback()
+
+    assert calls == []
+
+
 def test_unregister_of_a_handler_never_subscribed_is_a_silent_no_op() -> None:
     async def never_subscribed(_session: AsyncSession, _payload: BaseModel) -> None:
         pass

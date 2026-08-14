@@ -212,3 +212,67 @@ async def test_single_line_entry_is_rejected_by_schema(client: AsyncClient) -> N
         headers=headers,
     )
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_duplicate_source_via_http_is_a_clean_409_not_500(client: AsyncClient) -> None:
+    """Diff-review regression: `JournalEntryCreate` accepts `source_type`/
+    `source_id` directly (not just via the posting engine's internal,
+    SAVEPOINT-guarded path), so a client can submit the same
+    `(company_id, source_type, source_id)` twice through this plain HTTP
+    endpoint and hit `uq_journal_entries_source` at `post_journal_entry`'s
+    own `flush()` — *before* `create_journal_entry`'s later `commit()` ever
+    runs. Before the fix, that flush-time `IntegrityError` bypassed conflict
+    handling entirely and surfaced as an unhandled 500 instead of the 409
+    every other uniqueness violation in this API returns.
+    """
+    company_id = await create_company(client, "JEC11")
+    headers = company_headers(company_id)
+    cash = await create_account(client, company_id, "1000", "Cash")
+    revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
+    await create_period(client, company_id, 2026, 1)
+
+    payload = {
+        "entry_date": "2026-01-15",
+        "source_type": "test.duplicate",
+        "source_id": str(uuid.uuid4()),
+        "lines": balanced_lines(cash, revenue, "100"),
+    }
+
+    first = await client.post("/api/v1/journal-entries", json=payload, headers=headers)
+    assert first.status_code == 201, first.text
+
+    second = await client.post("/api/v1/journal-entries", json=payload, headers=headers)
+    assert second.status_code == 409, second.text
+
+
+@pytest.mark.asyncio
+async def test_over_precise_amount_is_rounded_half_even_to_6dp(client: AsyncClient) -> None:
+    """Diff-review regression (master-plan §10.1: line-level round-half-even).
+    `1.2345665` rounds to `1.234566` under half-even (the preceding digit, 6,
+    is already even, so the tie rounds down) — a different result than
+    Postgres's own `NUMERIC` column-coercion rounding (ties away from zero)
+    would give. Rounding must happen before balance validation: submitting
+    `1.2345665` against a credit line of exactly `1.234566` would fail
+    balance validation entirely if the debit side weren't rounded first.
+    """
+    company_id = await create_company(client, "JEC12")
+    headers = company_headers(company_id)
+    cash = await create_account(client, company_id, "1000", "Cash")
+    revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
+    await create_period(client, company_id, 2026, 1)
+
+    response = await client.post(
+        "/api/v1/journal-entries",
+        json={
+            "entry_date": "2026-01-15",
+            "lines": [
+                twd_line(cash, debit="1.2345665"),
+                twd_line(revenue, credit="1.234566"),
+            ],
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    debit_line = next(line for line in response.json()["lines"] if line["debit"] != "0.000000")
+    assert debit_line["debit"] == "1.234566"

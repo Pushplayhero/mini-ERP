@@ -48,7 +48,6 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -156,7 +155,7 @@ def subscribe(event_type: str, handler: EventHandler) -> None:
 
 
 def unregister(event_type: str, handler: EventHandler) -> None:
-    """Remove `handler` from `event_type`'s subscriber list (ADR-006 R3).
+    """Remove every registration of `handler` from `event_type`'s subscriber list (ADR-006 R3).
 
     Silently no-ops if `event_type` has no subscribers at all, or if
     `handler` was never subscribed to it — mirrors `list.remove` guarded
@@ -168,12 +167,16 @@ def unregister(event_type: str, handler: EventHandler) -> None:
     defensive caller (e.g. a test's teardown running after the test body
     already unregistered explicitly). See `app.core.hooks.unregister` for
     the same choice, made once and documented in both places.
+
+    Diff-review fix: removes *every* occurrence of `handler`, not just the
+    first — see `app.core.hooks.unregister`'s docstring for why a
+    single-occurrence `list.remove()` broke this function's own documented
+    postcondition when a handler had somehow been subscribed twice.
     """
     handlers = _handlers.get(event_type)
     if handlers is None:
         return
-    with suppress(ValueError):
-        handlers.remove(handler)
+    _handlers[event_type] = [h for h in handlers if h != handler]
 
 
 def reset() -> None:

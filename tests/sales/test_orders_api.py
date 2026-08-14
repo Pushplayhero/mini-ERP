@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.masterdata.models import OutboxEvent
+from tests.conftest import company_headers
 from tests.sales._helpers import (
     cancel_order,
     confirm_order,
@@ -65,6 +66,30 @@ async def test_create_draft_order_defaults_unit_price_from_product_list_price(
     assert Decimal(line["unit_price"]) == Decimal("42.5")
     assert Decimal(line["amount"]) == Decimal("85.0")
     assert Decimal(order["total"]) == Decimal("85.0")
+
+
+@pytest.mark.asyncio
+async def test_client_supplied_total_is_ignored_server_computes_it(client: AsyncClient) -> None:
+    """Diff-review test-coverage fix: `total` is not a field on
+    `SalesOrderCreate` at all (server-computed only, per ADR-006 Decision
+    3), but nothing previously proved a client-supplied value is actually
+    discarded rather than accidentally accepted.
+    """
+    company_id = await create_company(client, "SOA1B")
+    customer_id = await create_customer(client, company_id, "CUSTA1B")
+    product_id = await create_product(client, company_id, "SKU-A1B", list_price="50")
+
+    response = await client.post(
+        "/api/v1/sales-orders",
+        json={
+            "customer_id": str(customer_id),
+            "lines": [order_line(product_id, "3", unit_price="20")],
+            "total": "999999",
+        },
+        headers=company_headers(company_id),
+    )
+    assert response.status_code == 201, response.text
+    assert Decimal(response.json()["total"]) == Decimal("60")
 
 
 @pytest.mark.asyncio
@@ -158,6 +183,164 @@ async def test_confirm_freezes_customer_snapshot_against_later_masterdata_edits(
         f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
     )
     assert reread.json()["snapshot_customer_name"] == "CUSTC1 customer"
+
+
+@pytest.mark.asyncio
+async def test_confirm_freezes_product_snapshot_against_later_masterdata_edits(
+    client: AsyncClient,
+) -> None:
+    """Diff-review test-coverage fix: mirrors the customer-snapshot test
+    above, but for the per-line product snapshot — nothing previously
+    exercised `snapshot_sku`/`snapshot_product_name` at all.
+    """
+    company_id = await create_company(client, "SOC1B")
+    customer_id = await create_customer(client, company_id, "CUSTC1B")
+    product_id = await create_product(client, company_id, "SKU-C1B", list_price="10")
+
+    order = await create_draft_order(
+        client, company_id, customer_id, [order_line(product_id, "1", unit_price="10")]
+    )
+    confirm_resp = await confirm_order(client, company_id, order["id"])
+    assert confirm_resp.status_code == 200, confirm_resp.text
+    confirmed = confirm_resp.json()
+    assert confirmed["lines"][0]["snapshot_sku"] == "SKU-C1B"
+    assert confirmed["lines"][0]["snapshot_product_name"] == "SKU-C1B widget"
+
+    rename = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"name": "Renamed After Confirm"},
+        headers={"X-Company-Id": str(company_id)},
+    )
+    assert rename.status_code == 200, rename.text
+
+    reread = await client.get(
+        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+    )
+    assert reread.json()["lines"][0]["snapshot_product_name"] == "SKU-C1B widget"
+
+
+@pytest.mark.asyncio
+async def test_confirm_reprices_non_override_line_to_current_product_price(
+    client: AsyncClient,
+) -> None:
+    """Diff-review regression (ADR-006 Decision 3): a line whose
+    `unit_price` was never explicitly set by the client must reprice to the
+    product's *current* `list_price` at confirm time — "a draft that sat
+    for a week confirms at current prices unless lines carried manual
+    overrides". Before the fix, `confirm_order` never touched pricing at
+    all; the line kept whatever price was resolved (and frozen) at draft
+    creation, even after the product's price changed.
+    """
+    company_id = await create_company(client, "SOC1C")
+    customer_id = await create_customer(client, company_id, "CUSTC1C")
+    product_id = await create_product(client, company_id, "SKU-C1C", list_price="10")
+
+    # No `unit_price` supplied -> defaults from product.list_price (not an
+    # override).
+    order = await create_draft_order(client, company_id, customer_id, [order_line(product_id, "2")])
+    assert Decimal(order["lines"][0]["unit_price"]) == Decimal("10")
+    assert order["lines"][0]["unit_price_is_override"] is False
+
+    reprice = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"list_price": "25"},
+        headers={"X-Company-Id": str(company_id)},
+    )
+    assert reprice.status_code == 200, reprice.text
+
+    confirm_resp = await confirm_order(client, company_id, order["id"])
+    assert confirm_resp.status_code == 200, confirm_resp.text
+    confirmed = confirm_resp.json()
+
+    assert Decimal(confirmed["lines"][0]["unit_price"]) == Decimal("25")
+    assert Decimal(confirmed["lines"][0]["amount"]) == Decimal("50")  # qty 2 * 25
+    assert Decimal(confirmed["total"]) == Decimal("50")
+
+
+@pytest.mark.asyncio
+async def test_confirm_preserves_manual_unit_price_override_despite_price_change(
+    client: AsyncClient,
+) -> None:
+    """Diff-review regression companion: the flip side of the reprice test
+    above — a line whose `unit_price` *was* explicitly set by the client
+    must NOT be touched by confirm-time repricing, no matter what the
+    product's current price is.
+    """
+    company_id = await create_company(client, "SOC1D")
+    customer_id = await create_customer(client, company_id, "CUSTC1D")
+    product_id = await create_product(client, company_id, "SKU-C1D", list_price="10")
+
+    order = await create_draft_order(
+        client, company_id, customer_id, [order_line(product_id, "2", unit_price="8")]
+    )
+    assert order["lines"][0]["unit_price_is_override"] is True
+
+    reprice = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"list_price": "25"},
+        headers={"X-Company-Id": str(company_id)},
+    )
+    assert reprice.status_code == 200, reprice.text
+
+    confirm_resp = await confirm_order(client, company_id, order["id"])
+    assert confirm_resp.status_code == 200, confirm_resp.text
+    confirmed = confirm_resp.json()
+
+    assert Decimal(confirmed["lines"][0]["unit_price"]) == Decimal("8")
+    assert Decimal(confirmed["lines"][0]["amount"]) == Decimal("16")  # qty 2 * 8
+    assert Decimal(confirmed["total"]) == Decimal("16")
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_when_reprice_drops_total_to_zero(client: AsyncClient) -> None:
+    """Diff-review regression (round 2): R2's "positive total" check must
+    run *after* repricing, against the recomputed total — not the stale
+    pre-reprice value. A non-override line priced positively at draft time
+    whose product is later repriced to 0 must still be rejected at confirm,
+    even though the order's *stale* total was positive.
+    """
+    company_id = await create_company(client, "SOC1E")
+    customer_id = await create_customer(client, company_id, "CUSTC1E")
+    product_id = await create_product(client, company_id, "SKU-C1E", list_price="10")
+
+    order = await create_draft_order(client, company_id, customer_id, [order_line(product_id, "1")])
+    assert Decimal(order["total"]) == Decimal("10")
+
+    reprice = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"list_price": "0"},
+        headers={"X-Company-Id": str(company_id)},
+    )
+    assert reprice.status_code == 200, reprice.text
+
+    confirm_resp = await confirm_order(client, company_id, order["id"])
+    assert confirm_resp.status_code == 422, confirm_resp.text
+
+
+@pytest.mark.asyncio
+async def test_confirm_accepts_when_reprice_raises_total_above_zero(client: AsyncClient) -> None:
+    """Diff-review regression (round 2), the flip side: a non-override line
+    priced at 0 at draft time whose product is later repriced above 0 must
+    be allowed to confirm — the stale (0) total must not reject it before
+    repricing runs.
+    """
+    company_id = await create_company(client, "SOC1F")
+    customer_id = await create_customer(client, company_id, "CUSTC1F")
+    product_id = await create_product(client, company_id, "SKU-C1F", list_price="0")
+
+    order = await create_draft_order(client, company_id, customer_id, [order_line(product_id, "1")])
+    assert Decimal(order["total"]) == Decimal("0")
+
+    reprice = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"list_price": "15"},
+        headers={"X-Company-Id": str(company_id)},
+    )
+    assert reprice.status_code == 200, reprice.text
+
+    confirm_resp = await confirm_order(client, company_id, order["id"])
+    assert confirm_resp.status_code == 200, confirm_resp.text
+    assert Decimal(confirm_resp.json()["total"]) == Decimal("15")
 
 
 @pytest.mark.asyncio
@@ -290,6 +473,28 @@ async def test_cancel_of_already_cancelled_order_is_409(client: AsyncClient) -> 
     assert second.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_confirming_a_cancelled_order_is_409(client: AsyncClient) -> None:
+    """Diff-review test-coverage fix: the state machine's only legal
+    transitions into `confirmed` are from `draft`; a cancelled order must
+    not be confirmable, but nothing previously exercised this specific
+    illegal edge (only cancel-of-cancelled and confirm-of-confirmed were
+    covered).
+    """
+    company_id = await create_company(client, "SOE4")
+    customer_id = await create_customer(client, company_id, "CUSTE4")
+    product_id = await create_product(client, company_id, "SKU-E4", list_price="10")
+
+    order = await create_draft_order(
+        client, company_id, customer_id, [order_line(product_id, "1", unit_price="10")]
+    )
+    cancel_resp = await cancel_order(client, company_id, order["id"])
+    assert cancel_resp.status_code == 200
+
+    confirm_resp = await confirm_order(client, company_id, order["id"])
+    assert confirm_resp.status_code == 409, confirm_resp.text
+
+
 # ---------------------------------------------------------------------------
 # Cross-company isolation
 # ---------------------------------------------------------------------------
@@ -373,3 +578,74 @@ async def test_sales_order_lines_do_not_leak_across_companies(
 
     with pytest.raises(TenancyContextError):
         await db_session.execute(select(SalesOrderLine))
+
+
+@pytest.mark.asyncio
+async def test_confirmed_order_without_snapshot_is_rejected_by_db_check(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Diff-review regression (migration 0006): a bypass writer inserting a
+    `CONFIRMED` order directly (skipping `service.confirm_order`, which
+    always freezes the customer snapshot first) must be rejected at the DB
+    layer by `ck_sales_orders_confirmed_has_snapshot`, not silently allowed
+    to persist a confirmed order with no snapshot.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    from app.core.tenancy import company_context
+    from app.modules.sales.models import SalesOrder, SalesOrderStatus
+
+    company_id = await create_company(client, "SOSNAP1")
+    customer_id = await create_customer(client, company_id, "CUSTSNAP1")
+
+    with company_context(company_id):
+        db_session.add(
+            SalesOrder(
+                company_id=company_id,
+                order_no="SO-2026-999999",
+                customer_id=customer_id,
+                status=SalesOrderStatus.CONFIRMED,
+                currency_code="TWD",
+                total=Decimal("0"),
+                snapshot_customer_code=None,
+                snapshot_customer_name=None,
+            )
+        )
+        with pytest.raises(DBAPIError):
+            await db_session.commit()
+        await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_shipped_order_without_snapshot_is_rejected_by_db_check(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Diff-review regression (round 2): the state machine only reaches
+    `SHIPPED` via `CONFIRMED`, so a `SHIPPED` order with no snapshot is the
+    same integrity violation as the `CONFIRMED` case above — a bypass
+    writer must not be able to reach it by inserting `SHIPPED` directly.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    from app.core.tenancy import company_context
+    from app.modules.sales.models import SalesOrder, SalesOrderStatus
+
+    company_id = await create_company(client, "SOSNAP2")
+    customer_id = await create_customer(client, company_id, "CUSTSNAP2")
+
+    with company_context(company_id):
+        db_session.add(
+            SalesOrder(
+                company_id=company_id,
+                order_no="SO-2026-999998",
+                customer_id=customer_id,
+                status=SalesOrderStatus.SHIPPED,
+                currency_code="TWD",
+                total=Decimal("0"),
+                snapshot_customer_code=None,
+                snapshot_customer_name=None,
+            )
+        )
+        with pytest.raises(DBAPIError):
+            await db_session.commit()
+        await db_session.rollback()

@@ -6,13 +6,18 @@ own tenant-scoped tables: periods and journal entries.
 
 from __future__ import annotations
 
+import uuid
+from datetime import date
+from decimal import Decimal
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.core.exceptions import TenancyContextError
 from app.core.tenancy import company_context
-from app.modules.ledger.models import AccountingPeriod, JournalEntry
+from app.modules.ledger import service as ledger_service
+from app.modules.ledger.models import AccountingPeriod, JournalEntry, JournalLine
 from tests.conftest import company_headers
 from tests.ledger._helpers import balanced_lines, create_account, create_company, create_period
 
@@ -138,3 +143,65 @@ async def test_orm_query_with_company_context_is_filtered_for_periods(
         result = await db_session.execute(select(AccountingPeriod))
         rows = result.scalars().all()
     assert {r.company_id for r in rows} == {company_a}
+
+
+@pytest.mark.asyncio
+async def test_trial_balance_excludes_cross_company_account_bypass_insert(
+    client: AsyncClient, db_session
+) -> None:
+    """Diff-review regression: `get_trial_balance`'s accounts join used to
+    filter only `JournalEntry.company_id`, never `_ACCOUNTS.c.company_id` —
+    the docstring claimed the latter existed when it didn't.
+    `journal_lines.account_id` has only a plain FK to `accounts.id` (not a
+    composite, company-scoped FK), so a bypass writer that skips the
+    application-layer `_ensure_accounts_belong_to_company` check (as this
+    test deliberately does, via raw ORM inserts, mirroring
+    `test_immutability.py`'s balance-trigger bypass test) could reference
+    another company's account. Prove the trial balance report no longer
+    surfaces that other company's account metadata.
+    """
+    company_a = await create_company(client, "ISOLTB1")
+    company_b = await create_company(client, "ISOLTB2")
+    cash_a = await create_account(client, company_a, "1000", "Cash")
+    revenue_b = await create_account(client, company_b, "4999", "Cross-Company Bogus", "revenue")
+    period_a = await create_period(client, company_a, 2026, 1)
+
+    with company_context(company_a):
+        entry = JournalEntry(
+            company_id=company_a,
+            entry_no="JE-2026-999998",
+            entry_date=date(2026, 1, 20),
+            period_id=uuid.UUID(period_a["id"]),
+            reversal_of_id=None,
+        )
+        entry.lines = [
+            JournalLine(
+                company_id=company_a,
+                account_id=cash_a,
+                line_no=1,
+                currency_code="TWD",
+                txn_debit=Decimal("50"),
+                debit=Decimal("50"),
+                rate_date=date(2026, 1, 20),
+            ),
+            JournalLine(
+                # Bypass: this line's account belongs to company_b, not
+                # company_a. Nothing at the DB layer stops it (plain FK to
+                # accounts.id); only the application-layer check — skipped
+                # here on purpose — normally would.
+                company_id=company_a,
+                account_id=revenue_b,
+                line_no=2,
+                currency_code="TWD",
+                txn_credit=Decimal("50"),
+                credit=Decimal("50"),
+                rate_date=date(2026, 1, 20),
+            ),
+        ]
+        db_session.add(entry)
+        await db_session.commit()
+
+        trial_balance = await ledger_service.get_trial_balance(db_session)
+
+    account_ids = {line.account_id for line in trial_balance}
+    assert revenue_b not in account_ids, "trial balance leaked another company's account"

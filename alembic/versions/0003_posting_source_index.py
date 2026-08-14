@@ -13,8 +13,11 @@ established doctrine (see ADR-005) of putting invariants at the DB layer so
 they hold against *any* writer, not just this service.
 
 Partial (`WHERE source_type IS NOT NULL`) because Week 2's manually-created
-entries (and reversals, which copy `source_type`/`source_id` from the
-original) have no source event and must not collide with each other on
+entries, and reversals (`ledger.service._post_reversal` — diff-review fix:
+reversals set `source_type`/`source_id` to `NULL`, NEVER copy them from the
+original entry being reversed; copying would collide with that very entry
+under this index and make every reversal of an event-sourced entry fail),
+have no source event of their own and must not collide with each other on
 `(company_id, NULL, NULL)`.
 
 `ledger.posting.handle_posting_event` catches the resulting `IntegrityError`

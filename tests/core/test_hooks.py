@@ -133,6 +133,30 @@ async def test_unregister_stops_handler_from_being_called(db_session: AsyncSessi
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_unregister_removes_every_occurrence_of_a_duplicate_registration(
+    db_session: AsyncSession,
+) -> None:
+    """Diff-review regression: `unregister` used to call `list.remove()`,
+    which only strips the *first* match. If `handler` had somehow been
+    registered twice for the same hook point, one `unregister` call left it
+    still active — contradicting `unregister`'s own documented "this is not
+    listening" postcondition.
+    """
+    calls: list[str] = []
+
+    async def handler(_session: AsyncSession, _context: hooks.HookContext) -> None:
+        calls.append("called")
+
+    hooks.register("hooks_test.dup_unreg", handler)
+    hooks.register("hooks_test.dup_unreg", handler)
+    hooks.unregister("hooks_test.dup_unreg", handler)
+
+    await hooks.run("hooks_test.dup_unreg", db_session, _ctx())
+
+    assert calls == []
+
+
 def test_unregister_of_a_handler_never_registered_is_a_silent_no_op() -> None:
     async def never_registered(_session: AsyncSession, _context: hooks.HookContext) -> None:
         pass

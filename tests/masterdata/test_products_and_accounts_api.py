@@ -61,6 +61,41 @@ async def test_product_crud(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_negative_list_price_is_rejected_422(client: AsyncClient) -> None:
+    """Diff-review regression: `list_price` had no lower-bound validation.
+    Since `sales.service.confirm_order`'s repricing fix writes
+    `product.list_price` straight into a non-override line's `unit_price`/
+    `amount`, a negative price would otherwise reach
+    `ck_sales_order_lines_unit_price_nonneg`/`_amount_nonneg` at confirm
+    time instead of being rejected here, up front, at the source.
+    """
+    company_id = await _create_company(client, "NEGPRICE")
+    headers = company_headers(company_id)
+    uom_id = await _get_uom_id(client, company_id)
+
+    create_response = await client.post(
+        "/api/v1/products",
+        json={"sku": "SKU-NEG1", "name": "Widget", "uom_id": str(uom_id), "list_price": "-1"},
+        headers=headers,
+    )
+    assert create_response.status_code == 422, create_response.text
+
+    valid_response = await client.post(
+        "/api/v1/products",
+        json={"sku": "SKU-NEG2", "name": "Widget", "uom_id": str(uom_id), "list_price": "10"},
+        headers=headers,
+    )
+    assert valid_response.status_code == 201, valid_response.text
+
+    update_response = await client.patch(
+        f"/api/v1/products/{valid_response.json()['id']}",
+        json={"list_price": "-5"},
+        headers=headers,
+    )
+    assert update_response.status_code == 422, update_response.text
+
+
+@pytest.mark.asyncio
 async def test_account_crud(client: AsyncClient) -> None:
     company_id = await _create_company(client)
     headers = company_headers(company_id)

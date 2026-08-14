@@ -12,12 +12,25 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.ledger.models import PeriodStatus
+
+# Diff-review fix (master-plan §10.1's rounding policy: line-level
+# round-half-even). A client-supplied amount with more than 6 fractional
+# digits used to fall
+# through to Postgres's `NUMERIC(20,6)` column coercion at INSERT time,
+# which rounds ties away from zero — a different tie-breaking rule than the
+# banker's rounding (ties-to-even) this project commits to. Quantizing here,
+# at schema-validation time, means every money field is already rounded the
+# required way before `_validate_lines`/the balance trigger ever sees it —
+# "header 金額 = 已捨入 lines 之和" (header totals are sums of *already-
+# rounded* lines) then falls out for free, since `_validate_lines` sums
+# these already-quantized values.
+_MONEY_QUANTUM = Decimal("0.000001")  # NUMERIC(20, 6)
 
 # ---------------------------------------------------------------------------
 # Accounting periods
@@ -61,6 +74,11 @@ class JournalLineCreate(BaseModel):
     # defaults to 1 and is validated to equal 1 for any accepted line.
     exchange_rate: Decimal = Decimal("1")
     rate_date: date | None = None
+
+    @field_validator("txn_debit", "txn_credit", "debit", "credit")
+    @classmethod
+    def _round_half_even_to_6dp(cls, value: Decimal) -> Decimal:
+        return value.quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_EVEN)
 
 
 class JournalLineRead(BaseModel):

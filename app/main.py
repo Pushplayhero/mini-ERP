@@ -2,12 +2,14 @@
 
 Wires together: settings, the tenancy middleware (§10.2), exception ->
 HTTP-status mapping, module routers, the event bus's registration/
-subscription wiring, and (Week 4) the hook registry's registration wiring.
-Week 1 mounted `masterdata`; Week 2 added `ledger` (ADR-005); Week 3 added
-the event bus + posting engine (ADR-003/ADR-004); Week 4 adds `sales`
-(order lifecycle) plus the minimal hook registry and its one demonstration
-plugin, `app.plugins.credit_limit` (ADR-006). `inventory` / `receivables`
-are still empty shells and have no routers yet.
+subscription wiring, and the hook registry's registration wiring. Week 1
+mounted `masterdata`; Week 2 added `ledger` (ADR-005); Week 3 added the
+event bus + posting engine (ADR-003/ADR-004); Week 4 added `sales` (order
+lifecycle) plus the minimal hook registry and its one demonstration plugin,
+`app.plugins.credit_limit` (ADR-006); Week 5 adds `inventory` (append-only
+stock + summary) and wires `sales.goods_shipped` — the first event with two
+subscribers — through both it and `ledger.posting` (ADR-007).
+`receivables` is still an empty shell and has no router yet.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ from app.core.exceptions import (
 )
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
+from app.modules.inventory import service as inventory_service
+from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
 from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
@@ -113,10 +117,11 @@ async def health() -> dict[str, str]:
 app.include_router(masterdata_router, prefix="/api/v1")
 app.include_router(ledger_router, prefix="/api/v1")
 app.include_router(sales_router, prefix="/api/v1")
+app.include_router(inventory_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
-# Event bus wiring (Week 3, ADR-004 §"Handler ordering" / ADR-003 Action Item 3)
+# Event bus wiring (ADR-004 §"Handler ordering" / ADR-003 Action Item 3)
 #
 # Registration happens once, at import time, module-level — same as router
 # `include_router` above — so subscription order is deterministic (ADR-004:
@@ -125,21 +130,41 @@ app.include_router(sales_router, prefix="/api/v1")
 # replay CLI (`app.cli.replay_outbox`) reuses by importing this module, so
 # both the live API process and a replay run always see identical
 # event_type -> schema/handler bindings.
-# ---------------------------------------------------------------------------
-events.register_event(ledger_posting.SYNTHETIC_SALE_EVENT_TYPE, ledger_posting.SyntheticSalePayload)
-events.subscribe(
-    ledger_posting.SYNTHETIC_SALE_EVENT_TYPE,
-    ledger_posting.make_posting_handler(ledger_posting.SYNTHETIC_SALE_EVENT_TYPE),
-)
-
+#
+# Week 3's `test.synthetic_sale` self-validation event is retired this week
+# (ADR-007 "Synthetic event retirement") — its schema/handler are deleted
+# from `ledger.posting` entirely, so there is nothing left to register or
+# subscribe here; see migration 0005's R1 for how already-outboxed rows of
+# that event_type are neutralized rather than left to poison replay.
+#
 # `sales.order_confirmed` is registered (so publish()/replay validate its
-# schema and it gets an outbox row) but deliberately has NO subscriber this
-# week (ADR-006 Decision 4) — Week 4 orders stop at `confirmed`, there is no
-# shipment/invoice pipeline yet for it to post against. This is the second
-# proof, after the Week 3 synthetic event, that "registered with zero
-# subscribers" is a valid, silent bus configuration.
+# schema and it gets an outbox row) but deliberately has NO subscriber
+# (ADR-006 Decision 4) — nothing yet reacts to "confirmed" on its own; the
+# reaction happens downstream, at `ship`.
+# ---------------------------------------------------------------------------
 events.register_event(
     sales_events.SALES_ORDER_CONFIRMED_EVENT_TYPE, sales_events.SalesOrderConfirmedPayload
+)
+
+# `sales.goods_shipped` (ADR-007): the first event through the bus with TWO
+# subscribers. Subscription order is normative, not incidental (ADR-007
+# Decision 1): inventory's deduction handler MUST run before ledger's
+# posting handler — "move the goods, then account for them". Both run
+# inside the same transaction `sales.service.ship_order` opened, so this
+# ordering affects error attribution (which handler's exception is the one
+# that aborts a bad `ship`), not atomicity — either order would still commit
+# or roll back everything together. The payload schema
+# (`ledger_posting.GoodsShippedPayload`) is owned by `ledger.posting`, not
+# `sales.events` — see that module's docstring for why.
+events.register_event(
+    sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE, ledger_posting.GoodsShippedPayload
+)
+events.subscribe(
+    sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE, inventory_service.handle_goods_shipped
+)
+events.subscribe(
+    sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE),
 )
 
 

@@ -106,7 +106,14 @@ class Customer(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
 
 class Product(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     __tablename__ = "products"
-    __table_args__ = (UniqueConstraint("company_id", "sku", name="uq_products_company_sku"),)
+    __table_args__ = (
+        UniqueConstraint("company_id", "sku", name="uq_products_company_sku"),
+        # Diff-review fix on ADR-007 Decision 3: DB-layer backstop for
+        # `ProductCreate`/`ProductUpdate`'s `standard_cost: ... = Field(ge=0)`
+        # — same belt-and-suspenders pattern as `ck_stock_summary_on_hand_nonneg`.
+        # Added in migration 0005 alongside the column itself.
+        CheckConstraint("standard_cost >= 0", name="ck_products_standard_cost_nonneg"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -117,6 +124,13 @@ class Product(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
         PGUUID(as_uuid=True), ForeignKey("uom.id"), nullable=False
     )
     list_price: Mapped[Decimal] = mapped_column(AMOUNT, nullable=False, server_default="0")
+    # ADR-007 Decision 3 / Consensus P3: the COGS cost basis `sales.service
+    # .ship_order` snapshots into `sales.goods_shipped`'s payload at ship
+    # time. Additive column (default 0, existing rows/tests unaffected) —
+    # Phase 3's moving-average/FIFO costing supersedes this; standard
+    # costing is Phase 1's deliberately simple, honest stand-in (not a
+    # hack), per ADR-007's trade-off analysis.
+    standard_cost: Mapped[Decimal] = mapped_column(AMOUNT, nullable=False, server_default="0")
     is_active: Mapped[bool] = mapped_column(SQLBoolean, nullable=False, default=True)
 
     uom: Mapped[Uom] = relationship(lazy="joined")

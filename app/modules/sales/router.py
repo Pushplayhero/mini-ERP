@@ -59,8 +59,18 @@ async def update_sales_order(
 
 @router.post("/sales-orders/{order_id}/confirm", response_model=SalesOrderRead)
 async def confirm_sales_order(order_id: uuid.UUID, session: DbSession) -> SalesOrderRead:
-    await service.confirm_order(session, order_id)
+    # Diff-review fix: the try/except must wrap `service.confirm_order`
+    # itself, not just the later `commit()`. `confirm_order`'s own
+    # `session.flush()` can raise `IntegrityError` on its own — e.g.
+    # confirm-time repricing (ADR-006 Decision 3) writing a line's
+    # `unit_price`/`amount` from `product.list_price` could violate
+    # `ck_sales_order_lines_unit_price_nonneg`/`_amount_nonneg` if that
+    # value were ever negative. A flush-time failure used to bypass this
+    # translation entirely and surface as an unhandled 500 instead of a
+    # 409 — same class of bug already fixed in `ledger.service`'s
+    # `create_journal_entry`/`reverse_journal_entry`.
     try:
+        await service.confirm_order(session, order_id)
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
@@ -78,4 +88,24 @@ async def confirm_sales_order(order_id: uuid.UUID, session: DbSession) -> SalesO
 @router.post("/sales-orders/{order_id}/cancel", response_model=SalesOrderRead)
 async def cancel_sales_order(order_id: uuid.UUID, session: DbSession) -> SalesOrderRead:
     order = await service.cancel_order(session, order_id)
+    return SalesOrderRead.model_validate(order)
+
+
+@router.post("/sales-orders/{order_id}/ship", response_model=SalesOrderRead)
+async def ship_sales_order(order_id: uuid.UUID, session: DbSession) -> SalesOrderRead:
+    """Same commit-boundary division of labor as `confirm_sales_order`:
+    `service.ship_order` is the flush-only R1 core; this router owns the
+    commit and the `IntegrityError` -> 409 translation for it — including,
+    per the same diff-review fix, wrapping the core call itself so a
+    flush-time failure inside `ship_order` cannot bypass this translation.
+    """
+    try:
+        await service.ship_order(session, order_id)
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise ConflictError(
+            f"SalesOrder {order_id} violates a uniqueness or reference constraint"
+        ) from exc
+    order = await service.get_order(session, order_id)
     return SalesOrderRead.model_validate(order)

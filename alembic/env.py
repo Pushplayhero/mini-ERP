@@ -27,6 +27,11 @@ from app.core.settings import get_settings  # noqa: E402
 
 # Import every module's models so their tables register on Base.metadata
 # before autogenerate/upgrade run. Week 1: masterdata. Week 2: + ledger.
+# Week 5: + inventory (sales models are not yet imported here — a pre-Week-5
+# gap in autogenerate coverage only, harmless for plain `upgrade`/`downgrade`
+# since those replay hand-written migration scripts rather than diffing
+# `Base.metadata`; out of this week's scope to backfill).
+from app.modules.inventory import models as inventory_models  # noqa: E402, F401
 from app.modules.ledger import models as ledger_models  # noqa: E402, F401
 from app.modules.masterdata import models as masterdata_models  # noqa: E402, F401
 
