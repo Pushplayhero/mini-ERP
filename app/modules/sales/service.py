@@ -155,7 +155,15 @@ def _build_lines(
     for idx, line_in in enumerate(lines_in, start=1):
         product = products[line_in.product_id]
         is_override = line_in.unit_price is not None
-        unit_price = line_in.unit_price if is_override else product.list_price
+        # Narrowed directly on `line_in.unit_price is not None` (not via the
+        # `is_override` proxy variable) so mypy can actually track that
+        # `unit_price` is never `None` in the override branch — the
+        # CI-only `mypy app --strict` run (Week 8: this project's first
+        # real CI run, ever, against a real remote) caught this as a
+        # genuine `Decimal * None` type error; `is_override` alone doesn't
+        # give mypy enough to infer it, even though the two booleans are
+        # logically identical at runtime.
+        unit_price = line_in.unit_price if line_in.unit_price is not None else product.list_price
         uom_id = line_in.uom_id if line_in.uom_id is not None else product.uom_id
         amount = line_in.qty * unit_price
         built.append(
