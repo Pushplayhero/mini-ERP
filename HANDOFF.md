@@ -5,7 +5,20 @@ context window filled up; work continues in a new Claude Code window on
 the same machine. This doc replaces the earlier 2026-08-15 handoff (that
 one's job — Week 5 wrap-up — is done and committed at `9bf9949`).
 
-## Week 6 status (this session): receivables — implemented, Codex diff-reviewed (APPROVED), NOT committed yet
+## Week 6 status (this session): receivables — DONE, committed at `ab0e407`
+
+**Committed.** Week 6 (receivables) landed on `master` as `ab0e407`
+("Phase 1 / Week 6: receivables ..."), 34 files, +5709/-83. Working tree
+is clean. This closes Phase 1's Week 1–6 functional scope — all five
+kernel modules (masterdata, ledger, sales, inventory, receivables) are
+implemented and Codex-reviewed. What remains for Phase 1 is Week 7–8
+hardening/polish (E2E, seed data, report-query perf, README/ADR/demo,
+v0.1.0 tag) — see "Roadmap after this handoff" at the bottom. The
+detailed review-history record below is retained for provenance.
+
+---
+
+### Detailed Week 6 record (retained for provenance)
 
 ADR-008 (receivables: invoicing, payment application, AR aging) passed a
 real `codex` CLI consensus review after 5 rounds (v1-v4 REJECTED with real
@@ -363,9 +376,52 @@ available in this environment).
 
 ## Roadmap after this handoff
 
-**Immediate next step**: `/CODEX REVIEW DIFF` against `docs/adr/ADR-008-receivables.md`
-for this session's uncommitted receivables diff, then commit (see the Week
-6 status section near the top of this file). Once that's done, Phase 1 is
-functionally complete per the master plan's Week 1–6 scope — Week 7
-(E2E tests, seed demo data, report-query perf) and Week 8 (README/ADR
-polish, demo GIF, v0.1.0 tag) are what's left before Phase 1 closes.
+Phase 1 Weeks 1–6 are complete and committed (`ab0e407`). What remains is
+Week 7 (hardening) + Week 8 (release polish).
+
+**Week 7 plan is ACCEPTED** — `docs/adr/WEEK7-phase1-hardening-brief.md`
+passed a real Codex architecture-consensus review across 3 rounds (v1/v2
+NEEDS REVISION with real findings verified against the repo and folded in,
+v3 APPROVED 2026-08-15). The plan covers: a full O2C E2E test with per-step
+balance-delta assertions; a hypothesis property test over domain-event
+sequences (isolated-per-example harness, proving trial-balance balance +
+AR/1100 tie-out + on_hand>=0); a fresh-DB-safe idempotent `seed_demo` CLI +
+`demo_o2c` runner + `Makefile`; an ar-aging SQL bucketing rewrite (the one
+correctness-adjacent slice, guarded by boundary characterization tests
+landed first); and README rewrite + ADR-001/002 backfill.
+
+**Implementation sequencing** (Decision 6 — each slice = one commit + a
+Codex diff review; tier `sol` for slices 1–4 tests/seed/aging, `terra` for
+docs). NB: **user has mandated a Codex diff review on EVERY slice.** Order:
+1. **DONE** — ADR-001 (modular monolith vs microservices) + ADR-002
+   (append-only fact tables/rebuildable summaries) — pure docs of
+   already-shipped decisions. Took 3 Codex diff-review rounds (`terra`
+   tier) to land, all real findings: v1 caught ADR-002 wrongly claiming the
+   ledger has a "maintained summary column" (it doesn't — trial balance is
+   always an on-the-fly aggregate, ADR-005 Decision 4); the fix required
+   restructuring ADR-002 around two separable questions (is the fact table
+   append-only — uniform axiom; is the aggregate additionally cached — a
+   genuine per-domain trade-off, decided differently for ledger vs.
+   inventory/receivables); v2 then caught the rewrite's own "Pros"
+   paragraph re-conflating the two questions (attributing all three
+   invariants — trial balance, AR tie-out, stock non-negative — to
+   "append-only alone", when each is actually enforced by its own separate
+   mechanism); v3 APPROVED. **Next: commit this slice.**
+2. Full O2C E2E test (`tests/e2e/test_o2c_end_to_end.py`).
+3. Seed + Makefile + demo runner (`app/cli/seed_demo.py`,
+   `app/cli/demo_o2c.py`, `Makefile`, compose seed path) + run-twice
+   idempotency test.
+4. ar-aging SQL rewrite (`receivables.service.get_ar_aging`) — boundary
+   characterization tests in `tests/receivables/test_aging.py` FIRST.
+5. Property-over-events test (`tests/e2e/test_property_o2c_balances.py`) —
+   last; if its harness proves unreliable, formally defer to Week 8 in a
+   committed brief edit (do NOT silently drop — it's a binding DoD line).
+6. README rewrite — LAST, once every command/transcript it documents exists.
+
+Then Week 8: demo GIF, `v0.1.0` tag, (optional) public demo host, CI
+coverage badge — none of which are in the Week 7 brief's scope.
+
+**The Week 7 brief file** (`docs/adr/WEEK7-phase1-hardening-brief.md`) is
+currently UNCOMMITTED (working tree has it as a new untracked file). It can
+be committed on its own, or folded into slice 1's commit — either is fine;
+it is the normative spec for everything above.
