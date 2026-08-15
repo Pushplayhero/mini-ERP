@@ -10,12 +10,30 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.masterdata.models import AccountType
+
+# Week 8 addition (flagged by the README audit — HANDOFF.md doctrine
+# note): `ledger.schemas`/`receivables.schemas` already round-half-even
+# every money field they own to NUMERIC(20,6)'s precision at the Pydantic
+# layer, but this module's own money fields (`Customer.credit_limit`,
+# `Product.list_price`/`standard_cost`) never got the same treatment —
+# not a duplicate of those modules' private helpers (this module must
+# never import `app.modules.ledger`/`app.modules.receivables`, per the
+# import-linter module-independence contract), a same-shaped local one.
+# Unlike receivables' `_round_and_reject_zero`, these fields legitimately
+# allow zero (`credit_limit == 0` means "no limit"; `list_price`/
+# `standard_cost` default to `0`) — quantize only, never reject zero.
+_MONEY_QUANTUM = Decimal("0.000001")  # NUMERIC(20, 6)
+
+
+def _round_half_even_6dp(value: Decimal) -> Decimal:
+    return value.quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_EVEN)
+
 
 # ---------------------------------------------------------------------------
 # Company
@@ -111,6 +129,11 @@ class CustomerCreate(BaseModel):
             )
         return value
 
+    @field_validator("credit_limit")
+    @classmethod
+    def _round_credit_limit(cls, value: Decimal) -> Decimal:
+        return _round_half_even_6dp(value)
+
 
 class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
@@ -129,6 +152,11 @@ class CustomerUpdate(BaseModel):
                 f"{value!r}) — see CustomerCreate's validator (ADR-008 R12)"
             )
         return value
+
+    @field_validator("credit_limit")
+    @classmethod
+    def _round_credit_limit(cls, value: Decimal | None) -> Decimal | None:
+        return None if value is None else _round_half_even_6dp(value)
 
 
 class CustomerRead(BaseModel):
@@ -180,6 +208,11 @@ class ProductCreate(BaseModel):
     is_active: bool = True
     custom_data: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("list_price", "standard_cost")
+    @classmethod
+    def _round_price_fields(cls, value: Decimal) -> Decimal:
+        return _round_half_even_6dp(value)
+
 
 class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
@@ -188,6 +221,11 @@ class ProductUpdate(BaseModel):
     standard_cost: Decimal | None = Field(default=None, ge=0)
     is_active: bool | None = None
     custom_data: dict[str, Any] | None = None
+
+    @field_validator("list_price", "standard_cost")
+    @classmethod
+    def _round_price_fields(cls, value: Decimal | None) -> Decimal | None:
+        return None if value is None else _round_half_even_6dp(value)
 
 
 class ProductRead(BaseModel):

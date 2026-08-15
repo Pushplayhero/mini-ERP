@@ -22,12 +22,25 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.sales.models import SalesOrderStatus
+
+# Week 8 addition (README audit gap — see masterdata.schemas for the
+# same-shaped, independently-defined helper this module can't import
+# directly, per the module-independence contract): `unit_price` is the
+# one money field this module's schemas own (everything else about money
+# is server-decided, per the module docstring above), and it never got
+# ledger/receivables' round-half-even-to-NUMERIC(20,6) treatment.
+_MONEY_QUANTUM = Decimal("0.000001")  # NUMERIC(20, 6)
+
+
+def _round_half_even_6dp(value: Decimal) -> Decimal:
+    return value.quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_EVEN)
+
 
 # ---------------------------------------------------------------------------
 # Lines
@@ -42,6 +55,11 @@ class SalesOrderLineCreate(BaseModel):
     unit_price: Decimal | None = Field(default=None, ge=0)
     # Omit to have the service fill it from the product's own `uom_id`.
     uom_id: uuid.UUID | None = None
+
+    @field_validator("unit_price")
+    @classmethod
+    def _round_unit_price(cls, value: Decimal | None) -> Decimal | None:
+        return None if value is None else _round_half_even_6dp(value)
 
 
 class SalesOrderLineRead(BaseModel):

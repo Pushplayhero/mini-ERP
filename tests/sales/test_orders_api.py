@@ -11,6 +11,7 @@ isolation for both orders and lines.
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -66,6 +67,48 @@ async def test_create_draft_order_defaults_unit_price_from_product_list_price(
     assert Decimal(line["unit_price"]) == Decimal("42.5")
     assert Decimal(line["amount"]) == Decimal("85.0")
     assert Decimal(order["total"]) == Decimal("85.0")
+
+
+def test_sales_order_line_schema_rounds_half_even_not_half_up() -> None:
+    """Week 8 addition, Codex diff review finding 1: a pure schema-layer
+
+    unit test (no HTTP, no DB). `10.0000025` is exactly halfway between
+    `10.000002` and `10.000003`; its sixth digit (2) is already even, so
+    round-half-even rounds DOWN and stays `10.000002`, while the
+    naive-but-wrong `ROUND_HALF_UP` would round UP to `10.000003` —
+    deliberately NOT `10.0000015` (this test's first draft), which gives
+    the same answer under both rounding modes and so would pass even a
+    broken half-up implementation.
+    """
+    from app.modules.sales.schemas import SalesOrderLineCreate
+
+    line = SalesOrderLineCreate(
+        product_id=uuid.uuid4(), qty=Decimal("1"), unit_price=Decimal("10.0000025")
+    )
+    assert line.unit_price == Decimal("10.000002")
+
+
+@pytest.mark.asyncio
+async def test_unit_price_override_rounds_half_even_to_6dp(client: AsyncClient) -> None:
+    """HTTP-level companion to the schema-unit-test above — same
+
+    discriminating value (`...0000025`, not `...0000015`; see that
+    test's docstring for why), proving the rounding survives the full
+    create/read round trip through the real API and NUMERIC(20,6)
+    storage, not just the Pydantic layer in isolation.
+    """
+    company_id = await create_company(client, "SOA3")
+    customer_id = await create_customer(client, company_id, "CUSTA3")
+    product_id = await create_product(client, company_id, "SKU-A3", list_price="50")
+
+    order = await create_draft_order(
+        client,
+        company_id,
+        customer_id,
+        [order_line(product_id, "1", unit_price="10.0000025")],
+    )
+
+    assert Decimal(order["lines"][0]["unit_price"]) == Decimal("10.000002")
 
 
 @pytest.mark.asyncio

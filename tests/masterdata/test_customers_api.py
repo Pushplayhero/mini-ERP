@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
@@ -99,6 +100,62 @@ async def test_update_and_delete_customer(client: AsyncClient) -> None:
 
     get_after_delete = await client.get(f"/api/v1/customers/{customer_id}", headers=headers)
     assert get_after_delete.status_code == 404
+
+
+def test_customer_schemas_round_half_even_not_half_up() -> None:
+    """Week 8 addition, Codex diff review finding 1: a pure schema-layer
+
+    unit test (no HTTP, no DB). `50000.0000025` is exactly halfway
+    between `50000.000002` and `50000.000003`; its sixth digit (2) is
+    already even, so round-half-even rounds DOWN and stays
+    `50000.000002`, while the naive-but-wrong `ROUND_HALF_UP` would round
+    UP to `50000.000003` — deliberately NOT `...0000015` (this test's
+    first draft), which gives the same answer under both rounding modes
+    and so would pass even a broken half-up implementation.
+    """
+    from app.modules.masterdata.schemas import CustomerCreate, CustomerUpdate
+
+    created = CustomerCreate(
+        code="X", name="X", credit_limit=Decimal("50000.0000025"), currency_code="TWD"
+    )
+    assert created.credit_limit == Decimal("50000.000002")
+
+    updated = CustomerUpdate(credit_limit=Decimal("50000.0000025"))
+    assert updated.credit_limit == Decimal("50000.000002")
+
+
+@pytest.mark.asyncio
+async def test_credit_limit_rounds_half_even_to_6dp(client: AsyncClient) -> None:
+    """HTTP-level companion to the schema-unit-test above — same
+
+    discriminating value (`...0000025`, not `...0000015`; see that
+    test's docstring for why), proving the rounding survives the full
+    create/update/read round trip through the real API and NUMERIC(20,6)
+    storage, not just the Pydantic layer in isolation.
+    """
+    company_id = await _create_company(client, "ROUNDCL")
+    headers = company_headers(company_id)
+
+    create_response = await client.post(
+        "/api/v1/customers",
+        json={
+            "code": "CUST-ROUND",
+            "name": "Rounding Co.",
+            "credit_limit": "50000.0000025",
+            "currency_code": "TWD",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 201, create_response.text
+    assert create_response.json()["credit_limit"] == "50000.000002"
+
+    update_response = await client.patch(
+        f"/api/v1/customers/{create_response.json()['id']}",
+        json={"credit_limit": "50000.0000025"},
+        headers=headers,
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["credit_limit"] == "50000.000002"
 
 
 @pytest.mark.asyncio
