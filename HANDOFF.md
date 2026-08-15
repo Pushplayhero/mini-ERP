@@ -423,10 +423,29 @@ docs). NB: **user has mandated a Codex diff review on EVERY slice.** Order:
    failing the moment real calendar time crosses into September 2026 (a
    coincidental match with this sandbox's current date, not a derived
    one). Fixed by deriving the period from `date.today()` at test-run
-   time. v2 APPROVED. **Next: commit this slice.**
-3. Seed + Makefile + demo runner (`app/cli/seed_demo.py`,
+   time. v2 APPROVED.
+3. **DONE** — Seed + Makefile + demo runner (`app/cli/seed_demo.py`,
    `app/cli/demo_o2c.py`, `Makefile`, compose seed path) + run-twice
-   idempotency test.
+   idempotency test (`tests/e2e/test_seed_idempotent.py`) + a demo smoke
+   test (`tests/e2e/test_demo_o2c_smoke.py`). The most-worked slice this
+   week — took 3 Codex diff-review rounds (`sol` tier): v1 REJECTED with 5
+   real findings, all verified against actual code before fixing:
+   `demo_o2c.py` created its company before ensuring `TWD`/`EA` existed
+   (would fail on a genuinely fresh DB — only passed by accident against
+   the pytest fixture's pre-seeded reference data); `demo_o2c.py`'s stock
+   reconciliation re-introduced the EXACT fixed-target over-correction bug
+   the Week 7 architecture consensus spent 3 rounds eliminating from
+   `seed_demo.py`; both files' get-or-create helpers matched on natural
+   key alone, never validating other attributes (contradicting Decision
+   4's explicit "incompatible collision must fail loudly"); `seed_demo.py`
+   never actually asserted final on-hand landed on the desired target
+   (Decision 4's own v3 consensus text requires this self-check); both new
+   tests asserted "didn't raise" rather than real state (missing exact row
+   counts, a real journal-entry `source_id` set comparison, and the
+   specific 47→50 stock-drift shape finding 2 produced). All 5 fixed;
+   v2 caught ONE narrower miss (the fix for #3 checked `uom_id`/
+   `standard_cost` but not `list_price`); fixed; v3 APPROVED (Codex even
+   ran a focused executable check confirming the fix).
 4. ar-aging SQL rewrite (`receivables.service.get_ar_aging`) — boundary
    characterization tests in `tests/receivables/test_aging.py` FIRST.
 5. Property-over-events test (`tests/e2e/test_property_o2c_balances.py`) —

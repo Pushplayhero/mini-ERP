@@ -1,3 +1,12 @@
+# Quick start: `make up` (blocks until the `app` service reports healthy —
+# see its Dockerfile HEALTHCHECK) -> `make seed` (populates a realistic
+# demo dataset, runs INSIDE this already-migrated `app` container via
+# `docker compose exec`, so it shares its DATABASE_URL) -> `make demo`
+# (walks one order through the live REST API from the host, prints the
+# resulting trial balance). Seeding is deliberately opt-in, never automatic
+# on `up` -- it is not idempotent-by-luck, it is idempotent by design
+# (Week 7 hardening brief, Decision 4), but auto-seeding on every boot
+# would still surprise anyone pointing this compose file at real data.
 services:
   postgres:
     image: postgres:16-alpine
