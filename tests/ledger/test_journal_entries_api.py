@@ -215,16 +215,29 @@ async def test_single_line_entry_is_rejected_by_schema(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
-async def test_duplicate_source_via_http_is_a_clean_409_not_500(client: AsyncClient) -> None:
-    """Diff-review regression: `JournalEntryCreate` accepts `source_type`/
-    `source_id` directly (not just via the posting engine's internal,
-    SAVEPOINT-guarded path), so a client can submit the same
-    `(company_id, source_type, source_id)` twice through this plain HTTP
-    endpoint and hit `uq_journal_entries_source` at `post_journal_entry`'s
-    own `flush()` — *before* `create_journal_entry`'s later `commit()` ever
-    runs. Before the fix, that flush-time `IntegrityError` bypassed conflict
-    handling entirely and surfaced as an unhandled 500 instead of the 409
-    every other uniqueness violation in this API returns.
+async def test_http_supplied_source_fields_are_ignored_not_a_duplicate_conflict(
+    client: AsyncClient,
+) -> None:
+    """Superseded by ADR-008 R11: `JournalEntryCreate` (the internal,
+
+    source-carrying type) used to be exactly what `POST /journal-entries`
+    accepted, so a client could submit the same `(source_type, source_id)`
+    twice and hit `uq_journal_entries_source` at `post_journal_entry`'s own
+    `flush()` — the original version of this test proved that collision
+    was a clean 409, not an unhandled 500 (the fix-#2 pattern, still
+    correct and still exercised by every internal event-replay path, e.g.
+    `tests/sales/test_shipping.py`'s duplicate-delivery tests).
+
+    R11 closed the client-reachable half of that scenario a different way:
+    `POST /journal-entries` now binds `JournalEntryCreateRequest`, which
+    has no `source_type`/`source_id` fields at all — the router always
+    constructs the internal entry with both `None` (see
+    `ledger.router.create_journal_entry`). Submitting the same body twice
+    therefore no longer collides on anything; both are ordinary manual
+    entries with distinct `entry_no`s, both `source_type IS NULL` — the
+    literal fields below, even if a client sends them, are silently
+    dropped by FastAPI's request-model binding before this handler ever
+    runs.
     """
     company_id = await create_company(client, "JEC11")
     headers = company_headers(company_id)
@@ -241,9 +254,13 @@ async def test_duplicate_source_via_http_is_a_clean_409_not_500(client: AsyncCli
 
     first = await client.post("/api/v1/journal-entries", json=payload, headers=headers)
     assert first.status_code == 201, first.text
+    assert first.json()["source_type"] is None
+    assert first.json()["source_id"] is None
 
     second = await client.post("/api/v1/journal-entries", json=payload, headers=headers)
-    assert second.status_code == 409, second.text
+    assert second.status_code == 201, second.text
+    assert second.json()["source_type"] is None
+    assert second.json()["entry_no"] != first.json()["entry_no"]
 
 
 @pytest.mark.asyncio

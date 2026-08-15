@@ -101,6 +101,7 @@ class SalesOrderRead(BaseModel):
     snapshot_customer_name: str | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
+    shipped_at: datetime | None
     custom_data: dict[str, Any]
     created_at: datetime
     updated_at: datetime

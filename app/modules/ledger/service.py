@@ -73,7 +73,18 @@ _ACCOUNTS = sa_table(
     sa_column("code"),
     sa_column("name"),
     sa_column("type"),
+    sa_column("is_control"),
 )
+
+# ADR-008 R5/R11: kernel-owned control-account codes, protected from manual
+# journal entries and manual reversal regardless of whether a given
+# company's chart happens to have `accounts.is_control` set on the matching
+# row (a newly-seeded chart that never set the flag is still protected).
+# "1100" is Accounts Receivable — see the standard chart-of-account codes
+# documented in `ledger.posting`. A company-declared `is_control` flag
+# (checked alongside this set in `_reject_control_account_lines`) covers
+# any additional control account a company wants the same protection on.
+KERNEL_CONTROL_ACCOUNT_CODES: frozenset[str] = frozenset({"1100"})
 
 
 async def _commit_or_conflict(session: AsyncSession, *, entity: str) -> None:
@@ -157,6 +168,38 @@ async def _ensure_accounts_belong_to_company(
         missing_str = ", ".join(str(a) for a in sorted(missing, key=str))
         raise DomainValidationError(
             f"account_id(s) not found or do not belong to this company: {missing_str}"
+        )
+
+
+async def _reject_control_account_lines(
+    session: AsyncSession, company_id: uuid.UUID, account_ids: set[uuid.UUID]
+) -> None:
+    """Raise if any of `account_ids` is a control account (ADR-008 R5/R11).
+
+    An account is "control" if `accounts.is_control` is set OR its `code`
+    is in `KERNEL_CONTROL_ACCOUNT_CODES` — either is sufficient. Two call
+    sites, with different conditions (see each for why):
+    `post_journal_entry` (only for manual entries, `data.source_type is
+    None`) and `_post_reversal` (unconditionally, against the *original*
+    entry's accounts).
+    """
+    if not account_ids:
+        return
+    result = await session.execute(
+        select(_ACCOUNTS.c.code).where(
+            _ACCOUNTS.c.id.in_(account_ids),
+            _ACCOUNTS.c.company_id == company_id,
+            (_ACCOUNTS.c.is_control.is_(True))
+            | (_ACCOUNTS.c.code.in_(KERNEL_CONTROL_ACCOUNT_CODES)),
+        )
+    )
+    hit_codes = sorted({row[0] for row in result.all()})
+    if hit_codes:
+        raise DomainValidationError(
+            f"cannot post/reverse a manual entry touching control account(s) {hit_codes} — "
+            "control accounts are only postable through their owning module's rule-driven "
+            "events (ADR-008 R5/R11); use that module's correction path instead (e.g. "
+            "receivables' invoice/payment void)"
         )
 
 
@@ -337,9 +380,15 @@ async def post_journal_entry(session: AsyncSession, data: JournalEntryCreate) ->
     company_id = require_current_company_id()
 
     _validate_lines(data.lines)
-    await _ensure_accounts_belong_to_company(
-        session, company_id, {line.account_id for line in data.lines}
-    )
+    account_ids = {line.account_id for line in data.lines}
+    await _ensure_accounts_belong_to_company(session, company_id, account_ids)
+    if data.source_type is None:
+        # ADR-008 R5/R11: only manual entries (no source event) are subject
+        # to the control-account restriction — rule-driven postings
+        # (`source_type` set, by internal callers only — see
+        # `JournalEntryCreateRequest`) are exactly how control accounts are
+        # meant to move.
+        await _reject_control_account_lines(session, company_id, account_ids)
 
     period = await _resolve_and_lock_period(session, company_id, data.entry_date)
     entry_no = await _allocate_entry_no(session, company_id, data.entry_date.year)
@@ -457,6 +506,19 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
     )
     if already_reversed.scalar_one_or_none() is not None:
         raise ReversalNotAllowedError(f"JournalEntry {entry_id} has already been reversed")
+
+    # ADR-008 R16: unconditional — even an event-sourced entry that posted
+    # to a control account (e.g. receivables' AR/Revenue postings) cannot
+    # be reversed through this generic path; it must go through that
+    # module's own correction path (invoice/payment void). Checked against
+    # the *original* entry's accounts, regardless of `original.source_type`
+    # — this is what closes the bypass `POST /journal-entries/{id}/reverse`
+    # left open even after R11's public-DTO fix, since this function builds
+    # its lines directly and never goes through `post_journal_entry`'s own
+    # (source_type-conditional) check.
+    await _reject_control_account_lines(
+        session, company_id, {line.account_id for line in original.lines}
+    )
 
     reversal_date = date.today()
     period = await _resolve_and_lock_period(session, company_id, reversal_date)

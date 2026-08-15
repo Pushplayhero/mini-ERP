@@ -13,7 +13,11 @@ from datetime import date
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tenancy import company_context
+from app.modules.ledger.schemas import JournalEntryCreate, JournalLineCreate
+from app.modules.ledger.service import post_journal_entry
 from tests.conftest import company_headers
 from tests.ledger._helpers import balanced_lines, create_account, create_company, create_period
 
@@ -106,7 +110,9 @@ async def test_reversing_a_reversal_entry_itself_is_409(client: AsyncClient) -> 
 
 
 @pytest.mark.asyncio
-async def test_reversing_an_event_sourced_entry_succeeds(client: AsyncClient) -> None:
+async def test_reversing_an_event_sourced_entry_succeeds(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     """Diff-review regression (Week 2-4 consensus review, Critical finding):
     `_post_reversal` used to copy `source_type`/`source_id` from the
     original entry onto the reversal, colliding with
@@ -116,6 +122,17 @@ async def test_reversing_an_event_sourced_entry_succeeds(client: AsyncClient) ->
     shipment COGS postings) failed. The fix sets the reversal's
     `source_type`/`source_id` to `None`; traceability is preserved via
     `reversal_of_id` alone.
+
+    ADR-008 R11 made `source_type`/`source_id` server-only, so this event-
+    sourced original can no longer be built through the public
+    `POST /journal-entries` endpoint (see `test_journal_entries_api.py
+    ::test_http_supplied_source_fields_are_ignored_not_a_duplicate_conflict`
+    for that behavior) — it is built the way every real posting event
+    actually does, via `ledger.service.post_journal_entry` directly, with
+    `1000`/`4000` (neither a control account, so R16 does not block
+    reversing it — that restriction is exercised separately by
+    `tests/receivables/test_invoices.py
+    ::test_manual_reversal_of_control_account_entry_is_rejected`).
     """
     company_id = await create_company(client, "REVC4")
     headers = company_headers(company_id)
@@ -124,18 +141,31 @@ async def test_reversing_an_event_sourced_entry_succeeds(client: AsyncClient) ->
     today = date.today()
     await create_period(client, company_id, today.year, today.month)
 
-    original_response = await client.post(
-        "/api/v1/journal-entries",
-        json={
-            "entry_date": today.isoformat(),
-            "source_type": "sales.goods_shipped",
-            "source_id": str(uuid.uuid4()),
-            "lines": balanced_lines(cash, revenue, "300.00"),
-        },
-        headers=headers,
-    )
-    assert original_response.status_code == 201, original_response.text
-    original = original_response.json()
+    with company_context(company_id):
+        original_entry = await post_journal_entry(
+            db_session,
+            JournalEntryCreate(
+                entry_date=today,
+                source_type="sales.goods_shipped",
+                source_id=uuid.uuid4(),
+                lines=[
+                    JournalLineCreate(
+                        account_id=cash,
+                        currency_code="TWD",
+                        txn_debit="300.00",
+                        debit="300.00",
+                    ),
+                    JournalLineCreate(
+                        account_id=revenue,
+                        currency_code="TWD",
+                        txn_credit="300.00",
+                        credit="300.00",
+                    ),
+                ],
+            ),
+        )
+        await db_session.commit()
+    original = {"id": str(original_entry.id), "source_type": original_entry.source_type}
     assert original["source_type"] == "sales.goods_shipped"
 
     reverse_response = await client.post(

@@ -131,6 +131,18 @@ class SalesOrder(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
             "OR (snapshot_customer_code IS NOT NULL AND snapshot_customer_name IS NOT NULL)",
             name="ck_sales_orders_confirmed_has_snapshot",
         ),
+        # ADR-008 R13/R17: `shipped_at` must be set on every SHIPPED order —
+        # this is what makes receivables' `invoice_date >= order_shipped_at`
+        # rule (Decision 1) enforceable at all. `status::text` (not a typed
+        # comparison), same reason as the constraint above: migration 0008
+        # runs in the same one-transaction `upgrade head` as migration
+        # 0005's `ALTER TYPE ... ADD VALUE 'SHIPPED'`, so a typed comparison
+        # against that literal here would be "unsafe" per Postgres in that
+        # same transaction.
+        CheckConstraint(
+            "status::text != 'SHIPPED' OR shipped_at IS NOT NULL",
+            name="ck_sales_orders_shipped_has_shipped_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -153,6 +165,13 @@ class SalesOrder(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     snapshot_customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ADR-008 R13/R17: nullable — only `SHIPPED` orders ever have a shipment
+    # moment; draft/confirmed/cancelled orders never do. Set by
+    # `service.ship_order` alongside the `confirmed -> shipped` transition.
+    # Migration 0008 backfills this for any pre-existing SHIPPED row from
+    # that order's own `sales.goods_shipped` outbox payload before adding
+    # the CHECK constraint above.
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lines: Mapped[list[SalesOrderLine]] = relationship(
         back_populates="order", order_by="SalesOrderLine.line_no", cascade="all, delete-orphan"

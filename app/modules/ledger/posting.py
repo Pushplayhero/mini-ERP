@@ -125,13 +125,29 @@ class AccountResolutionError(DomainValidationError):
 # these codes. Documented here, next to the rules that depend on them, since
 # there is no seed-data module yet to own this list.
 #
-#   1100  Accounts Receivable (asset)     -- reserved for receivables (Week 6)
-#   4000  Revenue             (revenue)   -- reserved for receivables (Week 6)
+#   1000  Cash                (asset)     -- receivables.payment_received/_voided (ADR-008)
+#   1100  Accounts Receivable (asset)     -- receivables.invoice_issued/_voided (ADR-008)
+#                                             — also the one kernel-mandated
+#                                             control account (ADR-008 R5/R11,
+#                                             `ledger.service
+#                                             .KERNEL_CONTROL_ACCOUNT_CODES`):
+#                                             protected from manual entries
+#                                             and manual reversal.
+#   4000  Revenue             (revenue)   -- receivables.invoice_issued/_voided (ADR-008)
 #   5000  COGS                (expense)   -- sales.goods_shipped (ADR-007)
 #   1300  Inventory           (asset)     -- sales.goods_shipped (ADR-007)
 # ---------------------------------------------------------------------------
 
 GOODS_SHIPPED_EVENT_TYPE = "sales.goods_shipped"
+
+# ADR-008: receivables' four posting events. Same "string is the only
+# shared contract" pattern as `GOODS_SHIPPED_EVENT_TYPE` above — these
+# literals are independently declared in `app.modules.receivables.events`
+# too (never imported from there; see that module's docstring).
+RECEIVABLES_INVOICE_ISSUED_EVENT_TYPE = "receivables.invoice_issued"
+RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE = "receivables.invoice_voided"
+RECEIVABLES_PAYMENT_RECEIVED_EVENT_TYPE = "receivables.payment_received"
+RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE = "receivables.payment_voided"
 
 
 class GoodsShippedLine(BaseModel):
@@ -161,6 +177,60 @@ class GoodsShippedPayload(BaseModel):
     shipped_at: datetime
 
 
+# ADR-008: receivables' four payload schemas. Defined here rather than in
+# `receivables.events`, same asymmetry `GoodsShippedPayload` established —
+# each schema needs to sit next to the rule that consumes it
+# (`amount_field` reads a key that must exist on the shape registered for
+# that event_type). `receivables.service` never imports these; it publishes
+# plain dicts shaped to match, exactly like `sales.service.ship_order` does
+# for `GoodsShippedPayload`.
+#
+# Every field is required (ADR-008 R1/R3): `source_id` feeds
+# `uq_journal_entries_source`'s idempotency key, and `event_date` is the
+# field `handle_posting_event`'s entry-date resolution already recognizes
+# (checked before the `shipped_at` fallback) — set by the publisher to
+# `invoice_date` / `received_at`'s date / the void date respectively. Note
+# that a void event's `source_id` equals the *original* document's id: this
+# is safe because the idempotency key includes `source_type` (the
+# event_type string), so issue and void of the same invoice are distinct
+# keys, while replaying either individually stays a no-op.
+
+
+class InvoiceIssuedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    invoice_no: str
+    order_id: uuid.UUID
+    customer_id: uuid.UUID
+    total: Decimal
+
+
+class InvoiceVoidedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    invoice_no: str
+    total: Decimal
+
+
+class PaymentReceivedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    payment_no: str
+    customer_id: uuid.UUID
+    amount: Decimal
+
+
+class PaymentVoidedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    payment_no: str
+    amount: Decimal
+
+
 POSTING_RULES: dict[str, list[PostingRule]] = {
     GOODS_SHIPPED_EVENT_TYPE: [
         PostingRule(
@@ -168,6 +238,24 @@ POSTING_RULES: dict[str, list[PostingRule]] = {
             credit_account_code="1300",
             amount_field="total_cost",
         ),
+    ],
+    # ADR-008 Decision 1: revenue recognized at invoice issue.
+    RECEIVABLES_INVOICE_ISSUED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1100", credit_account_code="4000", amount_field="total"),
+    ],
+    # ADR-008 Decision 4: void is a rule-driven contra entry, not a
+    # `ledger` manual reversal — the accounts flip relative to issue.
+    RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="4000", credit_account_code="1100", amount_field="total"),
+    ],
+    # ADR-008 Decision 2: receipt-time AR relief for the full receipt
+    # amount; which invoice(s) it settles is subledger bookkeeping that
+    # posts nothing.
+    RECEIVABLES_PAYMENT_RECEIVED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1000", credit_account_code="1100", amount_field="amount"),
+    ],
+    RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1100", credit_account_code="1000", amount_field="amount"),
     ],
 }
 

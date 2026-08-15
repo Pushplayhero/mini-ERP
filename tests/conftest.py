@@ -71,7 +71,18 @@ def _start_pgserver_postgres() -> tuple[str, object]:
     pgdata = Path(tempfile.mkdtemp(prefix="mini_erp_pgtest_"))
     server = pgserver.get_server(pgdata, cleanup_mode="delete")
     server.psql("CREATE DATABASE mini_erp_test;")
-    dsn = f"postgresql+asyncpg://postgres:@/mini_erp_test?host={server.pgdata}"
+    # Windows fix: pgserver's own `get_postmaster_info()` reports a real
+    # TCP `hostname`/`port` (127.0.0.1, an ephemeral port) — the previous
+    # version of this function built the DSN with `host=<pgdata directory
+    # path>` instead, which only works where asyncpg can treat that value
+    # as a Unix-domain-socket directory. Windows has no such thing, so
+    # asyncpg fell through to plain DNS resolution on the literal path
+    # string and failed with `getaddrinfo failed` — this is what HANDOFF.md
+    # previously documented as "the pgserver fallback path does NOT work on
+    # Windows". It does; the DSN construction was just wrong. `psql()`
+    # above already proves TCP works (it uses the same postmaster).
+    info = server.get_postmaster_info()
+    dsn = f"postgresql+asyncpg://postgres:@{info.hostname}:{info.port}/mini_erp_test"
     return dsn, server
 
 
@@ -182,8 +193,10 @@ async def _clean_tenant_tables(
         await conn.execute(
             text(
                 "TRUNCATE TABLE journal_lines, journal_entries, ledger_sequences, "
-                "accounting_periods, stock_moves, stock_summary, sales_order_lines, "
-                "sales_orders, sales_sequences, "
+                "accounting_periods, stock_moves, stock_summary, "
+                "payment_allocations, payment_allocation_commands, payments, "
+                "invoices, receivables_sequences, "
+                "sales_order_lines, sales_orders, sales_sequences, "
                 "customers, products, accounts, outbox, companies "
                 "RESTART IDENTITY CASCADE"
             )

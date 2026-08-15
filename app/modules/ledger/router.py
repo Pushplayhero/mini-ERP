@@ -20,6 +20,7 @@ from app.modules.ledger.schemas import (
     AccountingPeriodCreate,
     AccountingPeriodRead,
     JournalEntryCreate,
+    JournalEntryCreateRequest,
     JournalEntryRead,
     TrialBalanceLine,
 )
@@ -61,8 +62,23 @@ async def close_period(period_id: uuid.UUID, session: DbSession) -> AccountingPe
 @router.post(
     "/journal-entries", response_model=JournalEntryRead, status_code=status.HTTP_201_CREATED
 )
-async def create_journal_entry(payload: JournalEntryCreate, session: DbSession) -> JournalEntryRead:
-    entry = await service.create_journal_entry(session, payload)
+async def create_journal_entry(
+    payload: JournalEntryCreateRequest, session: DbSession
+) -> JournalEntryRead:
+    """Accepts the public (no source fields) request DTO (ADR-008 R11) and
+
+    builds the internal `JournalEntryCreate` with `source_type=None,
+    source_id=None` before calling the service — a client can never set
+    either via this endpoint.
+    """
+    data = JournalEntryCreate(
+        entry_date=payload.entry_date,
+        source_type=None,
+        source_id=None,
+        lines=payload.lines,
+        custom_data=payload.custom_data,
+    )
+    entry = await service.create_journal_entry(session, data)
     return JournalEntryRead.model_validate(entry)
 
 

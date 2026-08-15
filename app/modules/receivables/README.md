@@ -1,8 +1,12 @@
-# receivables — Week 2+
+# receivables — Week 6
 
-Empty shell for Week 1. Per `mini-erp-architecture.md` §7 this module lands
-in Week 6: invoices, payments, payment allocations (cash application), and
-the AR-aging report.
+Implemented per `docs/adr/ADR-008-receivables.md` (consensus review v5
+APPROVED 2026-08-15). Invoices are issued off `SHIPPED` sales orders,
+payments are applied to invoices (沖帳), and `GET
+/api/v1/receivables/reports/ar-aging` reports current-state AR aging.
 
-Not implemented yet: `router.py`, `service.py`, `models.py`, `schemas.py`,
-`events.py`.
+See the ADR's "Consensus Revisions" (R1-R17) for the full review history
+behind every non-obvious design choice in `models.py`/`service.py` — in
+particular the allocation-command idempotency design (R14),
+control-account protection in `ledger.service` (R5/R11), and the
+`sales_orders.shipped_at` backfill in migration 0008 (R13/R17).

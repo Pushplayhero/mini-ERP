@@ -103,12 +103,39 @@ class JournalLineRead(BaseModel):
 
 
 class JournalEntryCreate(BaseModel):
+    """Internal transport type — accepted by `service.post_journal_entry`.
+
+    Carries `source_type`/`source_id` because internal callers
+    (`ledger.posting`, and transitively `receivables`/`sales` via events)
+    need to set them to real values. **Never** bind this model directly to
+    a public request body — see `JournalEntryCreateRequest` below, which is
+    what `POST /journal-entries` actually accepts (ADR-008 R11).
+    """
+
     entry_date: date
     source_type: str | None = Field(default=None, max_length=64)
     source_id: uuid.UUID | None = None
     # A balanced entry needs at least one debit line and one credit line —
     # a single line alone cannot balance unless it is degenerate (all
     # zeros), which service-layer validation also rejects.
+    lines: list[JournalLineCreate] = Field(min_length=2)
+    custom_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class JournalEntryCreateRequest(BaseModel):
+    """Public, HTTP-facing DTO for `POST /journal-entries` (ADR-008 R11).
+
+    Deliberately omits `source_type`/`source_id` — those are now
+    server-only, set exclusively by internal callers that build
+    `JournalEntryCreate` directly. Before this split, a client could set an
+    arbitrary `source_type` on a manually-created entry to dodge the R5
+    control-account check (which only applies when `source_type is None`)
+    and, separately, could collide with a real event's own
+    `(company_id, source_type, source_id)` idempotency key and silently
+    block it from ever posting — this closes both at once.
+    """
+
+    entry_date: date
     lines: list[JournalLineCreate] = Field(min_length=2)
     custom_data: dict[str, Any] = Field(default_factory=dict)
 

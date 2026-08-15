@@ -90,7 +90,18 @@ class Company(Base, TimestampAuditMixin, CustomDataMixin):
 
 class Customer(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     __tablename__ = "customers"
-    __table_args__ = (UniqueConstraint("company_id", "code", name="uq_customers_company_code"),)
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_customers_company_code"),
+        # ADR-008 Decision 1 / R9: bounded, additive (same low-risk
+        # precedent as ADR-007's `products.standard_cost`). Read at invoice
+        # issue time — a deliberate, documented exception to the
+        # confirm-time-snapshot doctrine (R9): terms are billing-time
+        # attributes, and the invoice's own `due_date` is the frozen
+        # outcome, so nothing about the invoice ever re-reads this column.
+        CheckConstraint(
+            "payment_terms_days BETWEEN 0 AND 365", name="ck_customers_payment_terms_days_range"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -101,6 +112,7 @@ class Customer(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     currency_code: Mapped[str] = mapped_column(
         String(3), ForeignKey("currencies.code"), nullable=False
     )
+    payment_terms_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="30")
     is_active: Mapped[bool] = mapped_column(SQLBoolean, nullable=False, default=True)
 
 
@@ -148,6 +160,13 @@ class Account(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     type: Mapped[AccountType] = mapped_column(
         Enum(AccountType, name="account_type", native_enum=True), nullable=False
     )
+    # ADR-008 R5/R11: a company-declared control account is protected from
+    # manual journal entries and manual reversal (see
+    # `ledger.service._reject_control_account_lines`) — on top of, not
+    # instead of, the kernel-owned minimum (`ledger.service
+    # .KERNEL_CONTROL_ACCOUNT_CODES`, currently just "1100") that protects
+    # even a newly-seeded chart that never set this flag.
+    is_control: Mapped[bool] = mapped_column(SQLBoolean, nullable=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(SQLBoolean, nullable=False, default=True)
 
 

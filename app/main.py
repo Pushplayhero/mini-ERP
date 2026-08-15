@@ -6,10 +6,11 @@ subscription wiring, and the hook registry's registration wiring. Week 1
 mounted `masterdata`; Week 2 added `ledger` (ADR-005); Week 3 added the
 event bus + posting engine (ADR-003/ADR-004); Week 4 added `sales` (order
 lifecycle) plus the minimal hook registry and its one demonstration plugin,
-`app.plugins.credit_limit` (ADR-006); Week 5 adds `inventory` (append-only
-stock + summary) and wires `sales.goods_shipped` — the first event with two
-subscribers — through both it and `ledger.posting` (ADR-007).
-`receivables` is still an empty shell and has no router yet.
+`app.plugins.credit_limit` (ADR-006); Week 5 added `inventory` (append-only
+stock + summary) and wired `sales.goods_shipped` — the first event with two
+subscribers — through both it and `ledger.posting` (ADR-007). Week 6 adds
+`receivables` (invoicing, payment application, AR aging) and its four
+posting events, closing the Phase 1 O2C line (ADR-008).
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
 from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
+from app.modules.receivables import events as receivables_events
+from app.modules.receivables.router import router as receivables_router
 from app.modules.sales import events as sales_events
 from app.modules.sales import service as sales_service
 from app.modules.sales.router import router as sales_router
@@ -118,6 +121,7 @@ app.include_router(masterdata_router, prefix="/api/v1")
 app.include_router(ledger_router, prefix="/api/v1")
 app.include_router(sales_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
+app.include_router(receivables_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +169,43 @@ events.subscribe(
 events.subscribe(
     sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE,
     ledger_posting.make_posting_handler(sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE),
+)
+
+# ADR-008 (Week 6): receivables' four posting events. Each has exactly one
+# subscriber — `ledger.posting`'s generic posting handler — mirroring
+# `sales.goods_shipped`'s wiring shape (payload schema owned by
+# `ledger.posting`, event_type string owned by the publisher).
+events.register_event(
+    receivables_events.RECEIVABLES_INVOICE_ISSUED_EVENT_TYPE, ledger_posting.InvoiceIssuedPayload
+)
+events.subscribe(
+    receivables_events.RECEIVABLES_INVOICE_ISSUED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(receivables_events.RECEIVABLES_INVOICE_ISSUED_EVENT_TYPE),
+)
+
+events.register_event(
+    receivables_events.RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE, ledger_posting.InvoiceVoidedPayload
+)
+events.subscribe(
+    receivables_events.RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(receivables_events.RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE),
+)
+
+events.register_event(
+    receivables_events.RECEIVABLES_PAYMENT_RECEIVED_EVENT_TYPE,
+    ledger_posting.PaymentReceivedPayload,
+)
+events.subscribe(
+    receivables_events.RECEIVABLES_PAYMENT_RECEIVED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(receivables_events.RECEIVABLES_PAYMENT_RECEIVED_EVENT_TYPE),
+)
+
+events.register_event(
+    receivables_events.RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE, ledger_posting.PaymentVoidedPayload
+)
+events.subscribe(
+    receivables_events.RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(receivables_events.RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE),
 )
 
 

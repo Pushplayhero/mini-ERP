@@ -529,6 +529,11 @@ async def ship_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
     )
 
     order.status = SalesOrderStatus.SHIPPED
+    # ADR-008 R13/R17: persist the shipment moment on the order row itself
+    # — the event payload always carried this, but until now the order
+    # never did, which made receivables' `invoice_date >= order_shipped_at`
+    # rule (Decision 1) unenforceable at the DB layer.
+    order.shipped_at = shipped_at
 
     await session.flush()
     return order

@@ -86,16 +86,49 @@ class CustomerCreate(BaseModel):
     name: str = Field(max_length=255)
     credit_limit: Decimal = Decimal("0")
     currency_code: str = Field(min_length=3, max_length=3)
+    # ADR-008 Decision 1 / R9: additive, bounded (mirrors `standard_cost`'s
+    # precedent). Not a snapshot — read live at invoice issue time; see the
+    # model docstring for why that is a deliberate exception to the
+    # confirm-time-snapshot doctrine.
+    payment_terms_days: int = Field(default=30, ge=0, le=365)
     is_active: bool = True
     custom_data: dict[str, Any] = Field(default_factory=dict)
+
+    # ADR-008 R12: unrestricted `currency_code` let a non-TWD customer's
+    # order reach `shipped` and have receivables post its raw number as
+    # TWD — enforced here at the source, same pattern (and same reasoning)
+    # as `CompanyCreate`'s `functional_currency_code` validator above.
+    @field_validator("currency_code")
+    @classmethod
+    def _currency_is_phase_1_supported(cls, value: str) -> str:
+        if value != _PHASE_1_FUNCTIONAL_CURRENCY:
+            raise ValueError(
+                f"currency_code must be {_PHASE_1_FUNCTIONAL_CURRENCY!r} in Phase 1 (got "
+                f"{value!r}) — ADR-008 R12: real multi-currency invoicing/payment is out of "
+                "scope until Phase 3; ledger and receivables both hardcode this same "
+                "assumption and would silently mishandle a customer with a different "
+                "transaction currency"
+            )
+        return value
 
 
 class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
     credit_limit: Decimal | None = None
     currency_code: str | None = Field(default=None, min_length=3, max_length=3)
+    payment_terms_days: int | None = Field(default=None, ge=0, le=365)
     is_active: bool | None = None
     custom_data: dict[str, Any] | None = None
+
+    @field_validator("currency_code")
+    @classmethod
+    def _currency_is_phase_1_supported(cls, value: str | None) -> str | None:
+        if value is not None and value != _PHASE_1_FUNCTIONAL_CURRENCY:
+            raise ValueError(
+                f"currency_code must be {_PHASE_1_FUNCTIONAL_CURRENCY!r} in Phase 1 (got "
+                f"{value!r}) — see CustomerCreate's validator (ADR-008 R12)"
+            )
+        return value
 
 
 class CustomerRead(BaseModel):
@@ -107,6 +140,7 @@ class CustomerRead(BaseModel):
     name: str
     credit_limit: Decimal
     currency_code: str
+    payment_terms_days: int
     is_active: bool
     custom_data: dict[str, Any]
     created_at: datetime
@@ -181,6 +215,12 @@ class AccountCreate(BaseModel):
     code: str = Field(max_length=32)
     name: str = Field(max_length=255)
     type: AccountType
+    # ADR-008 R5/R11: marks this account as protected from manual journal
+    # entries/manual reversal (`ledger.service._reject_control_account_lines`)
+    # — on top of, not instead of, the kernel-owned minimum that protects
+    # "1100" regardless of this flag. Defaults False; a company sets this
+    # explicitly for any additional account it wants the same protection on.
+    is_control: bool = False
     is_active: bool = True
     custom_data: dict[str, Any] = Field(default_factory=dict)
 
@@ -188,6 +228,7 @@ class AccountCreate(BaseModel):
 class AccountUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
     type: AccountType | None = None
+    is_control: bool | None = None
     is_active: bool | None = None
     custom_data: dict[str, Any] | None = None
 
@@ -200,6 +241,7 @@ class AccountRead(BaseModel):
     code: str
     name: str
     type: AccountType
+    is_control: bool
     is_active: bool
     custom_data: dict[str, Any]
     created_at: datetime
