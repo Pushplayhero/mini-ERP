@@ -42,13 +42,14 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import and_, case, func, literal, null, select, union_all
 from sqlalchemy import cast as sa_cast
 from sqlalchemy import column as sa_column
-from sqlalchemy import literal, null, select, union_all
 from sqlalchemy import table as sa_table
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.types import Date as SA_Date
+from sqlalchemy.types import Integer
 
 from app.core import events
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
@@ -60,6 +61,7 @@ from app.modules.receivables.events import (
     RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE,
 )
 from app.modules.receivables.models import (
+    AMOUNT,
     Invoice,
     InvoiceStatus,
     Payment,
@@ -702,61 +704,82 @@ async def get_ar_aging(
         Payment.status != PaymentStatus.VOIDED,
         (Payment.amount - Payment.allocated_amount) > 0,
     )
-    fetched = (await session.execute(union_all(invoice_rows, payment_rows))).all()
+    # Week 7 slice 4 (Decision 3): bucketing moved from a Python loop over
+    # the fetched rows into the SQL itself — conditional aggregation
+    # (`SUM(CASE WHEN ... THEN amount ELSE 0 END)`), grouped by
+    # `customer_id`, over the SAME `UNION ALL` above kept as a derived
+    # table. This still preserves the Week 6 single-statement-snapshot
+    # property (the union is now the FROM of one outer SELECT — still one
+    # statement to PostgreSQL) and R15 population: the unapplied-credit sum
+    # is computed independently of whether the customer has any
+    # `kind='invoice'` row, so a payment-only customer still produces a
+    # group (an inner-joined/invoice-anchored rewrite would silently drop
+    # exactly that customer — the R15 trap this shape avoids).
+    inner = union_all(invoice_rows, payment_rows).subquery("ar_aging_union")
+    # PostgreSQL's `date - date` returns a plain integer day count, and
+    # SQLAlchemy 2.0's `Date._expression_adaptations` already maps `Date -
+    # Date -> Integer` for exactly this reason (see
+    # `sqlalchemy/sql/sqltypes.py`), so this explicit `Integer` cast is not
+    # working around a mistyping — it's belt-and-braces self-documentation
+    # at the call site, kept in case that library mapping ever changes.
+    # (Codex diff review, Week 7 slice 4: an earlier version of this
+    # comment incorrectly claimed SQLAlchemy defaults to `Interval` here —
+    # verified against the installed SQLAlchemy source and corrected.) For
+    # `kind='credit'` rows `inner.c.due_date` is NULL, so `days_past_due` is
+    # NULL and every `days_past_due <= N` comparison is unknown/false on its
+    # own — the bucket CASE expressions below still carry an explicit
+    # `kind == 'invoice'` guard anyway, both for readability and as a
+    # forward guard against a future non-invoice union member that happens
+    # to carry a non-null `due_date`.
+    days_past_due = sa_cast(
+        sa_cast(literal(effective_bucket_date), SA_Date) - inner.c.due_date, Integer
+    )
+
+    def _bucket_sum(*conditions: Any) -> Any:
+        # The ELSE/COALESCE zero must carry the same NUMERIC(20,6) type as
+        # `inner.c.amount` — an untyped integer 0 makes asyncpg decode the
+        # zero-bucket result as `Decimal("0")` (no decimal places) instead
+        # of `Decimal("0.000000")`, breaking every consumer that compares
+        # the report's serialized string form (tests, the API contract).
+        zero = sa_cast(0, AMOUNT)
+        return func.coalesce(func.sum(case((and_(*conditions), inner.c.amount), else_=zero)), zero)
+
+    outer_stmt = select(
+        inner.c.customer_id,
+        _bucket_sum(inner.c.kind == "invoice", days_past_due <= 0).label("current"),
+        _bucket_sum(inner.c.kind == "invoice", days_past_due > 0, days_past_due <= 30).label(
+            "d1_30"
+        ),
+        _bucket_sum(inner.c.kind == "invoice", days_past_due > 30, days_past_due <= 60).label(
+            "d31_60"
+        ),
+        _bucket_sum(inner.c.kind == "invoice", days_past_due > 60, days_past_due <= 90).label(
+            "d61_90"
+        ),
+        _bucket_sum(inner.c.kind == "invoice", days_past_due > 90).label("d90_plus"),
+        _bucket_sum(inner.c.kind == "credit").label("unapplied"),
+    ).group_by(inner.c.customer_id)
+
+    fetched = (await session.execute(outer_stmt)).all()
 
     customer_ids = {row.customer_id for row in fetched}
     customers = await _fetch_customers(session, company_id, customer_ids)
 
-    buckets: dict[uuid.UUID, dict[str, Decimal]] = {}
-
-    def _row(customer_id: uuid.UUID) -> dict[str, Decimal]:
-        return buckets.setdefault(
-            customer_id,
-            {
-                "current": _ZERO,
-                "d1_30": _ZERO,
-                "d31_60": _ZERO,
-                "d61_90": _ZERO,
-                "d90_plus": _ZERO,
-                "unapplied": _ZERO,
-            },
-        )
-
-    for r in fetched:
-        if r.kind == "invoice":
-            balance = r.amount
-            days_past_due = (effective_bucket_date - r.due_date).days
-            row = _row(r.customer_id)
-            if days_past_due <= 0:
-                row["current"] += balance
-            elif days_past_due <= 30:
-                row["d1_30"] += balance
-            elif days_past_due <= 60:
-                row["d31_60"] += balance
-            elif days_past_due <= 90:
-                row["d61_90"] += balance
-            else:
-                row["d90_plus"] += balance
-        else:
-            _row(r.customer_id)["unapplied"] += r.amount
-
     rows: list[ARAgingRow] = []
-    for customer_id, b in buckets.items():
-        customer = customers[customer_id]
-        net_total = (
-            b["current"] + b["d1_30"] + b["d31_60"] + b["d61_90"] + b["d90_plus"] - b["unapplied"]
-        )
+    for r in fetched:
+        customer = customers[r.customer_id]
+        net_total = r.current + r.d1_30 + r.d31_60 + r.d61_90 + r.d90_plus - r.unapplied
         rows.append(
             ARAgingRow(
-                customer_id=customer_id,
+                customer_id=r.customer_id,
                 customer_code=customer.code,
                 customer_name=customer.name,
-                current=b["current"],
-                days_1_30=b["d1_30"],
-                days_31_60=b["d31_60"],
-                days_61_90=b["d61_90"],
-                days_90_plus=b["d90_plus"],
-                unapplied_credits=b["unapplied"],
+                current=r.current,
+                days_1_30=r.d1_30,
+                days_31_60=r.d31_60,
+                days_61_90=r.d61_90,
+                days_90_plus=r.d90_plus,
+                unapplied_credits=r.unapplied,
                 net_total=net_total,
             )
         )

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.core.tenancy import company_context
 from app.modules.receivables import service as receivables_service
+from tests.inventory._helpers import create_adjustment
 from tests.receivables._helpers import (
     allocation,
     create_payment,
@@ -28,6 +29,13 @@ from tests.receivables._helpers import (
     get_trial_balance_by_code,
     issue_invoice,
     setup_shipped_order,
+)
+from tests.sales._helpers import (
+    confirm_order,
+    create_draft_order,
+    create_product,
+    order_line,
+    ship_order,
 )
 
 
@@ -201,3 +209,122 @@ async def test_get_ar_aging_reads_invoice_and_payment_sides_in_one_statement(
     # `_fetch_customers` — never the old three-statement shape (invoices,
     # payments, customers) this test exists to prevent regressing to.
     assert statement_count == 2, f"expected exactly 2 statements, got {statement_count}"
+
+
+# --- Decision 3 characterization tests (WEEK7-phase1-hardening-brief.md) ---
+#
+# The tests above only ever exercise a single 45-day offset, so they don't
+# pin down exactly where a bucket boundary falls. These MUST pass against
+# the CURRENT Python implementation first (proving they characterize
+# existing behaviour) and MUST still pass, unchanged, after the Decision 3
+# SQL rewrite (proving equivalence) — see HANDOFF.md slice 4.
+
+
+@pytest.mark.parametrize(
+    "edge_days,before_bucket,after_bucket",
+    [
+        (0, "current", "days_1_30"),
+        (30, "days_1_30", "days_31_60"),
+        (60, "days_31_60", "days_61_90"),
+        (90, "days_61_90", "days_90_plus"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_aging_bucket_edge_boundaries(
+    client: AsyncClient, edge_days: int, before_bucket: str, after_bucket: str
+) -> None:
+    """Pins the exact `days_past_due <= 0/30/60/90` edges the current Python
+
+    loop classifies on: one invoice, queried at `bucket_date == due_date +
+    edge_days` (must land in `before_bucket`) and at `edge_days + 1` (must
+    land in `after_bucket`, and `before_bucket` must have gone to zero).
+    """
+    ctx = await setup_shipped_order(client, f"EDGE{edge_days}", list_price="100", qty="1")
+    company_id = ctx.company_id
+    customer_id = ctx.customer_id
+    order = ctx.order
+
+    due_date = date.today().isoformat()
+    issued = await issue_invoice(client, company_id, order["id"], due_date=due_date)
+    assert issued.status_code == 201, issued.text
+
+    at_edge = (date.today() + timedelta(days=edge_days)).isoformat()
+    aging_at_edge = await get_ar_aging(client, company_id, bucket_date=at_edge)
+    row_at_edge = next(r for r in aging_at_edge.json() if r["customer_id"] == str(customer_id))
+    assert row_at_edge[before_bucket] == "100.000000", row_at_edge
+    assert row_at_edge[after_bucket] == "0.000000", row_at_edge
+
+    past_edge = (date.today() + timedelta(days=edge_days + 1)).isoformat()
+    aging_past_edge = await get_ar_aging(client, company_id, bucket_date=past_edge)
+    row_past_edge = next(r for r in aging_past_edge.json() if r["customer_id"] == str(customer_id))
+    assert row_past_edge[after_bucket] == "100.000000", row_past_edge
+    assert row_past_edge[before_bucket] == "0.000000", row_past_edge
+
+
+@pytest.mark.asyncio
+async def test_aging_multiple_invoices_same_bucket_sum_correctly(client: AsyncClient) -> None:
+    """Two open invoices for the same customer landing in the same bucket
+
+    must SUM, not overwrite one another — a naive per-invoice-row `GROUP BY`
+    without conditional-aggregation `SUM` could silently regress to
+    "last row wins" instead of accumulating.
+    """
+    ctx = await setup_shipped_order(client, "EDGEM1", list_price="60", qty="1")
+    company_id = ctx.company_id
+    customer_id = ctx.customer_id
+    order_1 = ctx.order
+
+    due_date = date.today().isoformat()
+    issued_1 = await issue_invoice(client, company_id, order_1["id"], due_date=due_date)
+    assert issued_1.status_code == 201, issued_1.text
+
+    product_2_id = await create_product(
+        client, company_id, "EDGEM1-SKU2", list_price="40", standard_cost="10"
+    )
+    adjust_resp = await create_adjustment(client, company_id, product_2_id, "10", "restock")
+    assert adjust_resp.status_code == 201, adjust_resp.text
+    order_2 = await create_draft_order(
+        client, company_id, customer_id, [order_line(product_2_id, "1", unit_price="40")]
+    )
+    confirm_resp = await confirm_order(client, company_id, order_2["id"])
+    assert confirm_resp.status_code == 200, confirm_resp.text
+    ship_resp = await ship_order(client, company_id, order_2["id"])
+    assert ship_resp.status_code == 200, ship_resp.text
+    issued_2 = await issue_invoice(client, company_id, ship_resp.json()["id"], due_date=due_date)
+    assert issued_2.status_code == 201, issued_2.text
+
+    # today == due_date -> both invoices land in "current".
+    aging = await get_ar_aging(client, company_id)
+    row = next(r for r in aging.json() if r["customer_id"] == str(customer_id))
+    assert row["current"] == "100.000000", row
+
+
+@pytest.mark.asyncio
+async def test_aging_customer_with_open_balance_and_unapplied_credit(client: AsyncClient) -> None:
+    """A customer with both an open invoice balance AND unapplied credit
+
+    must show BOTH on the same row simultaneously. The existing tie-out test
+    only proves the *combined* total nets correctly against the ledger —
+    this pins the two components individually, which is exactly what the
+    query-shape switch to conditional aggregation (independent `SUM(CASE
+    WHEN kind='invoice' ...)` vs `SUM(CASE WHEN kind='credit' ...)`) must
+    preserve.
+    """
+    ctx = await setup_shipped_order(client, "EDGEC1", list_price="200", qty="1")
+    company_id = ctx.company_id
+    customer_id = ctx.customer_id
+    order = ctx.order
+
+    due_date = date.today().isoformat()
+    issued = await issue_invoice(client, company_id, order["id"], due_date=due_date)
+    assert issued.status_code == 201, issued.text
+
+    resp = await create_payment(client, company_id, customer_id, "50", "EDGEC1-REF")
+    assert resp.status_code == 201, resp.text  # unapplied — no allocation
+
+    # today == due_date -> "current" bucket.
+    aging = await get_ar_aging(client, company_id)
+    row = next(r for r in aging.json() if r["customer_id"] == str(customer_id))
+    assert row["current"] == "200.000000", row
+    assert row["unapplied_credits"] == "50.000000", row
+    assert Decimal(row["net_total"]) == Decimal("150.000000")
