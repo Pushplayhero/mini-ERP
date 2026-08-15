@@ -219,11 +219,11 @@ curl -s $BASE/reports/trial-balance $H
 
 ```json
 [
-  {"account_code":"1000","account_name":"Cash","total_debit":"200.000000","total_credit":"0.000000"},
-  {"account_code":"1100","account_name":"Accounts Receivable","total_debit":"200.000000","total_credit":"200.000000"},
-  {"account_code":"1300","account_name":"Inventory","total_debit":"0.000000","total_credit":"60.000000"},
-  {"account_code":"4000","account_name":"Revenue","total_debit":"0.000000","total_credit":"200.000000"},
-  {"account_code":"5000","account_name":"COGS","total_debit":"60.000000","total_credit":"0.000000"}
+  {"account_id":"90a4baa0-...","account_code":"1000","account_name":"Cash","account_type":"ASSET","total_debit":"200.000000","total_credit":"0.000000"},
+  {"account_id":"c5cf3413-...","account_code":"1100","account_name":"Accounts Receivable","account_type":"ASSET","total_debit":"200.000000","total_credit":"200.000000"},
+  {"account_id":"cee6f514-...","account_code":"1300","account_name":"Inventory","account_type":"ASSET","total_debit":"0.000000","total_credit":"60.000000"},
+  {"account_id":"27ae2975-...","account_code":"4000","account_name":"Revenue","account_type":"REVENUE","total_debit":"0.000000","total_credit":"200.000000"},
+  {"account_id":"41e3480d-...","account_code":"5000","account_name":"COGS","account_type":"EXPENSE","total_debit":"60.000000","total_credit":"0.000000"}
 ]
 ```
 
@@ -320,14 +320,21 @@ stand-in for a verified JWT/session claim.
 **Money.** Every monetary column is `NUMERIC(20, 6)`; `exchange_rates.rate`
 is `NUMERIC(20, 10)` with a `rate_date` (Phase 1 is TWD-only in practice —
 `masterdata.schemas.CustomerCreate`/`CompanyCreate` enforce it — but the
-multi-currency schema is already in place for Phase 3). Journal line
-amounts (`ledger.schemas`) and receivables payment/allocation amounts
-(`receivables.schemas`) are round-half-even at the Pydantic schema layer,
-not left to implicit DB coercion — the two places a rounding choice
-actually feeds an accounting invariant. Other Decimal fields (e.g.
-`Product.list_price`/`standard_cost`) are `NUMERIC(20,6)`-typed but not
-yet explicitly quantized at the schema layer; a future pass should make
-that consistent everywhere the invariant matters.
+multi-currency schema is already in place for Phase 3). Every money field
+across every module is round-half-even at the Pydantic schema layer, not
+left to implicit DB coercion: journal line amounts (`ledger.schemas`) and
+receivables payment/allocation amounts (`receivables.schemas`) since Week
+6 or earlier; `Customer.credit_limit`, `Product.list_price`/
+`standard_cost` (`masterdata.schemas`), and
+`SalesOrderLineCreate.unit_price` (`sales.schemas`) since Week 8 Decision
+0. Each module owns its own private round-half-even helper
+(`_round_half_even_6dp` in masterdata/sales/receivables;
+`_round_half_even_to_6dp` in ledger) — never imported cross-module, per
+the import-linter module-independence contract — rather than sharing one
+from `app/core/`. Zero is always a legal value for `credit_limit`/
+price/cost fields (never rejected), unlike `receivables.schemas`'s
+`_round_and_reject_zero`, which is specific to payment/allocation amounts
+where zero genuinely isn't legal.
 
 **Ledger.** Double-entry, dual-currency lines, a `DEFERRED CONSTRAINT
 TRIGGER` that rejects an unbalanced entry at commit, immutability via
