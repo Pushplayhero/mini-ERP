@@ -1,128 +1,122 @@
 # HANDOFF — mini-erp (context window rollover)
 
-Rewritten 2026-08-15 (Week 7 session, hardening). Previous session's
-context window filled up; work continues in a new Claude Code window on
-the same machine. This doc replaces the earlier 2026-08-15 handoff (that
-one's job — Week 6 receivables — is done and committed; see "Recent
-history" below).
+Rewritten 2026-08-15 (Week 7 session, hardening — **Week 7 complete**).
+Previous session's context window filled up; this doc replaces the
+mid-week 2026-08-15 handoff (that one's job — landing slices 1–3 — is
+done; this rewrite covers slices 4–6, which finish the week).
 
-## Week 7 status (this session): slices 1–3 DONE and committed; 3 remain
+## Week 7 status: DONE — all 6 slices committed, each Codex-reviewed for real
 
-**Current HEAD: `862375d`** — "Phase 1 / Week 7 slice 3: seed_demo CLI +
-demo_o2c runner + Makefile". **Working tree is clean.**
+**Current HEAD: `2f82276`** — "Phase 1 / Week 7 slice 6: README full
+rewrite (Week 7 complete)". **Working tree is clean.**
 
 Week 7 (Phase 1 hardening — the plan doc is
 `docs/adr/WEEK7-phase1-hardening-brief.md`, ACCEPTED after a real 3-round
-Codex architecture-consensus review, itself committed in slice 1) has 6
-slices, each its own commit + a mandatory real Codex diff review (this is
-a **user-mandated standing rule for this week specifically**: every slice,
-no exceptions, regardless of how low-risk it looks):
+Codex architecture-consensus review, itself committed in slice 1) had 6
+slices, each its own commit + a mandatory real Codex diff review (a
+**user-mandated standing rule for the whole week**: every slice, no
+exceptions, regardless of how low-risk it looked — and it paid off: even
+the "pure docs" README slice got REJECTED four times before APPROVED).
+All 6 DoD items from the brief's own DoD list are now satisfied — nothing
+was silently dropped, and the one binding/droppable-only-via-explicit-
+brief-edit item (the property test, Decision 2) landed properly instead
+of needing deferral:
 
-1. **DONE, `93c135f`** — ADR-001 (modular monolith vs microservices) +
-   ADR-002 (append-only fact tables / rebuildable summaries). 3 Codex
-   review rounds to land (`terra` tier).
-2. **DONE, `82a73b6`** — Full O2C E2E test
+1. **`93c135f`** — ADR-001 (modular monolith vs microservices) + ADR-002
+   (append-only fact tables / rebuildable summaries). 3 Codex review
+   rounds (`terra` tier).
+2. **`82a73b6`** — Full O2C E2E test
    (`tests/e2e/test_o2c_end_to_end.py`), per-step account-balance-delta
    assertions, non-zero AR/1100 tie-out proven at invoice-issue. 2 Codex
    review rounds (`sol` tier).
-3. **DONE, `862375d`** — `app/cli/seed_demo.py` (idempotent demo-data
-   seed, direct service-layer calls) + `app/cli/demo_o2c.py` (HTTP demo
+3. **`862375d`** — `app/cli/seed_demo.py` (idempotent demo-data seed,
+   direct service-layer calls) + `app/cli/demo_o2c.py` (HTTP demo
    runner) + `Makefile` (`up`/`seed`/`demo`/`test`/`check`) +
    `tests/e2e/test_seed_idempotent.py` + `tests/e2e/test_demo_o2c_smoke.py`.
-   The most contested slice — 3 Codex review rounds (`sol` tier), 5 real
-   findings on the first pass (see the commit body / git log for the
-   full account — the short version: get-or-create idempotency and
-   remaining-work-aware stock reconciliation are genuinely easy to get
-   subtly wrong, and `demo_o2c.py` re-introduced a bug class
-   `seed_demo.py` had already been fixed for in the SAME session).
-4. **NOT STARTED — next up.** ar-aging SQL rewrite
-   (`app/modules/receivables/service.py::get_ar_aging`) — the ONE
-   remaining slice that touches an existing correctness invariant (the
-   ADR-008 Decision 5 tie-out property + R15 population semantics: a
-   payment-only customer with no open invoice must still appear, with a
-   negative net). Read `docs/adr/WEEK7-phase1-hardening-brief.md`
-   Decision 3 in full before starting — it specifies the exact query
-   shape (outer conditional aggregation over the existing `UNION ALL`)
-   and a hard sequencing rule: **boundary characterization tests land
-   FIRST** (add cases to `tests/receivables/test_aging.py` covering the
-   exact bucket edges — 0/1, 30/31, 60/61, 90/91 days past due, multiple
-   invoices in one bucket, a customer with both open balance AND
-   unapplied credit — and confirm they pass against the CURRENT Python
-   implementation before touching anything), THEN the SQL rewrite, THEN
-   confirm the same characterization tests still pass (proving
-   equivalence) plus the existing tie-out/payment-only/structural tests
-   stay green unchanged. This is high-risk tier (`sol`) per the brief's
-   Decision 6/O-4.
-5. **NOT STARTED.** Property-over-events test
-   (`tests/e2e/test_property_o2c_balances.py`) — a hypothesis property
-   test driving domain events (not raw journal entries) through a
-   generated-but-legal O2C operation plan, proving trial-balance-balance +
-   AR/1100 tie-out + `on_hand >= 0` under any sequence. Read Decision 2 in
-   the brief closely before starting: the harness MUST use a fresh company
-   per Hypothesis example (never share/accumulate state the way the
-   existing `tests/ledger/test_property_trial_balance.py` does), and this
-   is a **binding DoD line, not droppable** — if the harness proves
-   unreliable, formally defer it to Week 8 via a committed brief edit,
-   never silently skip it.
-6. **NOT STARTED — must be LAST.** README rewrite. Sequencing is load-
-   bearing here too (Codex v1 caught this on the brief itself): README
-   must not go first or mid-week, because it would advertise commands
-   (`make seed`, `make demo`) that didn't exist yet when written — now
-   that slices 1–3 are done, `make seed`/`make demo` are real, but the
-   ar-aging rewrite (slice 4) and property test (slice 5) aren't yet, so
-   still wait until after those land too.
+   3 Codex review rounds (`sol` tier), 5 real findings on the first pass
+   — get-or-create idempotency and remaining-work-aware stock
+   reconciliation are genuinely easy to get subtly wrong.
+4. **`292f618`** — ar-aging SQL rewrite
+   (`app/modules/receivables/service.py::get_ar_aging`), per
+   `WEEK7-phase1-hardening-brief.md` Decision 3: bucketing moved from a
+   Python loop into a single outer conditional-aggregation SQL query over
+   the existing `UNION ALL`. Characterization tests
+   (`tests/receivables/test_aging.py`) landed FIRST, confirmed against
+   the OLD Python implementation, then confirmed unchanged against the
+   NEW SQL implementation (equivalence proof) — the sequencing Decision 3
+   mandates. 1 Codex review round (`sol` tier) — a real finding (an
+   inaccurate inline comment claiming SQLAlchemy mistypes `Date - Date`
+   as `Interval`, when the installed 2.0.52 already maps it to `Integer`)
+   verified against the actual SQLAlchemy source and fixed.
+5. **`401ca1f`** — Property-over-events test
+   (`tests/e2e/test_property_o2c_balances.py`), per Decision 2: a
+   Hypothesis test drawing a random-but-always-legal O2C operation plan
+   (`_draw_plan`, an interactive `st.data()` draw that only ever offers
+   legal actions) and executing it against the real service layer, with
+   a **fresh company per Hypothesis example** (never accumulating state
+   the way `tests/ledger/test_property_trial_balance.py`'s older pattern
+   does) — proving trial-balance-balance + AR/1100 tie-out +
+   `on_hand >= 0` hold. This was Decision 2's binding DoD line ("not
+   droppable — either land it properly or formally defer to Week 8") and
+   it landed properly; no deferral needed. 3 Codex review rounds (`sol`
+   tier), 5 real findings across the first two rounds — two were genuine
+   timezone/date-basis bugs (`ship_order`/`create_payment` stamp UTC
+   `datetime.now()` while `create_invoice` defaults to local
+   `date.today()`; on hosts west of UTC this could *systematically*, not
+   just rarely, reject a legal plan) that a purely local test run would
+   never have surfaced. See the commit body for the full account.
+6. **`2f82276`** — README full rewrite, per Decision 5a, landed LAST per
+   Decision 6's sequencing (must not advertise commands before they're
+   real). One-line positioning, `docker compose`/`make seed`/`make demo`
+   quick start, an inline mermaid C4-ish diagram, a "Design Decisions"
+   section linking every ADR, accurate Non-Goals, and an O2C `curl`
+   transcript ending in a balanced trial balance — **all captured from
+   real command output**, not hand-written (ran a real app server against
+   a freshly-migrated Postgres via embedded `pgserver`, no Docker in this
+   environment). `terra` tier (routine, pure docs) but reviewed anyway
+   per the standing rule — REJECTED 3 times, APPROVED on round 4. The
+   findings were sharper than either code slice's: a hard-coded UUID in
+   the transcript that would have broken on copy-paste, and half a dozen
+   architecture claims (which modules publish vs. subscribe to which
+   events, whether the `sales.goods_shipped` two-subscriber ordering is
+   normative or incidental, the exact scope of the tenancy filter's
+   `do_orm_execute` hook — SELECT only, not writes) that were each
+   individually plausible-sounding but wrong on inspection. Worth
+   internalizing: **documentation claims need the same verify-against-
+   actual-code discipline as code claims** — "it sounds right" is not
+   "it's true", and this project's own Codex-review culture caught that
+   here just as reliably as it does in application code.
 
-**Read `docs/adr/WEEK7-phase1-hardening-brief.md` in full before doing
-slice 4 or 5** — it is the normative spec (went through 3 rounds of real
-Codex architecture-consensus review, with a full "Consensus Revisions"
-record of every finding), not just a suggestion. Do not re-derive the
-design from scratch; the hard parts (remaining-work-aware stock math,
-per-document-type idempotency recovery, the aging query shape) are already
-worked out there and in the slice-3 commit body.
+**Non-DoD, explicitly deferred (not started, not blocking anything)**:
+demo GIF recording, `v0.1.0` git tag, public demo host, coverage badge —
+these were always out of scope for Week 7 per the brief's own "Non-DoD"
+list, not things that slipped.
 
-**Codex review tier for the rest of the week**: `sol` (high-risk) for
-slices 4 and 5 (both touch/prove correctness invariants), `terra`
-(routine) would be defensible for slice 6 (pure docs) but the user's
-standing instruction this week is every slice gets reviewed regardless —
-don't skip it even for README.
+## What's next
 
-**Dispatch mechanics** (same pattern used for every slice this session):
-write a review prompt to a scratch `.md` file, `git add` the touched
-files, `git diff --cached > <scratch>.patch`, `git reset` (unstage —
-don't leave things staged), copy the patch into the repo working directory
-(Codex's sandboxed `--cd` root can't see the scratch dir), then:
-```
-cat <prompt>.md | codex.cmd exec --sandbox read-only --cd C:/wt/merp -m <model> - > <output>.output
-```
-Read the `.output` file for a verdict line (`grep -n "^(APPROVED|REJECTED)"`
-first — files can be huge). Verify every finding against the actual code
-before fixing anything (this project's non-negotiable discipline — a
-REJECTED verdict is input, not a command). Clean up the copied `.patch`/
-`.md` files from the repo root before committing (they're scratch, not
-deliverables). Iterate (re-diff, re-review, narrower prompt each round)
-until APPROVED, then commit.
+**Phase 1 ("Kernel") is now complete** — masterdata, ledger, sales,
+inventory+shipping, receivables, all Codex-architecture-reviewed and
+Codex-diff-reviewed, plus this week's hardening pass (E2E proof, property
+tests, demo tooling, ar-aging SQL, and documentation that actually
+matches reality). No open threads block calling Phase 1 done.
 
-## Recent history (context, not action items)
+Two paths from here, not yet decided:
+- **Week 8 polish** (the explicitly-deferred items above: demo GIF,
+  `v0.1.0` tag, public demo host, coverage badge) — small, low-risk,
+  mostly project-presentation work.
+- **Phase 2 ("Platform")** per `docs/open-erp-master-plan.md` §1 — plugin
+  loader (dynamic discovery/registration, vs. today's one hard-wired
+  demo plugin), custom-fields UI/admin surface (the `custom_data JSONB`
+  mechanism already exists on primary entities, per this week's README
+  audit — just no UI/central field-definition table), workflow/approval
+  engine, RBAC (today's `X-Company-Id` header is a documented stand-in
+  for a verified auth claim, not real auth). This is a much bigger
+  planning lift than any Week 7 slice — start with architecture
+  discovery and a real Codex consensus review on the Phase 2 brief
+  before writing any code, same discipline as every phase/week so far.
 
-- **Weeks 1–6 are committed and Codex-reviewed for real** (not
-  self-review — see "Engineering workflow" below for why that distinction
-  is a hard-learned, standing rule on this project). Week 6 (receivables,
-  ADR-008) was the last functional module; it landed after a 5-round
-  architecture consensus review and a 3-round diff review (4 real findings
-  — two READ-COMMITTED atomicity bugs in `get_ar_aging`/`check_credit_limit`,
-  a missing 409-body detail, a migration backfill preflight gap — all
-  fixed and Codex-confirmed). Full details in that commit's body
-  (`git log --grep "Week 6"` or `git show <sha> --stat`).
-- Phase 1's five kernel modules (masterdata, ledger, sales, inventory,
-  receivables) are all implemented, Codex-architecture-reviewed, and
-  Codex-diff-reviewed. Week 7 is hardening on top of that, not new
-  business logic.
-- Earlier in the project's history (documented in a prior, now-superseded
-  handoff), "Codex review" for Weeks 1–4 turned out to have actually been
-  Claude self-review using a prompt template — caught, and every one of
-  those weeks was genuinely re-reviewed from scratch before Week 6 began.
-  This is why the "real `codex` CLI, never self-review" rule below is
-  phrased as strongly as it is.
+Whoever picks this up next should ask the user which path they want
+before assuming either.
 
 ## Project
 
@@ -142,8 +136,9 @@ For medium/high-risk work:
 2. Implementation by Claude Code directly, or delegated to a `sonnet`
    agent, depending on session context.
 3. A real Codex diff review after implementation, against the spec —
-   **every slice this week, per explicit user instruction**, not just
-   medium/high-risk ones.
+   **every slice, every week, per explicit user instruction now proven
+   out twice** (Week 7's ar-aging slice and README slice both looked
+   "surely fine" and both had real findings on first review).
 4. `/CODEX REVIEW PRE-PUSH` before pushing multi-slice/production-facing
    work (no remote configured yet, so this hasn't been exercised, but stay
    ready for it).
@@ -159,7 +154,8 @@ invocation in the transcript, stop and verify before trusting it.
 
 **Push gate**: never `git commit`/push without the user's explicit
 go-ahead in the current conversation — approval from an earlier turn or an
-earlier session does not carry forward.
+earlier session does not carry forward. Held exactly this way for all 6
+Week 7 slices.
 
 **Language**: the user's standing preference (memorized) is all
 user-facing replies in Traditional Chinese (繁體中文) — English is fine in
@@ -169,16 +165,28 @@ code/commits/docs, but chat responses should be Chinese.
 
 - **Multi-tenancy**: `contextvars.ContextVar` + SQLAlchemy `do_orm_execute`
   hook + `with_loader_criteria`, fail-closed (`TenancyContextError` if no
-  company bound). `TenantScopedMixin` on any table queried directly. Any
-  Core-table (`sqlalchemy.table()`) reference used to dodge the
-  cross-module-import contract must explicitly filter `company_id` itself.
-  A standalone CLI (`app/cli/*`) running outside any HTTP request must
-  bind `company_context(...)` explicitly before any tenant-scoped write —
+  company bound) — **but note the hook only fires for ORM `SELECT`
+  statements** (`app/core/db.py` returns immediately for any non-SELECT);
+  write-safety is a separate convention (every INSERT stamps `company_id`
+  from `require_current_company_id()`, and every mutate-by-id re-fetches
+  the row through a hook-filtered SELECT first) — this distinction was
+  fuzzy in prose until the Week 7 README review forced it precise; see
+  README.md's "Multi-tenancy" section for the accurate version.
+  `TenantScopedMixin` on any table queried directly. Any Core-table
+  (`sqlalchemy.table()`) reference used to dodge the cross-module-import
+  contract must explicitly filter `company_id` itself. A standalone CLI
+  (`app/cli/*`) running outside any HTTP request must bind
+  `company_context(...)` explicitly before any tenant-scoped write —
   see `seed_demo.py`/`rebuild_ar_balances.py`/`rebuild_stock_summary.py`.
 - **Money**: `NUMERIC(20,6)`; FX rates `NUMERIC(20,10)` + `rate_date`;
-  round-half-even, enforced at the Pydantic-schema layer, not left to
-  implicit DB column coercion. Money-typed Pydantic fields need `ge=0`/
-  `gt=0` explicitly where negative/zero doesn't make sense.
+  round-half-even is enforced at the Pydantic-schema layer **specifically
+  for journal line amounts (`ledger.schemas`) and receivables
+  payment/allocation amounts (`receivables.schemas`)** — not universally;
+  e.g. `Product.list_price`/`standard_cost` are `NUMERIC(20,6)`-typed but
+  not yet explicitly quantized at the schema layer (a real gap the Week 7
+  README review surfaced, not yet fixed in code — worth a future slice).
+  Money-typed Pydantic fields need `ge=0`/`gt=0` explicitly where
+  negative/zero doesn't make sense.
 - **Ledger**: double-entry, dual-currency lines, DEFERRED CONSTRAINT
   TRIGGER balance check at commit, immutability via `BEFORE UPDATE OR
   DELETE` triggers, gapless numbering (`ledger_sequences` + `FOR UPDATE`),
@@ -191,14 +199,29 @@ code/commits/docs, but chat responses should be Chinese.
   transaction dispatch; `publish()` validates + outbox-writes + dispatches;
   `redispatch()` is the *only* replay entry point; every event schema must
   carry `company_id: uuid.UUID`; handler exceptions propagate unchanged
-  (fail-closed). A standalone CLI that publishes events must
-  `import app.main` first (side-effecting — installs schema registrations
-  and posting-handler subscriptions) or the first `publish()` raises
-  `UnknownEventTypeError`.
+  (fail-closed). Not every registered event has a subscriber —
+  `sales.order_confirmed` is registered (so `publish()`/replay validate
+  its schema and it gets an outbox row) but deliberately has none
+  (ADR-006 Decision 4). `sales.goods_shipped` is the only event with TWO
+  subscribers, and their order is **normative, not incidental** (ADR-007
+  Decision 1): `inventory.handle_goods_shipped` (deduct stock) runs
+  before `ledger.posting`'s handler (post the journal entry) — "move the
+  goods, then account for them"; both still commit/rollback atomically
+  together regardless of order, but the ordering determines which
+  handler's exception is the attributed failure reason on a bad `ship`.
+  A standalone CLI that publishes events must `import app.main` first
+  (side-effecting — installs schema registrations and posting-handler
+  subscriptions) or the first `publish()` raises `UnknownEventTypeError`.
 - **Hooks** (`app/core/hooks.py`): distinct from events — synchronous
-  veto/augment points, not durably recorded, not replayed.
+  veto/augment points, not durably recorded, not replayed. The one Phase 1
+  hook is `sales.order.validate_confirm`, consumed by
+  `app/plugins/credit_limit.py` (`credit_limit == 0` = "do not check").
 - **Plugins** (`app/plugins/`): exempt from the module-independence
-  import-linter contract; core/modules may never import plugins.
+  import-linter contract; core/modules may never import plugins. In-
+  process, no sandbox, same trust model as Odoo (see `SECURITY.md`) — a
+  plugin is admin-installed trusted code, not untrusted input. Phase 1
+  ships one hard-wired demonstration plugin (`credit_limit.py`); a real
+  dynamic plugin *loader* is Phase 2 scope.
 - **Transaction ownership ("flush-only core + committing wrapper", ADR-003
   R1)**: most write functions in `service.py` modules only `flush()`; the
   HTTP router (or whatever caller opened the transaction — including a
@@ -208,8 +231,11 @@ code/commits/docs, but chat responses should be Chinese.
   and `ledger`'s simple `create_*` functions (company, customer, product,
   account, period) commit themselves via `_commit_or_conflict()` — this is
   an older, Week-1/2 convention that predates the flush-only-core doctrine
-  and was never retrofitted; check which pattern a given function follows
-  before assuming either one.
+  and was never retrofitted. **Also exception**: `sales.service.create_order`
+  self-commits too (same `_commit_or_conflict()` pattern) even though
+  `confirm_order`/`ship_order` in the same module are flush-only — check
+  which pattern a given function follows before assuming either one; when
+  in doubt, grep for `_commit_or_conflict` in that module.
 - **Idempotent event handlers**: partial unique index (`WHERE source_type
   IS NOT NULL`) + `session.begin_nested()` SAVEPOINT catching the
   resulting `IntegrityError` as an "already processed, skip" no-op.
@@ -230,7 +256,9 @@ code/commits/docs, but chat responses should be Chinese.
   bit both `get_ar_aging` and `check_credit_limit` in Week 6; see that
   commit's body, and the learned skill
   `postgres-read-committed-race-single-statement-fix` if this pattern
-  comes up again).
+  comes up again). Week 7's ar-aging SQL rewrite (slice 4) preserved this
+  property by construction — the whole point of moving bucketing into the
+  SQL was to keep it one statement, now trivially so (one outer SELECT).
 - **Idempotent CLIs/scripts** (Week 7 addition): get-or-create by natural
   key is not enough on its own — also validate that an existing row's
   OTHER attributes match what you intended (fail loudly on a mismatch,
@@ -239,6 +267,11 @@ code/commits/docs, but chat responses should be Chinese.
   target, that target must be **remaining-work-aware** (account for work
   not yet done), never a fixed number applied unconditionally — a fixed
   target silently drifts on rerun once some of the work is already done.
+  Slice 5's property test hit the same trap from a different angle:
+  seeding stock to cover every drawn order's qty (not just the orders
+  that actually ship) over-provisions and can hide a double-decrement bug
+  behind the slack — seed exactly what the plan's `Ship` ops will
+  actually consume, no more.
 - **`_commit_or_conflict()`**: every service-layer commit catches
   `IntegrityError` → translates to `ConflictError` (409), never a raw 500.
 - **Testing**: real PostgreSQL only, never SQLite/mocks.
@@ -247,10 +280,17 @@ code/commits/docs, but chat responses should be Chinese.
   TCP `hostname`/`port` from `get_postmaster_info()`, not the pgdata
   directory path (that fails DNS resolution on Windows; see the learned
   skill `pgserver-windows-tcp-dsn`). Hypothesis property tests for
-  invariants. A "fix a race condition by combining two statements into
-  one" change can't be tested by reproducing the old race (the window no
-  longer exists) — write a structural test instead, asserting the exact
-  statement count via a `before_cursor_execute` SQLAlchemy event hook.
+  invariants — and when a property test spans multiple modules/a domain
+  state machine, give each Hypothesis example a **fresh company**, never
+  accumulate state across examples the way
+  `tests/ledger/test_property_trial_balance.py`'s older single-invariant
+  pattern does (see `tests/e2e/test_property_o2c_balances.py`'s module
+  docstring for the full reasoning — shared state makes failures order-
+  dependent and Hypothesis shrinking unreliable). A "fix a race condition
+  by combining two statements into one" change can't be tested by
+  reproducing the old race (the window no longer exists) — write a
+  structural test instead, asserting the exact statement count via a
+  `before_cursor_execute` SQLAlchemy event hook.
 - **Alembic transaction scope**: the whole `upgrade head` run is one
   transaction — a migration referencing an enum value added by an
   *earlier* migration in the same chain must cast the *column* to text
@@ -266,6 +306,14 @@ code/commits/docs, but chat responses should be Chinese.
   specifically for silently re-flattening that distinction after drafting
   the split (this bit ADR-002 twice in the same review cycle) — see the
   learned skill `adr-backfill-uniform-vs-per-instance`.
+- **Documentation claims need the same rigor as code claims** (Week 7
+  slice 6 addition): a README/doc sentence that "sounds right" — which
+  modules publish vs. subscribe to which events, exactly what a tenancy
+  hook filters, whether a test proves something "arbitrary" vs. "many
+  bounded examples of" — needs the same grep-the-actual-code
+  verification as a code review finding, before AND after Codex flags it.
+  Four review rounds on a "pure docs" slice is not overkill; it's the
+  discipline working as intended.
 
 ## Module status
 
@@ -276,7 +324,10 @@ code/commits/docs, but chat responses should be Chinese.
 | sales | committed (Week 4), Codex-reviewed for real | ADR-006 |
 | inventory + shipping | committed (Week 5), Codex-reviewed for real | ADR-007 |
 | receivables | committed (Week 6), Codex-reviewed for real | ADR-008 |
-| Week 7 hardening | slices 1–3 of 6 committed and Codex-reviewed; slices 4–6 remain | `docs/adr/WEEK7-phase1-hardening-brief.md` |
+| Week 7 hardening | **all 6 slices done**, Codex-reviewed for real | `docs/adr/WEEK7-phase1-hardening-brief.md`, ADR-001, ADR-002 |
+
+**Phase 1 ("Kernel") is complete.** See "What's next" above for the two
+undecided paths forward (Week 8 polish vs. Phase 2 planning).
 
 ## Running things
 
@@ -292,12 +343,13 @@ uv run mypy .
 uv run lint-imports            # import-linter contracts
 ```
 
-Or, once Week 7 slice 3's `Makefile` lands in your checkout: `make check`
-runs the full ruff/mypy/lint-imports/pytest sequence in one command;
-`make up`/`make seed`/`make demo` are the docker-compose quick-start (see
-the Makefile itself and `docs/adr/WEEK7-phase1-hardening-brief.md`
-Decision 4 for exactly what each does and why `seed` runs inside the
-container while `demo` runs from the host).
+Or, with the `Makefile` (landed Week 7 slice 3): `make check` runs the
+full ruff/mypy/lint-imports/pytest sequence in one command; `make up` /
+`make seed` / `make demo` are the docker-compose quick-start (`up` blocks
+until `/health` responds; `seed` runs inside the container against its
+own `DATABASE_URL`; `demo` runs from the host as a real HTTP client
+against the published port — see the Makefile and README.md's "Quick
+start" for why each runs where it does).
 
 **Windows long-path workaround** (this session's environment): the real
 repo path is very long (Cowork-generated). A short junction
@@ -306,10 +358,28 @@ repo path is very long (Cowork-generated). A short junction
 `MYPY_CACHE_DIR` also redirected to `C:\wt\.ruff_cache`/`C:\wt\.mypy_cache`
 (the default cache-in-repo location hits the same long-path failure). Git
 commands against the real path need `-c core.longpaths=true`. All local
-check commands in this session were run via the `C:\wt\merp` junction with
-those env vars set.
+check commands across the Week 7 session were run via the `C:\wt\merp`
+junction with those env vars set — reuse the same junction/venv if it
+still exists at session start rather than recreating it.
+
+**No Docker in this environment** — `make up`/`make seed`/`make demo`
+were never exercised via the real Makefile path this session; the README
+slice's "real output" transcripts were captured by manually reproducing
+the same flow (migrate + run the app server against an embedded
+`pgserver` instance + run `seed_demo.py`/`demo_o2c.py`/raw `curl`
+directly) rather than via `docker compose`. If Docker becomes available
+in a future session, it's worth actually running `make up && make seed &&
+make demo` once to confirm the Makefile path itself works end to end —
+it never has been, only its constituent scripts have.
 
 CI (`.github/workflows/`) runs the same checks; last known green state
 hasn't been re-verified against current HEAD in this environment (no CI
 runner available here) — the local check sequence (`make check` or the
-five commands above) is the actual gate this session has been using.
+five commands above) is the actual gate this session has been using. All
+222 tests (up from 221 after Week 7 slice 5 added
+`test_property_o2c_balances.py`) pass locally as of `2f82276`;
+ruff/mypy/lint-imports all clean (mypy carries 43 pre-existing errors in
+unrelated test-helper files, confirmed unchanged across every Week 7
+slice via `git stash` comparison — not a regression, just never cleaned
+up; a future slice could tackle `mypy --strict` compliance in
+`tests/*/_helpers.py` if that's ever prioritized).
