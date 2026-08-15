@@ -95,6 +95,10 @@ jobs:
       - run: uv sync --group dev
       - run: uv run alembic upgrade head
       - run: uv run pytest --cov=app --cov-report=term
+      # coverage-badge does not create its output directory; badges/ has
+      # never existed in this repo (git doesn't track empty directories)
+      # until this job's own first successful run commits a file into it.
+      - run: mkdir -p badges
       - run: uv run coverage-badge -o badges/coverage.svg -f
       - name: Commit updated badge
         run: |
