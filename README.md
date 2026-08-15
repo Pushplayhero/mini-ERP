@@ -1,5 +1,7 @@
 # mini-erp
 
+![coverage](badges/coverage.svg)
+
 > Not a Digiwin with more features — the Digiwin Taiwanese SMEs can
 > self-host, extend by writing a plugin instead of buying consultant
 > hours, and actually trust with their data. Open-source, API-first,

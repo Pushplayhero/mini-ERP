@@ -1,0 +1,105 @@
+name: Coverage
+
+# Week 8 Decision 2 (docs/adr/WEEK8-phase1-polish-brief.md): a live,
+# CI-generated coverage badge, never a static/hand-edited one.
+#
+# Workflow-level triggers, job-level `if` conditions inside (GitHub
+# Actions triggers live at the workflow level, not the job level).
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+    # Sole anti-recursion mechanism: the coverage-badge job's own bot
+    # commit only ever touches badges/**, so it never retriggers this
+    # workflow. No [skip ci] commit-message parsing needed.
+    paths-ignore: ["badges/**"]
+
+env:
+  DATABASE_URL: postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp
+
+jobs:
+  # PR-only: informational coverage number in the PR's checks. Default
+  # (read-only) permissions — works unmodified on fork PRs.
+  coverage-check:
+    name: coverage (informational)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mini_erp
+          POSTGRES_PASSWORD: mini_erp
+          POSTGRES_DB: mini_erp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mini_erp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - run: uv run alembic upgrade head
+      - run: uv run pytest --cov=app --cov-report=term
+
+  # push-to-main only: regenerate the badge and commit it back to the
+  # repo at a persistent path (never an ephemeral Actions artifact —
+  # README links to something that doesn't expire or require auth).
+  coverage-badge:
+    name: coverage badge
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Two near-simultaneous pushes to main would otherwise run this job
+    # concurrently: each checks out the SHA that triggered it, computes
+    # coverage for that stale snapshot, then races to commit+push the
+    # badge -- one push can be rejected, or an older badge can "win".
+    # Serializing per-ref (not an anti-recursion mechanism -- paths-ignore
+    # above remains the sole one) plus re-checking out the live branch tip
+    # below (not the frozen trigger SHA) means only the latest push's
+    # coverage ever gets committed.
+    concurrency:
+      group: coverage-badge-${{ github.ref }}
+      cancel-in-progress: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mini_erp
+          POSTGRES_PASSWORD: mini_erp
+          POSTGRES_DB: mini_erp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mini_erp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Live branch tip, not the (possibly already-superseded) SHA
+          # that triggered this run -- see the concurrency comment above.
+          ref: main
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - run: uv run alembic upgrade head
+      - run: uv run pytest --cov=app --cov-report=term
+      - run: uv run coverage-badge -o badges/coverage.svg -f
+      - name: Commit updated badge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add badges/coverage.svg
+          git diff --staged --quiet || git commit -m "chore: update coverage badge [ci]"
+          git push
