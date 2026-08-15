@@ -68,6 +68,11 @@ known-first-party = ["app"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG001", "PLR2004", "S101"]
+# Week 7 Decision 1: the full O2C flow is deliberately ONE test function
+# (per-step delta assertions read as one linear narrative, not split
+# across helpers) -- PLR0915 (too many statements) is expected here, not
+# a code smell to fix.
+"tests/e2e/*" = ["PLR0915"]
 "alembic/*" = ["ARG001", "N999"]
 
 [tool.ruff.format]

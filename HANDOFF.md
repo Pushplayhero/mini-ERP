@@ -393,21 +393,37 @@ landed first); and README rewrite + ADR-001/002 backfill.
 **Implementation sequencing** (Decision 6 — each slice = one commit + a
 Codex diff review; tier `sol` for slices 1–4 tests/seed/aging, `terra` for
 docs). NB: **user has mandated a Codex diff review on EVERY slice.** Order:
-1. **DONE** — ADR-001 (modular monolith vs microservices) + ADR-002
-   (append-only fact tables/rebuildable summaries) — pure docs of
-   already-shipped decisions. Took 3 Codex diff-review rounds (`terra`
-   tier) to land, all real findings: v1 caught ADR-002 wrongly claiming the
-   ledger has a "maintained summary column" (it doesn't — trial balance is
-   always an on-the-fly aggregate, ADR-005 Decision 4); the fix required
-   restructuring ADR-002 around two separable questions (is the fact table
-   append-only — uniform axiom; is the aggregate additionally cached — a
-   genuine per-domain trade-off, decided differently for ledger vs.
-   inventory/receivables); v2 then caught the rewrite's own "Pros"
-   paragraph re-conflating the two questions (attributing all three
-   invariants — trial balance, AR tie-out, stock non-negative — to
-   "append-only alone", when each is actually enforced by its own separate
-   mechanism); v3 APPROVED. **Next: commit this slice.**
-2. Full O2C E2E test (`tests/e2e/test_o2c_end_to_end.py`).
+1. **DONE, committed `93c135f`** — ADR-001 (modular monolith vs
+   microservices) + ADR-002 (append-only fact tables/rebuildable
+   summaries) — pure docs of already-shipped decisions. Took 3 Codex
+   diff-review rounds (`terra` tier) to land, all real findings: v1 caught
+   ADR-002 wrongly claiming the ledger has a "maintained summary column"
+   (it doesn't — trial balance is always an on-the-fly aggregate, ADR-005
+   Decision 4); the fix required restructuring ADR-002 around two
+   separable questions (is the fact table append-only — uniform axiom; is
+   the aggregate additionally cached — a genuine per-domain trade-off,
+   decided differently for ledger vs. inventory/receivables); v2 then
+   caught the rewrite's own "Pros" paragraph re-conflating the two
+   questions (attributing all three invariants — trial balance, AR
+   tie-out, stock non-negative — to "append-only alone", when each is
+   actually enforced by its own separate mechanism); v3 APPROVED.
+2. **DONE** — Full O2C E2E test (`tests/e2e/test_o2c_end_to_end.py`): one
+   test function, create → confirm → ship → invoice → pay → allocate,
+   per-step account-balance-delta snapshots (not just a global "still
+   balances" check), non-zero AR/1100 tie-out proven at invoice-issue.
+   Took 2 Codex diff-review rounds (`sol` tier — high-risk despite being
+   test-only, since it exercises the full posting chain): v1 confirmed
+   every accounting assertion correct (account/amount pairs match
+   `POSTING_RULES`, the `_delta` helper correctly distinguishes
+   unchanged/absent/wrong-account/wrong-amount, tenant isolation fine, the
+   credit-limit hook genuinely exercised, R15 population logic correct)
+   but caught ONE real bug: the test hard-coded `create_period(2026, 8)`
+   while every event in the flow (ship/invoice/payment) defaults its own
+   date to the real wall clock — meaning the test would silently start
+   failing the moment real calendar time crosses into September 2026 (a
+   coincidental match with this sandbox's current date, not a derived
+   one). Fixed by deriving the period from `date.today()` at test-run
+   time. v2 APPROVED. **Next: commit this slice.**
 3. Seed + Makefile + demo runner (`app/cli/seed_demo.py`,
    `app/cli/demo_o2c.py`, `Makefile`, compose seed path) + run-twice
    idempotency test.
