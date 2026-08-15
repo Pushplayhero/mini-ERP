@@ -24,3 +24,10 @@ left to gate.
 This index, plus `docs/adr/WEEK7-phase1-hardening-brief.md` (the
 implementation brief that produced ADR-001/002 and everything else in
 Week 7), are the project's Phase-1-closing documentation set.
+
+`docs/adr/WEEK8-phase1-polish-brief.md` is a separate, later brief
+(presentation/infrastructure polish on top of the now-complete Phase 1 —
+a `v0.1.0` tag, a real GitHub remote + CI, a coverage badge, a demo GIF
+script/handoff, and one small application-code rounding fix) — it went
+through five real Codex plan-consensus review rounds before APPROVED,
+same discipline as every ADR and brief above.
