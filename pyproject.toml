@@ -35,6 +35,17 @@ dev = [
     # Item 4 / Week 2 brief): random-but-balanced line generation, asserting
     # the trial balance holds for every generated sequence of entries.
     "hypothesis>=6.100,<7",
+    # Week 8 Decision 2: coverage measurement + a live, CI-generated badge
+    # (never a static/hand-edited one). coverage-badge reads the same
+    # .coverage data pytest-cov produces; no third-party account needed.
+    "pytest-cov>=6.0,<7",
+    "coverage-badge>=1.1,<2",
+    # coverage-badge 1.1.2 (unmaintained since 2023) hard-imports
+    # pkg_resources without pinning setuptools; setuptools >=81 no longer
+    # ships pkg_resources by default, so an unpinned resolve breaks
+    # coverage-badge at runtime (ModuleNotFoundError). Pin explicitly so
+    # `uv sync` always resolves a setuptools that still has it.
+    "setuptools<81",
 ]
 
 [build-system]
