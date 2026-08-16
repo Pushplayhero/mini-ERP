@@ -1,5 +1,7 @@
 # mini-erp
 
+English | [繁體中文](README.zh-TW.md)
+
 ![coverage](https://raw.githubusercontent.com/Pushplayhero/mini-ERP/badges/coverage.svg)
 
 > Not a Digiwin with more features — the Digiwin Taiwanese SMEs can
