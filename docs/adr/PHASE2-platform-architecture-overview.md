@@ -1,8 +1,13 @@
 # Phase 2 ("Platform") — architecture overview
 
-Status: **DRAFT** — pending Codex architecture consensus + user decisions.
-Nothing here is settled scope; §3 and §6 in particular are decisions to be
-made *with* the user in plan-consensus, not decisions this document makes.
+Status: **ACCEPTED** — Codex architecture consensus APPROVED (3 rounds,
+2026-08-16); the §6 scope-owner decisions (and the §3 keystone questions)
+were resolved with the user on 2026-08-16, with second-model Codex advisory
+discussions on the harder questions (Q1, Q3, and Q4–Q7). **The resolutions are recorded in §7 below; read §7
+alongside §3–§6, since it settles several questions §3–§6 deliberately left
+open.** §3–§6 are preserved as the analysis that led to those decisions,
+not superseded by them. What remains open after §7 is per-module ADR/brief
+detail, not phase-shape scope.
 Author: Claude (Opus, architecture discovery)
 Date: 2026-08-16
 Scope owner: Ryan
@@ -582,6 +587,125 @@ document should hand up for a human decision.
 
 ---
 
+## 7. Decision round — resolved (2026-08-16)
+
+The §6 open questions **and** §3's keystone questions were resolved with the
+scope owner on 2026-08-16. Each of the harder ones (Q1, Q3, and Q4–Q7 as a
+batch) went through a second-model Codex advisory discussion first, in this
+project's standing "never Claude-only" discipline. This section is the
+normative decision record; §3–§6 above are the analysis that produced it.
+Where a decision refines or corrects the framing in §3–§6, that is called out
+inline below.
+
+### 7.1 Keystone auth decisions (§3)
+
+- **Authorization depth (Q1): pure RBAC + a mandatory company-entitlement
+  gate.** Action-level RBAC (roles → permissions). Row-level and field-level
+  are **deferred** to a later increment. **Refinement (Codex):** the
+  authN→tenancy company-entitlement gate of §3a is **not** part of what's
+  deferred — it is mandatory in Phase 2, the bridge that replaces today's
+  unverified `X-Company-Id`. "Pure RBAC" means "no generalized row/resource/
+  field authorization *beyond* that entitlement gate." The workflow
+  amount-threshold tension (§3b) is resolved without row-level: **workflow
+  routing inspects the amount and picks the required step; RBAC decides who
+  may approve that step** — keeping routing and actor-authority distinct.
+  What pure RBAC genuinely cannot express (a data-driven per-actor ceiling
+  like "this actor may approve ≤ 47,500 across arbitrary actions") is a
+  deferred, narrowly-scoped *resource-conditioned action decision* increment,
+  **not** the whole company/department/amount row-level bundle. **Correction
+  to §3b's grouping:** amount-threshold authority is *not* SELECT-shaped row
+  filtering — it is contextual action authorization (ABAC-shaped), even
+  though master-plan §3 files it under "row-level"; when it lands, it uses
+  the service-boundary authorization port (below), not a query filter.
+- **Identity / deployment constraint (Q2): zero-external-dependency login is
+  mandatory; a local user+credential store is the default.** The product
+  must run fully self-hosted with local identity and no external IdP.
+  External OIDC is an optional add-on, never a prerequisite. (Rationale:
+  master-plan positioning — "Taiwanese SMEs can self-host.") The specific
+  request-auth mechanism (server session vs. opaque token vs. JWT — §3a
+  axis ii) is **not** decided here; it is a `platform.permissions` security-
+  ADR recommendation.
+- **Permissions placement (Q3): dependency inversion.** Business modules
+  **never import** the concrete `app.platform.permissions` package. They
+  depend only on a narrow **authorization port owned by `app.core`**;
+  `platform.permissions` *implements* that port and imports `masterdata` for
+  the company source-of-truth; the **composition root** (`app.main`) wires
+  implementation to abstraction — the same pattern `app.main` already uses to
+  keep `sales` ignorant of concrete plugins. **Refinement (Codex):** this is
+  preferred over the earlier "narrow direct `module → permissions` import
+  exception" — explicit authorization *semantics* (a module knowing "confirm
+  is privileged") and concrete permissions *coupling* are separate questions,
+  and inversion gives the first without the second. The authoritative check
+  lives at the **public service/command boundary**, not the router edge:
+  router-only enforcement is bypassed by CLI/replay/worker paths, and the
+  authoritative order total is only known *inside* the locked service
+  transaction (a router would authorize against a stale pre-repricing
+  amount). Fail-closed (§3c) still governs: an unclassified business action
+  denies by default.
+
+### 7.2 Phase-shape decisions (§4–§5)
+
+- **Module sequencing (Q4): permissions first, contract-before-feature**
+  (permissions → plugins → customfields/workflow → integration). The plugin
+  loader's operator/deploy-time install/discovery half (which does *not*
+  depend on permissions, §2.2) is kept as **fallback work only** — pulled
+  forward *if* the permissions build stalls — **not** a formally-sanctioned
+  parallel slice, to keep the keystone as the single critical-path focus.
+- **Release boundary (Q5): incremental per-module releases.** The **first
+  Phase 2 release is a complete `permissions` vertical slice** — login →
+  RBAC → entitlement gate → a protected action demonstrating allow/deny —
+  demoable *without* any consuming module (plugins/workflow). **Refinement
+  (Codex):** a small set of genuinely non-sensitive, already-global
+  reference-data reads (currencies, UoM) are an explicit **anonymous
+  allowlist**; everything else goes behind the auth gate. (Avoids bloating
+  the first release for a few harmless endpoints.)
+- **Public demo host trigger (Q6): the first RBAC-login milestone triggers
+  writing the security/deployment mini-brief — it does NOT auto-launch.**
+  Going live still requires that separate, independently Codex-reviewed
+  security/deployment brief with a concrete go-live checklist (the real bar
+  is higher than "has login": entitlement gate + rate limiting + reset/seed
+  story). **Decision:** the public demo is **read-only from the start**
+  (seeded fake data, periodic reset); read-write is out of scope for the
+  first public exposure. (This finalizes Week 8 Decision 3's deferral.)
+- **Integration transport + dispatcher shape (Q7): no broker in Phase 2; a
+  co-deployed standalone worker process.** Phase 2 deliberately draws a "no
+  broker / direct outbox reads only" scope line (Postgres outbox suffices; a
+  broker only adds a second operational surface). **Decision changed from the
+  scope owner's initial in-process lean to a co-deployed worker, on Codex's
+  recommendation:** an in-process background task under-weights the coupling
+  between transaction boundaries, request-scoped `ContextVar`s, the API
+  process lifecycle, and external network side-effects (a task started in a
+  request handler can run before the producer commits, can't un-send a
+  webhook on producer rollback, and risks inheriting the request's actor/
+  company context). The worker is treated as an **outbox *consumer*, not a
+  synchronous `app.core.events` subscriber** — so no conflict with the sync
+  same-transaction event model: the sync bus keeps internal must-commit-
+  together work; the worker handles post-commit, retryable, at-least-once
+  external side-effects. It reads only committed events, claims due
+  deliveries atomically (`FOR UPDATE SKIP LOCKED` / lease), sends HTTP
+  *outside* any DB lock, and — like the replay CLI — has no HTTP request, so
+  it **explicitly** binds `company_context` + a system/service actor and
+  resets in `finally`, never relying on inherited context. This uses the
+  consumer-specific delivery-state layer (§5.2), never the shared
+  `outbox.dispatched_at`. **Consequence for §5.4:** two actors must stay
+  distinct — the **dispatcher actor** (the system/service actor performing
+  delivery) and the **originating actor** (the user who caused the domain
+  event). If a webhook/audit consumer needs "who caused this," the
+  originating actor must be captured *into the event envelope at publish
+  time* — it cannot be reconstructed from the dispatcher's system actor.
+
+### 7.3 Explicitly still open after this round (ADR/brief-level, not phase scope)
+
+Deferred *down* to the per-module ADRs, not left unscoped: the request-auth
+mechanism (session/opaque/JWT); the exact `app.core` authorization port
+signature and the `platform.*` import contracts; the plugin manifest schema;
+the integration delivery-state table shape; the event originating-actor
+envelope format; the public-hosting provider and the demo go-live checklist;
+and (deferred to `platform.customfields`) custom-field indexing/validation
+and field-level authorization.
+
+---
+
 ## Appendix: what is already settled vs. what this document leaves open
 
 Matching the Week 8 brief's habit of separating settled facts from live
@@ -602,28 +726,33 @@ decisions:
   schema (master-plan §2.4, §2.8; `app/core/db.py`).
 - The outbox **dispatcher** is a Phase 2 deliverable (master-plan §10.4), and
   extracting the integration gateway into a *separately deployed service* is
-  Phase 3+ (master-plan §4). Adopting a **message queue / broker**, however, is
-  **not** settled Phase 3+ — §2.6 permits it from Phase 2 onward, so it is an
-  open decision, not a settled fact (§5.3, §6 Q7). This corrects an earlier
-  draft that wrongly listed MQ as settled Phase 3+.
+  Phase 3+ (master-plan §4). A **message queue / broker** is permitted from
+  Phase 2 by §2.6 but was **deliberately scoped OUT of Phase 2** in the §7
+  decision round (no broker, direct outbox reads only) — a scope choice, not a
+  master-plan constraint.
 
-**Left open for consensus + user decision (this document frames, does not
-resolve):**
-- Everything in §3 (authN's three axes, authZ depth, enforcement mechanism) and
-  everything in §6.
-- The `platform.*` package's exact import contracts — the
-  permissions-as-dependency vs. permissions-as-context question *and* the
-  reverse permissions → masterdata edge (§2.1, §5.1).
+**Resolved in the §7 decision round (2026-08-16) — see §7 for the normative
+record:** §3's keystone questions (authZ depth, identity constraint,
+permissions placement) and all seven §6 questions, including the broker/
+dispatcher-shape question (no broker; co-deployed worker). The bullets below
+are what remains open *after* §7 — genuine per-module ADR/brief detail that
+§7's decisions deliberately defer downward, not phase-shape scope:
+- The request-auth mechanism (session vs. opaque token vs. JWT) — a
+  `platform.permissions` security-ADR recommendation (§3a axis ii, §7.1).
+- The exact `app.core` authorization port signature and the `platform.*`
+  import contracts that realize the §7.1 dependency-inversion decision —
+  including the reverse permissions → masterdata edge (§2.1, §5.1, §7.1).
 - The outbox consumer-specific delivery-state layer's *shape* — a per-consumer
   cursor table vs. per-delivery rows vs. another per-consumer representation
   (never the shared `dispatched_at`, which §5.2 rules out), an integration-ADR
-  concern (§5.2).
-- Whether a broker/MQ is in scope for Phase 2, and the in-monolith dispatcher
-  shape (in-process task vs. co-deployed worker) (§5.3, §6 Q7).
-- Actor/principal propagation across HTTP/CLI/replay/workflow/dispatcher,
-  including whether the actor must survive *through* outbox events (§5.4).
+  concern (§5.2, §7.2).
+- The event originating-actor envelope format — whether/how the originating
+  actor is captured into the event payload at publish time (§5.4, §7.2).
+- The plugin manifest schema; custom-field indexing/validation and field-level
+  authorization (deferred to `platform.customfields`); the public-hosting
+  provider and the demo go-live checklist (§7.2, §7.3).
 
-This draft is intended to feed a real Codex architecture-consensus review and a
-user decision process, in the same spirit as the Week 8 brief (which took five
-rounds). Its success is measured by how well it *frames* these decisions, not by
-having made them.
+This document fed a real Codex architecture-consensus review (APPROVED, 3
+rounds) and a user decision round (§7), in the same spirit as the Week 8 brief.
+It now serves as the settled phase-shape input to the per-module ADRs, starting
+with `platform.permissions`.
