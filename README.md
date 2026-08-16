@@ -1,6 +1,6 @@
 # mini-erp
 
-![coverage](badges/coverage.svg)
+![coverage](https://raw.githubusercontent.com/Pushplayhero/mini-ERP/badges/coverage.svg)
 
 > Not a Digiwin with more features — the Digiwin Taiwanese SMEs can
 > self-host, extend by writing a plugin instead of buying consultant

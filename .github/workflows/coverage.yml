@@ -9,10 +9,10 @@ on:
   pull_request: {}
   push:
     branches: [main]
-    # Sole anti-recursion mechanism: the coverage-badge job's own bot
-    # commit only ever touches badges/**, so it never retriggers this
-    # workflow. No [skip ci] commit-message parsing needed.
-    paths-ignore: ["badges/**"]
+    # No anti-recursion mechanism needed: the coverage-badge job's bot
+    # commit lands on a separate `badges` branch (never `main` -- see the
+    # coverage-badge job below), and this workflow's push trigger only
+    # fires for `main`, so the bot's own commit can never retrigger it.
 
 env:
   DATABASE_URL: postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp
@@ -48,9 +48,12 @@ jobs:
       - run: uv run alembic upgrade head
       - run: uv run pytest --cov=app --cov-report=term
 
-  # push-to-main only: regenerate the badge and commit it back to the
-  # repo at a persistent path (never an ephemeral Actions artifact —
-  # README links to something that doesn't expire or require auth).
+  # push-to-main only: regenerate the badge and commit it to a SEPARATE
+  # `badges` branch (never `main` -- `main` is protected by a required-
+  # status-checks ruleset with no bypass actors, and this job intentionally
+  # has none either; a persistent branch, not an ephemeral Actions
+  # artifact, so README can link something that doesn't expire or require
+  # auth).
   coverage-badge:
     name: coverage badge
     if: github.event_name == 'push'
@@ -61,10 +64,9 @@ jobs:
     # concurrently: each checks out the SHA that triggered it, computes
     # coverage for that stale snapshot, then races to commit+push the
     # badge -- one push can be rejected, or an older badge can "win".
-    # Serializing per-ref (not an anti-recursion mechanism -- paths-ignore
-    # above remains the sole one) plus re-checking out the live branch tip
-    # below (not the frozen trigger SHA) means only the latest push's
-    # coverage ever gets committed.
+    # Serializing per-ref plus re-checking out the live branch tip below
+    # (not the frozen trigger SHA) means only the latest push's coverage
+    # ever gets committed.
     concurrency:
       group: coverage-badge-${{ github.ref }}
       cancel-in-progress: true
@@ -95,15 +97,28 @@ jobs:
       - run: uv sync --group dev
       - run: uv run alembic upgrade head
       - run: uv run pytest --cov=app --cov-report=term
-      # coverage-badge does not create its output directory; badges/ has
-      # never existed in this repo (git doesn't track empty directories)
-      # until this job's own first successful run commits a file into it.
-      - run: mkdir -p badges
-      - run: uv run coverage-badge -o badges/coverage.svg -f
-      - name: Commit updated badge
+      - run: mkdir -p /tmp/badge-out
+      - run: uv run coverage-badge -o /tmp/badge-out/coverage.svg -f
+      - name: Publish badge to the badges branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add badges/coverage.svg
+          # A separate worktree for the `badges` branch, independent of
+          # this job's `main` checkout above -- `main`'s working tree is
+          # never touched by this step. `actions/checkout@v4` only fetches
+          # `main` by default, so `origin/badges` has no local
+          # remote-tracking ref yet -- fetch it explicitly before
+          # `git worktree add` can resolve it. `--orphan` on the
+          # first-ever run (no `badges` branch exists yet); a normal
+          # tracked worktree checkout on every run after that.
+          if git ls-remote --exit-code --heads origin badges > /dev/null; then
+            git fetch --no-tags origin refs/heads/badges:refs/remotes/origin/badges
+            git worktree add --track -b badges /tmp/badges-wt origin/badges
+          else
+            git worktree add --orphan -b badges /tmp/badges-wt
+          fi
+          cp /tmp/badge-out/coverage.svg /tmp/badges-wt/coverage.svg
+          cd /tmp/badges-wt
+          git add coverage.svg
           git diff --staged --quiet || git commit -m "chore: update coverage badge [ci]"
-          git push
+          git push origin badges
