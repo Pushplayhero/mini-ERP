@@ -165,3 +165,98 @@ name = "business modules must not import plugins"
 type = "forbidden"
 source_modules = ["app.modules"]
 forbidden_modules = ["app.plugins"]
+
+# ADR-009 Decision 9 / WEEK9 Slice C: the same "dependency inversion at the
+# composition root" shape ADR-006 already CI-enforces for plugins, now for
+# `app.platform` — business modules depend only on the `app.core.
+# authorization` port; `app.main` (composition root) is the only place
+# allowed to import both `app.core` and `app.platform` and wire them
+# together (mirrors how `app.main` is already the sole plugin-wiring point).
+[[tool.importlinter.contracts]]
+name = "core must not import platform"
+type = "forbidden"
+source_modules = ["app.core"]
+forbidden_modules = ["app.platform"]
+
+[[tool.importlinter.contracts]]
+name = "business modules must not import platform"
+type = "forbidden"
+source_modules = ["app.modules"]
+forbidden_modules = ["app.platform"]
+
+# Decision 9's "may import app.core and app.modules.masterdata only, among
+# app-internal packages" — `platform.permissions` needs `masterdata` for
+# company-existence checks (Phase 2 overview §5.1's permissions ->
+# masterdata edge). Expressed as an explicit forbidden-list, the same shape
+# "masterdata must not import other business modules" above already uses,
+# since `forbidden` contracts have no formal allowlist mode — this list is
+# every OTHER specific `app.*` submodule that exists (or, per Codex
+# diff-review round-1 finding, could soon exist in a currently-named
+# shape), not just the business modules:
+# - `app.modules.sales/inventory/receivables/ledger`, `app.plugins`
+#   (round 1's original list — the modules that exist today).
+# - `app.platform.plugins/customfields/workflow/integration` (round 1
+#   finding): sibling platform modules the PHASE2 overview already names,
+#   none built yet — empirically confirmed import-linter accepts a
+#   `forbidden_modules` entry with no corresponding real module (the
+#   contract just never triggers until one exists to import). The next
+#   platform module's own ADR/brief must add the analogous entry here for
+#   `permissions`, the same way this slice does for what exists today.
+# - `app.main`, `app.cli` (round 2 finding): the composition root and CLI
+#   scripts are also `app`-internal packages `platform.permissions` must
+#   never depend on — the dependency direction runs the other way (`app.
+#   main`/CLI scripts import `platform.permissions`, never the reverse).
+[[tool.importlinter.contracts]]
+name = "platform.permissions may depend on core and masterdata only"
+type = "forbidden"
+source_modules = ["app.platform.permissions"]
+forbidden_modules = [
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+    "app.plugins",
+    "app.platform.plugins",
+    "app.platform.customfields",
+    "app.platform.workflow",
+    "app.platform.integration",
+    "app.main",
+    "app.cli",
+]
+
+# Closes the one gap the contract above structurally cannot (Codex
+# diff-review rounds 3/4): a bare `import app`/`app.modules`/`app.platform`
+# statement, which a purely-enumerated `forbidden` list never catches
+# (import-linter only sees the exact static import target, not an
+# attribute later reached via a package Python already populated because
+# some OTHER file imported the real submodule first), AND — round 3's own
+# first attempt at fixing this got it wrong twice, both empirically caught
+# before landing, not assumed — a `forbidden` contract cannot express this
+# either way: (a) adding `app.platform` to a `forbidden_modules` list whose
+# `source_modules` is itself `app.platform.permissions`, a subpackage of
+# `app.platform`, is silently a no-op — `ForbiddenContract`'s own docstring
+# states overlapping source/forbidden pairs are skipped entirely, confirmed
+# by reading `importlinter/contracts/forbidden.py` directly; (b) adding
+# bare `app`/`app.modules` the same way would also forbid their required
+# descendants (`app.core`, `app.modules.masterdata`) — confirmed via a
+# throwaway probe contract, since removed, that a `forbidden` contract's
+# ancestor-forbid is unconditional with no way to carve out one exception.
+# The `protected` contract type (`as_packages = false`) is the correct
+# tool instead: it operates on the literal import target only, so
+# protecting bare `app`/`app.modules`/`app.platform` from any importer
+# does NOT also protect `app.modules.masterdata` or `app.core` — verified
+# with two more throwaway probes, since removed: one importing bare
+# `app.modules` from a scratch file (correctly BROKEN), one confirming
+# `app.cli.replay_outbox`'s real `from app import main` does NOT register
+# as a bare-`app` import (correctly KEPT, so this doesn't need an allowed-
+# importers exception). No `source_modules` scoping is possible on a
+# `protected` contract (it protects the listed modules from every
+# importer, not from one named source) — applied globally rather than
+# `platform.permissions`-only is intentional here, since no file in this
+# codebase has any legitimate reason to import any of these three bare.
+[[tool.importlinter.contracts]]
+name = "no bare imports of app / app.modules / app.platform package roots"
+type = "protected"
+protected_modules = ["app", "app.modules", "app.platform"]
+allowed_importers = []
+as_packages = false
