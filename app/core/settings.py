@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # request *body* field a client could spoof into a write payload.
     tenant_header_name: str = "X-Company-Id"
 
+    # ADR-009 Decision 3 / WEEK9 Slice B: how long an opaque bearer session
+    # token stays valid after `POST /auth/login`. Not an ADR-009-pinned
+    # number — an ordinary implementation parameter, configurable per
+    # deployment. `switch-company`/every authenticated request never
+    # extends it (no sliding expiry) — a session's lifetime is fixed at
+    # creation; the user must log in again once it lapses.
+    session_ttl_hours: int = 12
+
 
 @lru_cache
 def get_settings() -> Settings:

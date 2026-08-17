@@ -11,6 +11,13 @@ stock + summary) and wired `sales.goods_shipped` — the first event with two
 subscribers — through both it and `ledger.posting` (ADR-007). Week 6 adds
 `receivables` (invoicing, payment application, AR aging) and its four
 posting events, closing the Phase 1 O2C line (ADR-008).
+
+WEEK9 Slice B (ADR-009, Phase 2) adds `platform.permissions`'s `/auth/*`
+router (login/switch-company/logout). Nothing outside `/auth/*` requires
+authentication yet — `tenancy_middleware` below is still Phase 1's
+`X-Company-Id` trust boundary; `AuthenticationMiddleware` replacing it is
+Slice D, not this one. See `docs/adr/WEEK9-platform-permissions-
+implementation-brief.md`.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from app.modules.receivables.router import router as receivables_router
 from app.modules.sales import events as sales_events
 from app.modules.sales import service as sales_service
 from app.modules.sales.router import router as sales_router
+from app.platform.permissions.router import router as permissions_router
 from app.plugins import credit_limit
 
 settings = get_settings()
@@ -122,6 +130,10 @@ app.include_router(ledger_router, prefix="/api/v1")
 app.include_router(sales_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
 app.include_router(receivables_router, prefix="/api/v1")
+# ADR-009 / WEEK9 Slice B: `/auth/*`, not under `/api/v1` — matches the ADR's
+# own literal path references (grouped alongside `/health`/`/docs` in the
+# Slice D public-route allowlist, not the business-module API surface).
+app.include_router(permissions_router)
 
 
 # ---------------------------------------------------------------------------

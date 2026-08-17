@@ -197,7 +197,16 @@ async def _clean_tenant_tables(
                 "payment_allocations, payment_allocation_commands, payments, "
                 "invoices, receivables_sequences, "
                 "sales_order_lines, sales_orders, sales_sequences, "
-                "customers, products, accounts, outbox, companies "
+                "customers, products, accounts, outbox, companies, "
+                # ADR-009 / WEEK9 Slice B: `users` is real per-test data (an
+                # email a test creates), not a shared catalog like
+                # `roles`/`permissions`/`role_permissions` (those stay
+                # untruncated below, same treatment as `currencies`/`uom`
+                # above — code-seeded, read-mostly, no test-isolation
+                # concern). `sessions`/`user_company_roles` need no explicit
+                # listing: both FK to `companies` (CASCADE), so truncating
+                # `companies` already sweeps them.
+                "users "
                 "RESTART IDENTITY CASCADE"
             )
         )
