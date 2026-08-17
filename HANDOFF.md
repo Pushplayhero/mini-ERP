@@ -1,485 +1,305 @@
-# HANDOFF — mini-erp (Week 8 complete; Phase 2 discovery underway)
+# HANDOFF — mini-erp (WEEK9 brief accepted; Slices A/B/C implemented, D next)
 
-Rewritten 2026-08-17. Week 8 (Phase 1 polish) is fully done — see "Week 8
-status" below, condensed from the prior handoff. **This session's real
-news**: Phase 2 ("Platform") architecture discovery started —
-`docs/adr/PHASE2-platform-architecture-overview.md` is ACCEPTED, and the
-first per-module ADR, `docs/adr/ADR-009-platform-permissions.md`, is
-ACCEPTED after an 8-round Codex consensus. **Neither has any implementation
-yet** — this project's plan-then-implement discipline held throughout; the
-next session's job is either implementation or the next ADR
-(`platform.plugins`), not both at once.
+Rewritten 2026-08-17 (same day as the prior handoff — this is a same-day
+continuation, not a new session's discovery). Week 8 (Phase 1 polish) and
+Phase 2 architecture discovery (PHASE2 overview + ADR-009, both ACCEPTED)
+are unchanged from the prior handoff — condensed below. **This session's
+real news**: the scope owner chose "implement ADR-009" over "write the
+next ADR" (`platform.plugins`); a `WEEK9-platform-permissions-
+implementation-brief.md` sequencing ADR-009's 11 Action Items into six
+slices (A–F) was written, taken through **6 rounds of real Codex plan
+consensus** to APPROVED, and **Slices A, B, and C are now implemented,
+each independently Codex-diff-reviewed to APPROVED** (5, 4, and 5 rounds
+respectively — every round a real finding, none rubber-stamped). **Slice D
+(the breaking-change cutover) has not started** — this session ends here
+deliberately, per the scope owner's explicit choice to open a fresh
+context window before touching it, given the brief's own assessment of D
+as "the highest-risk single slice in this project's history."
 
 ## Current state
 
-**HEAD: `51a6b43`** — "Fix coverage-badge job: publish to a separate badges
-branch, not main". Working tree clean (besides untracked
-`.claude/review-state.md`).
-**Tag `v0.1.0`** on `9e8fa52`, unchanged, still correct (see Week 8
-Decision 5 below for why).
-**Remote `origin` = `https://github.com/Pushplayhero/mini-ERP.git`, now
-PUBLIC** (flipped from private this session, after a secrets/history scan
-found nothing — see "GitHub repo/CI infra" below), branch `main` tracks
-`origin/main`, in sync. **A second branch, `badges`, now exists** —
-CI-managed only, holds the live coverage badge SVG, never touched by
-humans.
+**HEAD: `1c35d85`** — "WEEK9 Slice C: import-linter contracts for
+app.platform". Local `main` is **3 commits ahead of `origin/main`**
+(`1507084` Slice A, `49be26a` Slice B, `1c35d85` Slice C) — **none pushed**.
+Working tree clean besides the usual untracked `.claude/`.
+**Tag `v0.1.0`** unchanged. Remote unchanged (public,
+`https://github.com/Pushplayhero/mini-ERP.git`).
 
-## Phase 2 status
+**`make check`-equivalent is green at HEAD**: `ruff check`, `ruff format
+--check`, `mypy app` (0 errors), `lint-imports` (9 contracts kept, 0
+broken — up from 5 before this session), full `pytest` (266 passed, up
+from 228 — 38 new tests across the three slices).
 
-### `docs/adr/PHASE2-platform-architecture-overview.md` — ACCEPTED
+## This session's work
 
-A map-altitude overview of the five Phase 2 modules (`permissions`,
-`plugins`, `customfields`, `workflow`, `integration`), authored by an Opus
-subagent, Codex-architecture-consensus-reviewed 3 rounds (round 1 REJECTED
-with 7 findings, round 2 REJECTED with 2 leftover consistency issues, round
-3 APPROVED). Identifies the authN+authZ+company-entitlement decision as the
-keystone constraining the other four modules.
+### The WEEK9 implementation brief — plan consensus, 6 rounds
 
-**§7 "Decision round"** records the scope-owner's resolution of all seven
-§6 open questions plus the §3 keystone questions, each of the harder ones
-(Q1, Q3, Q4–Q7) run through a dedicated Codex advisory discussion first
-(this project's now-standing pattern: **every decision goes through Codex
-consensus, the result gets reported to the user, and nothing proceeds
-without the user's explicit go-ahead** — a meta-instruction the user gave
-mid-session after an early turn skipped straight from a discussion to
-recording a decision without pausing; see "Engineering workflow" below).
-Key resolutions:
+`docs/adr/WEEK9-platform-permissions-implementation-brief.md`. ADR-009
+itself (already ACCEPTED, prior session) names *what* to build; this brief
+sequences it into six independently-landable slices (A: migration + `app.
+core.authorization` primitive; B: `platform.permissions` package +
+bootstrap CLI; C: import-linter contracts; D: `AuthenticationMiddleware`
+cutover + non-HTTP script migration; E: reference-data/company endpoint
+removal; F: verification). User confirmed the six-slice boundary via
+`AskUserQuestion` before drafting; the brief then went through 6 rounds of
+real `codex.cmd exec -m gpt-5.6-sol` plan review (findings: 6, 7, 2, 2, 1,
+0) before APPROVED. Round 2 surfaced something more than a plan bug: **a
+real placement error in the already-ACCEPTED ADR-009 itself** (Action
+Item 4 put `Public`/`RequiresPermission` in `app.platform.permissions`,
+which is unimplementable against ADR-009's own Decision 9 import
+contract) — fixed with a dated "Post-acceptance correction" note added
+directly into `ADR-009-platform-permissions.md`, not silently overridden
+by the downstream brief. See the brief's own "Consensus Revisions"
+section (round-by-round, findings annotated in-place through Decisions
+2–7) for the full history — worth reading in full if touching Slice D,
+since several of Slice D's own bullets (the two-tier public-route
+mechanism, the service-boundary enforcement requirement, `session.manage`'s
+seeding/classification timing) were shaped directly by that back-and-forth.
 
-- **Q1 (authZ depth)**: pure RBAC (action-level) + a mandatory
-  company-entitlement gate; row/field-level deferred. Amount-threshold
-  approval = "workflow routing picks the step, RBAC decides who may
-  approve it," not a generic per-actor ceiling engine.
-- **Q2 (identity)**: zero-external-dependency login mandatory, local
-  user+credential store the default; external OIDC optional, never
-  required.
-- **Q3 (permissions placement)**: dependency inversion — business modules
-  depend on a narrow `app.core` authorization port; `platform.permissions`
-  implements it; the composition root (`app.main`) wires them, the same
-  pattern already used for plugins.
-- **Q7 (integration transport)**: no broker in Phase 2; a co-deployed
-  standalone worker (changed from the scope owner's initial in-process
-  lean, on Codex's recommendation — transaction/ContextVar/lifecycle
-  coupling risk).
+### Slice A — migration 0009 + `app/core/authorization.py`
 
-### `docs/adr/ADR-009-platform-permissions.md` — ACCEPTED (Codex round 8)
+Commit `1507084`. Six RBAC tables (`users`/`roles`/`permissions`/
+`role_permissions`/`user_company_roles`/`sessions`), seeded with a
+**minimal placeholder catalog only** (`admin` role + `session.manage`
+permission — the full by-endpoint catalog is Slice D's job, migration
+0010). `app/core/authorization.py`: `ActorContext`, `ContextVar` bind/
+reset, `actor_context()` context manager (mirrors `app.core.tenancy`
+exactly), `require_permission()` (fail-closed both ways — no context
+bound, or insufficient permission — `is_system_actor` is an audit marker
+only, never a bypass), `Public`/`RequiresPermission` FastAPI dependency
+factories (placed here per the ADR-009 correction above, not in
+`platform.permissions`).
 
-The first per-module ADR, per §7.2 Q4's sequencing (permissions first,
-contract-before-feature). **This is the headline story of the session**:
-8 rounds of real Codex architecture-consensus review, each finding real
-(if progressively narrower) issues — not a rubber-stamp process. Full
-round-by-round history is in the ADR's own "Consensus Revisions" sections;
-summary:
+Codex diff review: 2 rounds. Round 1 caught a **real regression this
+slice's own migration caused**: `tests/test_migrations.py`'s four
+`command.downgrade(cfg, "-1")` calls (three testing migration 0008, one
+testing migration 0005) all silently changed meaning the moment migration
+0009 became the new alembic head — a relative "-1" step used to land at
+"before 0008" only while 0008 was still head. Fixed with explicit target
+revision ids instead of a relative step; round 1's own first attempt at
+the fix used the *wrong* explicit revision for the 0005 test (caught and
+fixed within the same round, before round 2 re-confirmed). Round 2:
+APPROVED.
 
-- **Round 1** (5 findings): bootstrap chicken-and-egg cycle unresolved,
-  the `app.core.authorization` port/wiring contract underspecified + no
-  system-actor concept for CLI paths, a self-contradiction in the
-  fail-closed design, incomplete data-model invariants, a too-narrow
-  import-linter contract.
-- **Round 2** (3 findings): `demo_o2c.py` (a real HTTP client) was wrongly
-  grouped with direct-service-call CLI scripts; an overclaimed test-
-  coverage sentence; a self-contradictory fail-closed summary.
-- **Round 3** (3 findings) — **a real architecture gap, not a wording
-  bug**: `rebuild_ar_balances.py`/`rebuild_stock_summary.py` do raw ORM
-  queries and `replay_outbox.py` calls `events.redispatch()` directly —
-  none of the three ever reaches the service-layer authorization boundary
-  the whole ADR was built around. Paused and resolved with the user via a
-  dedicated Codex advisory discussion (not decided unilaterally),
-  producing the "trusted-operator maintenance exemption" (Decision 10).
-- **Round 4** (5 findings) — **a second instance of the same gap,
-  self-caught during the round-3 fix**: `POST /companies`/`GET
-  /companies`/`GET /companies/{id}` have the identical global-vs-
-  per-company-RBAC problem `Company` is deliberately never
-  `TenantScopedMixin`. Resolved with the user the same way, producing
-  Decision 12 (create removed to CLI-only; reads reclassified as
-  entitlement-filtered, not removed — reading your own companies is a real
-  ongoing feature, unlike an unrestricted global write).
-- **Round 5** (4 findings): Rule 10's split (10a reconstruction/replay,
-  10b first-install) wasn't applied consistently everywhere, and —
-  substantively — the *new* CLI tools built to replace the removed HTTP
-  writes (Decisions 11/12) had no stated authorization treatment of their
-  own; fixed by reusing the already-established `seed_demo.py`/
-  `DEMO_SEED_ACTOR` pattern (purpose-specific actor + real
-  `require_permission()` at the service boundary) rather than inventing a
-  third exemption category.
-- **Rounds 6–8**: progressively narrower wording/consistency leftovers
-  (a stale phrase in one Options Considered subsection, an asymmetric
-  sentence between two parallel Option A/B descriptions). Round 8:
+### Slice B — `platform.permissions` package + `bootstrap_admin.py`
+
+Commit `49be26a`. `models.py`/`schemas.py`/`service.py` (`login()` with
+ADR-009 Decision 8 multi-company selection, `resolve_actor()` for
+per-request revalidation, `switch_company()`, `logout()` — real row
+deletion, not soft-revoke)/`context.py` (`current_session_id`, deliberately
+separate from `ActorContext` — which session a request came from isn't an
+authorization fact)/`router.py` (`/auth/login`, `/auth/switch-company`,
+`/auth/logout` — the latter two do a temporary manual token-resolve +
+`actor_context()`/`session_context()` bind, since `AuthenticationMiddleware`
+doesn't exist until Slice D). `app/cli/bootstrap_admin.py`: the ADR-009
+Decision 6 first-install sequence, Rule 10b exempt, refuses a second run.
+Argon2id (new `argon2-cffi` dependency) for passwords; SHA-256 for session
+tokens (deliberately not Argon2id — fast, deterministic lookup key vs.
+slow brute-force defense are different problems).
+
+Codex diff review: **4 rounds, the most substantive of the three slices**:
+- **Round 1** (2 findings, both real security bugs, not nitpicks):
+  (a) `bootstrap_admin.py` called `create_user()` then `grant_role()`
+  separately, each self-committing — a failure between them left a
+  permanently-unrecoverable half-entitled user (Rule 10b refuses every
+  rerun once any user exists, so there was no retry path). (b) `login()`
+  skipped the (deliberately slow) Argon2id `verify_password()` call
+  entirely for unknown/disabled-user emails — a genuine **timing side
+  channel** defeating `InvalidCredentialsError`'s own "one response for
+  all three causes" design (the body didn't distinguish them; the clock
+  did). Fixed: merged user+grant into one commit; always call
+  `verify_password()` exactly once, against a dummy hash when no usable
+  user exists.
+- **Round 2** (1 finding): round 1's atomicity fix was **incomplete** —
+  merging user+grant into one commit didn't help, because
+  `_ensure_reference_data()`/`_ensure_company()` *still* called
+  `masterdata_service`'s self-committing `create_currency`/`create_uom`/
+  `create_company` first, each independently ending the whole
+  advisory-lock-protected transaction early. Real lesson: a
+  transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock`) is
+  released by *any* commit inside its transaction, not just the "main"
+  one — a single early intermediate commit anywhere in the sequence
+  defeats the whole lock.
+- **Round 3** (1 finding, on the *tests* not the implementation — Codex
+  explicitly confirmed "the implementation call graph itself is
+  correct" this round): the new rollback/concurrency regression tests
+  never actually exercised `_ensure_reference_data()`'s insert path,
+  because the autouse `_seed_reference_data` fixture already pre-seeds
+  TWD/EA — a regression reintroducing a commit *inside* that specific
+  function would have gone undetected by tests that looked like they'd
+  catch it. Fixed by deleting TWD/EA (and their FK-dependent
+  `exchange_rates`/`uom_conversions` rows — needed because a full-suite
+  run may have unrelated earlier tests' rows referencing them, since
+  `currencies`/`uom` are deliberately never truncated between tests) at
+  the start of both tests.
+- **Round 4**: APPROVED, no new findings.
+
+Final shape: `bootstrap_admin()` runs the **entire** sequence — advisory
+lock, `count_users()==0` check, reference data, company, user+grant — as
+**one transaction with exactly one `session.commit()`** at the very end.
+Two new regression tests added per Codex's explicit request:
+`test_bootstrap_admin_rolls_back_everything_on_failure` (monkeypatches a
+mid-sequence failure, asserts *nothing* — not even reference data —
+survives) and `test_bootstrap_admin_concurrent_runs_only_one_succeeds`
+(`asyncio.gather`s two real concurrent invocations, asserts exactly one
+wins).
+
+### Slice C — import-linter contracts
+
+Commit `1c35d85`. Config-only (`pyproject.toml`), no application code —
+and still took **5 rounds** of Codex diff review, all real, on what looked
+like a trivial change:
+- **Rounds 1–2**: missing `app.main`/`app.cli` in the new "platform.
+  permissions may depend on core and masterdata only" contract's
+  forbidden-list.
+- **Round 3**: forbidding bare `app.modules`/`app` (to close a "bare
+  `import app.modules` then reach a forbidden submodule via an attribute
+  Python already populated elsewhere" side channel) would **also** forbid
+  their required allowed descendants (`app.core`, `app.modules.
+  masterdata`) — `forbidden` contracts have no way to carve out one
+  exception; **empirically confirmed**, not assumed, via a throwaway probe
+  contract.
+- **Round 4**: the bare `app.platform` entry added in round 3 (thought
+  safe, since `platform.permissions` has no allowed dependency under that
+  root at all) was itself **silently a no-op the whole time** —
+  `ForbiddenContract`'s own docstring states source/forbidden pairs that
+  overlap are skipped entirely, and `app.platform.permissions` is a
+  subpackage of `app.platform`. Confirmed by reading
+  `importlinter/contracts/forbidden.py` directly. Codex introduced the
+  `protected` contract type (not previously used in this codebase) as the
+  correct tool: `as_packages = false` makes it operate on the *literal*
+  import target only, so protecting bare `app`/`app.modules`/`app.platform`
+  doesn't cascade to their real descendants.
+- **Round 5**: the `protected`-contract fix verified with three more
+  throwaway probes (real `masterdata`/`app.main` imports stay KEPT; a
+  genuine scratch-file `import app.modules` is correctly caught BROKEN) —
   **APPROVED, no new findings.**
 
-**12 decisions total** — data model (6 tables: `users`/`roles`/
-`permissions`/`role_permissions`/`user_company_roles`/`sessions`);
-Argon2id password hashing; opaque bearer tokens with a *separate* SHA-256
-session-token hash (fast lookup vs. slow password defense are different
-problems — don't reuse Argon2id for both); `app.core.authorization` as a
-context-carrier port, never a shared `SYSTEM_ACTOR` — purpose-specific
-actors only (`DEMO_SEED_ACTOR`, `REFERENCE_DATA_ADMIN_ACTOR`,
-`COMPANY_ADMIN_ACTOR`); `AuthenticationMiddleware` replacing
-`tenancy_middleware`'s header trust boundary while reusing
-`company_context()` unchanged; bootstrap CLI (Rule 10b); defense-in-depth
-fail-closed (real router-level enforcement + service-boundary authoritative
-check + startup route-classification crash); per-request entitlement
-revalidation with explicit 401/403 mapping; 3 new import-linter contracts;
-the Rule 10a/10b maintenance exemption; **Decision 11** (4 already-shipped
-`v0.1.0` reference-data write endpoints removed, replaced by a CLI tool
-with its own bound actor); **Decision 12** (`POST /companies` removed the
-same way, `GET /companies(/id)` reclassified entitlement-filtered).
+Net result: **9 import-linter contracts** (up from 5), including a new
+contract *type* (`protected`) this codebase hadn't used before this
+session.
 
-**Not yet implemented.** No migration, no `app/core/authorization.py`, no
-`app/platform/permissions/` package exists yet. Next per-module ADR per
-§7.2 Q4 is `platform.plugins`.
+## What's next — Slice D, not started
 
-## GitHub repo/CI infra (this session)
+**Explicit scope-owner instruction**: do not start Slice D in this
+session. The user asked to update this handoff and will open a fresh
+context window before continuing.
 
-- **Repo flipped private → public.** Re-scanned this session's own new
-  commits for secrets first (clean); description was already set from
-  Decision 1; added 11 topics (`python`, `fastapi`, `postgresql`, `erp`,
-  `sqlalchemy`, `open-source`, `order-to-cash`, `double-entry-bookkeeping`,
-  `plugin-architecture`, `modular-monolith`, `taiwan`).
-- **Branch protection on `main`**: classic branch protection (not
-  Repository Rulesets), `required_status_checks` = the 4 CI jobs,
-  `enforce_admins: false` (repo owner can still push directly — every push
-  this session showed `Bypassed rule violations` in the remote output),
-  `allow_force_pushes: false`, `allow_deletions: false`, no required PR.
-- **A real, live regression happened and was fixed** — worth reading in
-  full if touching CI again: enabling branch protection broke the
-  coverage-badge job's direct push to `main`, because `github-actions[bot]`
-  (the default `GITHUB_TOKEN` identity) is not an administrator and gets no
-  `enforce_admins` bypass. One push happened to succeed right after
-  protection was first enabled (a grace-period artifact, not reliable
-  behavior); the next two both failed identically
-  (`GH006: Protected branch update failed... 4 of 4 required status checks
-  are expected`), silently leaving `badges/coverage.svg` stale for two real
-  pushes before anyone noticed.
-  - **Explored and confirmed non-viable**: a dedicated GitHub App as a
-    Repository Ruleset bypass actor (Codex's initial recommendation).
-    Empirically confirmed — not assumed — that **GitHub Apps cannot be
-    ruleset bypass actors on a personal (non-Organization) GitHub
-    account**: `POST /repos/.../rulesets` with an `Integration`-type
-    bypass actor fails with `"must be part of the ruleset source or owner
-    organization"`. A dedicated App (`mini-erp-coverage-bot`, app-id
-    `4615270`) was actually created and installed before this was
-    discovered — now uninstalled/unused, its two repo secrets deleted.
-  - **Also learned**: a Repository Ruleset with an empty `bypass_actors`
-    list sets `current_user_can_bypass: "never"` for *everyone*, including
-    the repo owner — caught this via the API response *before* actually
-    pushing anything under that configuration, avoiding locking out normal
-    owner pushes too.
-  - **Actual fix, simpler than the explored alternatives**: the
-    coverage-badge job no longer pushes to `main` at all. It publishes
-    `coverage.svg` to a separate, unprotected `badges` branch instead (via
-    a linked `git worktree` — `--orphan` on the branch's first-ever
-    creation, a tracked worktree on every run after, with an explicit
-    `git fetch` first since `actions/checkout@v4` only fetches `main` by
-    default — Codex diff review round 1 caught that exact gap, round 2
-    APPROVED). Since the bot never touches the protected branch, **no
-    bypass mechanism of any kind is needed** — branch protection was
-    restored to its simple, already-proven classic-protection shape.
-  - README's badge now points at
-    `https://raw.githubusercontent.com/Pushplayhero/mini-ERP/badges/coverage.svg`
-    (repo is public, no auth needed); the stale `badges/coverage.svg` copy
-    was removed from `main`'s tracking.
+Slice D per the brief: `AuthenticationMiddleware` replaces
+`tenancy_middleware`'s header-reading code entirely; the two-tier
+public-route mechanism (Tier 1 static allowlist for framework-generated
+`/docs`/`/redoc`/`/openapi.json`/`/docs/oauth2-redirect`; Tier 2
+routing-metadata lookup via `app.routes` + `.matches(scope)` for every
+ordinary route, including `GET /uom`/`GET /currencies` which must stay
+anonymous); the startup route-classification crash; migration 0010 (the
+full by-endpoint permission-code catalog, additive-only against 0009,
+**must** grant every new code to `admin` or the bootstrap admin gets
+locked out post-cutover — this exact bug was caught in Slice B's own
+review, applies again here); service-boundary `require_permission()` calls
+added inside every affected `service.py` function across `masterdata`/
+`sales`/`ledger`/`inventory`/`receivables`; the four non-HTTP script
+migrations (`seed_demo.py` → `DEMO_SEED_ACTOR` + production guard;
+`rebuild_ar_balances.py`/`rebuild_stock_summary.py`/`replay_outbox.py` →
+no change, Rule 10a exempt; `demo_o2c.py` → real login + bearer token);
+`/auth/switch-company`/`/auth/logout`'s Slice-B-temporary manual token
+resolution → **mandatory removal**, replaced by middleware-bound
+`ActorContext`/`current_session_id`; README's "Try it" walkthrough
+re-verified by actually running the updated commands.
 
-## What's next
+Before writing any Slice D code: **re-read the WEEK9 brief's Decision 5
+in full** (it's long, and every clause in it was shaped by a real Codex
+finding across rounds 1–6 of the plan-consensus review) — do not
+re-derive the mechanism from scratch.
 
-The fork every prior handoff has flagged is now resolved — the user chose
-Phase 2, and Phase 2 discovery is underway. The actual next decision:
+## Established cross-cutting doctrines — additions from this session
 
-- **Continue Phase 2**: write the `platform.plugins` ADR next (§7.2 Q4's
-  order), following the same discipline ADR-009 just proved out
-  (discovery → draft → Codex consensus rounds → user scope decisions where
-  real gaps surface → APPROVED before any code).
-- **Start implementing ADR-009** instead, before moving to the next
-  module's ADR — a legitimate alternative reading of "permissions first":
-  design the whole keystone module's ADR-level shape first (now done), or
-  implement it before designing the next one. Not yet decided — ask.
-- Minor, low-priority leftovers from Week 8 never picked back up: a
-  coverage-history trend beyond the point-in-time badge, the user's own
-  GIF recording for the README walkthrough.
+(See the prior handoff for the full standing list — tenancy, money,
+ledger, event bus, hooks, plugins, transaction ownership, mypy narrowing,
+idempotent handlers, R1 doctrine, `_commit_or_conflict`, testing, Alembic
+transaction scope, "CI that looks right still needs a real run," platform-
+limitation verification, plan-consensus round counts, "CI that has never
+run is not validated." All still apply, unchanged. New from this session:)
 
-Don't assume — ask.
-
-## Project
-
-Open-source ERP kernel ("mini-erp"), Python/FastAPI, explicitly scoped to
-eventually rival 鼎新 (Digiwin) on the O2C (order-to-cash) flow — portfolio /
-career-leverage project, also a personal engineering challenge.
-
-Repo root: this folder (`mini-erp/`). Remote is now public (see above).
-
-## Engineering workflow (established preference — keep enforcing this)
-
-For medium/high-risk work:
-1. Architecture discovery + a real Codex plan/architecture-consensus
-   review before implementation. Nothing gets implemented until Consensus
-   Status is APPROVED.
-2. **Standing meta-rule, stated explicitly by the user mid-session**:
-   *any* decision — architecture, scope, a bugfix approach with multiple
-   real options — goes through a real Codex consensus/advisory pass
-   first; the result gets reported to the user; **nothing proceeds until
-   the user gives explicit go-ahead**, even when the fix seems obviously
-   correct. This was stated after an earlier turn this session jumped
-   from a Codex discussion straight into writing decisions into a
-   document without pausing for the user first — don't repeat that.
-   Applies to code changes too, not just architecture (the coverage-badge
-   branch-protection fix went through this same loop: Codex advisory →
-   report → user picks the option → implement → Codex diff review →
-   report → user says commit/push).
-3. Implementation by Claude Code directly, or delegated to a subagent
-   (this session: an Opus subagent drafted the Phase 2 overview; a Sonnet
-   main thread did everything else, including all of ADR-009's 8 rounds).
-4. A real Codex diff review after implementation, against the spec — every
-   slice/change, no exceptions for "just a workflow YAML" or "just a
-   README fix" (both have caught real issues in past sessions).
-5. `/CODEX REVIEW PRE-PUSH` before pushing multi-slice/production-facing
-   work — still not yet exercised as a distinct step.
-
-**Standing constraint — do not relitigate**: "Codex review" must always
-mean the real `codex` CLI (confirmed logged in via `codex.cmd login
-status` → "Logged in using ChatGPT"), invoked from Claude Code — never
-Claude generating both the plan and its own review of it. This was
-violated silently through Weeks 1–4 (caught and fixed retroactively). If a
-future session's "Codex review" output looks suspiciously fast,
-well-formatted, or absent of any actual `codex.cmd` invocation in the
-transcript, stop and verify before trusting it.
-
-**When Codex rejects a finding, verify it against actual code before
-fixing — don't fix reflexively, and don't dismiss reflexively either.**
-Two sharp illustrations now on record: Week 8 Decision 4's round 2
-"account_type should be lowercase" finding was a real-sounding but false
-positive (settled by live HTTP evidence + source, see the doctrine below);
-ADR-009's round-3/4 findings were the opposite case — real, substantive
-architecture gaps that "sounded like nitpicking" at first glance
-(a maintenance CLI's exact call path; whether `/companies` has the same
-shape as reference data) but held up completely under verification. Always
-verify with real evidence — grep the actual code, run the actual command,
-check the actual API response — before accepting OR dismissing a finding
-either model raises.
-
-**Push gate**: never `git commit`/push/tag-push, and never touch GitHub
-account/security settings (branch protection, secrets, app installs, repo
-visibility), without the user's explicit go-ahead in the current
-conversation — approval from an earlier turn or session does not carry
-forward. This session added a concrete case: destructive GitHub API calls
-(e.g. `DELETE` on branch protection) get blocked by this environment's own
-permission classifier regardless of prior context — when that happens,
-tell the user exactly what's blocked and why, and let them either do it
-themselves (e.g. via the GitHub web UI) or explicitly authorize a retry;
-don't try to work around the block.
-
-**Language**: the user's standing preference (memorized) is all
-user-facing replies in Traditional Chinese (繁體中文) — English is fine in
-code/commits/docs, but chat responses should be Chinese.
-
-## Established cross-cutting doctrines (apply these, don't relitigate them)
-
-- **Multi-tenancy**: `contextvars.ContextVar` + SQLAlchemy `do_orm_execute`
-  hook + `with_loader_criteria`, fail-closed (`TenancyContextError` if no
-  company bound) — the hook only fires for ORM `SELECT` statements
-  (`app/core/db.py` returns immediately for any non-SELECT); write-safety
-  is a separate convention (every INSERT stamps `company_id` from
-  `require_current_company_id()`, and every mutate-by-id re-fetches the
-  row through a hook-filtered SELECT first) — see README.md's
-  "Multi-tenancy" section for the accurate version. `TenantScopedMixin` on
-  any table queried directly. Any Core-table (`sqlalchemy.table()`)
-  reference used to dodge the cross-module-import contract must explicitly
-  filter `company_id` itself — this is exactly the pattern
-  `ledger.service.get_trial_balance` uses to read `accounts` (owned by
-  `masterdata`) without importing it; the raw Core query bypasses more
-  than just the import contract, though — it also skips Pydantic enum
-  serialization (`account_type` renders as the enum member's uppercase
-  `.name`, not the lowercase `.value` — a Codex false-positive finding
-  settled by live evidence, Week 8 Decision 4). A standalone CLI
-  (`app/cli/*`) running outside any HTTP request must bind
-  `company_context(...)` explicitly before any tenant-scoped write —
-  **and per ADR-009 (not yet implemented), will additionally need to bind
-  either a purpose-specific authorization actor or fall under the Rule
-  10a/10b maintenance exemption once permissions lands.**
-- **A "global, never-tenant-scoped resource" is a recurring category with
-  its own authorization gap, not a one-off** (ADR-009's headline
-  architectural lesson): `Company` (the tenant root) and reference data
-  (currencies/UoM/exchange rates) are both deliberately outside
-  `TenantScopedMixin`'s per-company filtering — which also means neither
-  fits neatly into a *per-company* RBAC model once one exists. ADR-009's
-  Decisions 11/12 close this gap for those two instances (remove/CLI-only
-  writes, entitlement-filtered reads where a read is a legitimate ongoing
-  feature) but explicitly flag that other global tables may have the same
-  gap — an audit is real implementation-brief work, not yet done.
-- **Money**: `NUMERIC(20,6)`; FX rates `NUMERIC(20,10)` + `rate_date`;
-  round-half-even enforced at the Pydantic-schema layer for every money
-  field — each module owns a private rounding helper (never imported
-  cross-module), but **the helper's literal name is not uniform**:
-  `masterdata`/`sales`/`receivables` name theirs `_round_half_even_6dp`;
-  `ledger` names its `_round_half_even_to_6dp` (a pre-existing
-  inconsistency, not yet fixed). Zero is always legal for
-  `credit_limit`/price/cost fields. **A discriminating rounding test needs
-  a value where `ROUND_HALF_EVEN` and `ROUND_HALF_UP` actually disagree**
-  — use `X.0000025` (even digit before the tie), not `X.0000015`.
-- **Ledger**: double-entry, dual-currency lines, DEFERRED CONSTRAINT
-  TRIGGER balance check at commit, immutability via `BEFORE UPDATE OR
-  DELETE` triggers, gapless numbering, reversal-only corrections. Trial
-  balance is always an on-the-fly `SUM` aggregate — `accounts` has no
-  balance column. `TrialBalanceLine` includes `account_id`/`account_type`
-  alongside the four expected fields — six total.
-- **Event bus** (`app/core/events.py`): synchronous, in-process,
-  same-transaction dispatch; `publish()` validates + outbox-writes +
-  dispatches; `redispatch()` is the *only* replay entry point; every event
-  schema must carry `company_id`; handler exceptions propagate unchanged
-  (fail-closed). `sales.goods_shipped` has two subscribers whose order is
-  normative: `inventory` before `ledger.posting`. A standalone CLI
-  publishing events must `import app.main` first.
-- **Hooks** (`app/core/hooks.py`): synchronous veto/augment points, not
-  durably recorded, not replayed. The one Phase 1 hook is
-  `sales.order.validate_confirm`, consumed by `credit_limit.py`.
-- **Plugins** (`app/plugins/`): exempt from the module-independence
-  import-linter contract; core/modules may never import plugins. In-
-  process, no sandbox — a plugin is admin-installed trusted code. Phase 1
-  ships one hard-wired demonstration plugin; a real dynamic loader is
-  Phase 2 scope (next ADR after permissions, per §7.2 Q4).
-- **Transaction ownership ("flush-only core + committing wrapper")**: most
-  `service.py` write functions only `flush()`; the caller owns
-  commit/rollback. The wrapper's try/except must wrap the core call
-  itself, not just the final `commit()`. Exceptions:
-  `masterdata`/`ledger`'s simple `create_*` functions and
-  `sales.service.create_order` self-commit via `_commit_or_conflict()` —
-  grep for that function name in a module before assuming either pattern.
-- **mypy narrowing through a proxy boolean doesn't work**: narrow directly
-  at the point of use (`y = x if x is not None else default`), not through
-  an intermediate boolean variable. CI's `mypy app` job scopes to `app/`
-  only, tighter than an unscoped local `uv run mypy .`.
-- **Idempotent event handlers**: partial unique index + `begin_nested()`
-  SAVEPOINT catching `IntegrityError` as an "already processed" no-op.
-- **Append-only facts + per-domain-decided caching**: every fact table is
-  append-only; whether a derived aggregate is *also* cached in a
-  maintained column is decided per domain (on whether a concurrent
-  capacity-check needs a row to lock).
-- **Race prevention ("R1 doctrine")**: every state-machine transition
-  takes `SELECT ... FOR UPDATE` before re-checking status. A derived
-  report combining two related aggregates must read them via ONE SQL
-  statement, not two.
-- **Idempotent CLIs/scripts**: get-or-create by natural key isn't enough —
-  also validate other attributes match what was intended, fail loudly on
-  mismatch; a reconciliation target must be remaining-work-aware.
-- **`_commit_or_conflict()`**: every service-layer commit catches
-  `IntegrityError` → `ConflictError` (409), never a raw 500.
-- **Testing**: real PostgreSQL only. `tests/conftest.py` uses
-  `testcontainers` when Docker is available, falls back to embedded
-  `pgserver` — the DSN must use the real TCP host/port, not the pgdata
-  path (learned skill `pgserver-windows-tcp-dsn`, reused successfully for
-  ad-hoc manual verification databases outside the pytest suite too).
-  Hypothesis property tests need a fresh company per example. A pure
-  schema-layer unit test is legitimate when isolating validator behavior
-  specifically. **When verifying a doc claim, prefer running the actual
-  documented command over re-reading the code** (Week 8 Decision 4: static
-  reading missed two real README staleness gaps; running the walkthrough
-  caught them immediately).
-- **Alembic transaction scope**: the whole `upgrade head` run is one
-  transaction — a migration referencing an enum value added earlier in the
-  same chain must cast the column to text, never the literal to the enum
-  type. A backfill relying on "exactly one matching row" must
-  preflight-check both the zero-match and duplicate-match cases.
-- **CI/infra that "looks right" per spec still needs a REAL run before
-  it's trusted** — proven twice now: Week 8's `coverage-badge` job passed
-  Codex review but still failed its actual first run (`badges/` didn't
-  exist yet); this session's branch-protection change passed Codex review
-  too but broke the same job differently (bot has no admin bypass) two
-  pushes later. Careful design/review only gets you to "should work" —
-  only an actual run gets you to "does work," and one successful run isn't
-  proof either (the bot's one early success was a fluke, not reliable
-  behavior — confirmed by two subsequent identical failures).
-- **A platform/vendor limitation you haven't personally hit yet is not
-  something to assume away** — this session hit two, both only discovered
-  by actually trying the API call: classic branch protection requires
-  GitHub Pro on a *private* repo (Week 8), and GitHub Apps cannot be
-  Repository Ruleset bypass actors on a *personal* (non-Organization)
-  account (this session). Both were genuine surprises to Claude and to
-  Codex's own recommendation. When a plan depends on a platform capability
-  neither party has verified firsthand on this exact account/repo, verify
-  empirically before committing to the design, not after.
-- **Plan-consensus review can take many rounds, and that's fine, even many
-  rounds in a row on the same document** — Week 8's brief took 5 rounds;
-  ADR-009 took 8. Findings got progressively narrower (round 3/4 were real
-  architecture gaps; rounds 6–8 were single leftover phrases), which is
-  the expected shape of a review converging, not a sign something's wrong
-  with the process.
-- **CI that has never actually run is not validated, regardless of how
-  clean local checks look.**
+- **A transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock`)
+  is released by ANY commit inside its transaction, not just a deliberate
+  "final" one.** If a locked critical section calls into helper functions
+  that self-commit (e.g. another module's existing `create_*` service
+  functions), the lock is gone the moment the first of those commits runs
+  — long before the code "intends" to release it. The only fix is
+  non-committing (`add`/`flush`-only) helpers throughout the locked
+  section, with exactly one `commit()` at the very end, owned by the
+  function that acquired the lock.
+- **A deliberately slow hash function (Argon2id) must run unconditionally
+  on every login attempt, even when the email is unknown or the account is
+  disabled.** Short-circuiting past it creates a timing side channel that
+  defeats an otherwise-correct "identical response body for every failure
+  cause" design — the response can refuse to distinguish causes while the
+  clock still does. Fix: verify against a fixed dummy hash when no usable
+  user exists, so the expensive call always happens exactly once.
+- **import-linter's `forbidden` contract has two easy-to-miss semantics,
+  both empirically confirmed this session, not assumed:** (1) forbidding
+  an ancestor package also forbids every descendant unconditionally — no
+  contract shape carves out "forbid X except one specific child," so a
+  partial allowance (e.g. "forbid `app.modules` except
+  `app.modules.masterdata`") is only expressible as an enumerated
+  descendant list, never as an ancestor-level forbid. (2) `source_modules`
+  and `forbidden_modules` pairs that overlap (one is a subpackage of the
+  other) are silently skipped entirely — a contract with
+  `source_modules=["app.platform.permissions"]` and `app.platform` in its
+  `forbidden_modules` does nothing, because the source is itself a
+  descendant of the forbidden target. Neither failure mode raises an
+  error; both just quietly never trigger. **When a `forbidden` contract
+  needs to block a *bare* parent-package import while still allowing one
+  specific descendant, use the `protected` contract type instead**
+  (`protected_modules=[...]`, `allowed_importers=[...]`,
+  `as_packages=false`) — it operates on the literal import target only,
+  with no ancestor/descendant cascading either direction. Verify any
+  non-trivial import-linter contract shape with a throwaway probe
+  contract (add it, run `lint-imports`, observe, delete it) before
+  trusting the configuration — this session needed three separate probes
+  across two different misunderstandings to land the correct shape.
+- **A "trivial config-only" change is not lower-scrutiny than application
+  code** — Slice C (one file, `pyproject.toml`, zero lines of Python) took
+  5 real Codex diff-review rounds, more than Slice A's 2. Diff size and
+  real risk are not the same axis.
+- **Every push-gate action needs asking in the current turn, even mid-flow
+  after several already-approved commits.** This session committed Slice
+  B without asking first (a real slip, corrected before Slice C) —
+  "approval doesn't carry forward" applies within a session between
+  slices, not just across sessions.
 
 ## Module status
 
 | Module | State | ADR |
 |---|---|---|
-| masterdata | committed (Week 1), rounding fix Week 8 | — |
-| ledger | committed (Week 2–3), Codex-reviewed for real | ADR-005, ADR-003, ADR-004 |
-| sales | committed (Week 4), rounding fix + mypy fix Week 8 | ADR-006 |
-| inventory + shipping | committed (Week 5), Codex-reviewed for real | ADR-007 |
-| receivables | committed (Week 6), Codex-reviewed for real | ADR-008 |
-| Week 7 hardening | all 6 slices done, Codex-reviewed for real | `docs/adr/WEEK7-phase1-hardening-brief.md`, ADR-001, ADR-002 |
-| Week 8 polish | all 6 Decisions done | `docs/adr/WEEK8-phase1-polish-brief.md` |
+| masterdata / ledger / sales / inventory+shipping / receivables | committed, Codex-reviewed for real | ADR-001–ADR-008 |
+| Week 7/8 hardening + polish | done | WEEK7/WEEK8 briefs |
 | Phase 2 overview | ACCEPTED, no code | `docs/adr/PHASE2-platform-architecture-overview.md` |
-| `platform.permissions` | **ADR ACCEPTED, no code yet** | `docs/adr/ADR-009-platform-permissions.md` |
-| `platform.plugins` | not started | next ADR per §7.2 Q4 |
-
-**Phase 1 ("Kernel") is complete**, `v0.1.0` is tagged on a real, CI-green,
-now-public GitHub remote with a live coverage badge. Phase 2 architecture
-discovery has produced two ACCEPTED design documents and zero lines of
-Phase 2 application code. See "What's next" above.
+| `platform.permissions` — ADR | **ACCEPTED** (Codex round 8), one post-acceptance correction (Action Item 4, this session) | `docs/adr/ADR-009-platform-permissions.md` |
+| `platform.permissions` — implementation brief | **ACCEPTED** (Codex plan-consensus round 6) | `docs/adr/WEEK9-platform-permissions-implementation-brief.md` |
+| `platform.permissions` — Slice A (migration + authorization primitive) | **DONE**, Codex diff-reviewed round 2 | commit `1507084` |
+| `platform.permissions` — Slice B (package + bootstrap CLI) | **DONE**, Codex diff-reviewed round 4 | commit `49be26a` |
+| `platform.permissions` — Slice C (import-linter contracts) | **DONE**, Codex diff-reviewed round 5 | commit `1c35d85` |
+| `platform.permissions` — Slice D (AuthenticationMiddleware cutover) | **NOT STARTED** — next session's job | — |
+| `platform.permissions` — Slices E/F | not started | — |
+| `platform.plugins` | not started | next ADR after `permissions` fully lands |
 
 ## Running things
 
-```
-uv sync
-docker compose up -d          # postgres for local dev
-uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
-uv run pytest                 # uses testcontainers or embedded pgserver
-uv run pytest --cov=app --cov-report=term   # with coverage
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy .                 # local: app + tests (42 pre-existing errors in tests/, not CI's gate)
-uv run mypy app               # matches CI's exact "mypy --strict" job — this must be 0 errors
-uv run lint-imports            # import-linter contracts
-```
+Unchanged from the prior handoff — see there for the full command list
+(`uv sync`, `docker compose up`, `alembic upgrade head`, `uv run
+uvicorn`, `uv run pytest`, ruff/mypy/lint-imports, the Windows long-path
+junction workaround at `C:\wt\merp`/`C:\wt\venv`). One addition this
+session: `uv add argon2-cffi` was run (already reflected in
+`pyproject.toml`/`uv.lock`, committed in Slice B — nothing further needed).
 
-Or, with the `Makefile`: `make check` runs the full ruff/mypy/lint-imports/
-pytest sequence; `make up`/`make seed`/`make demo` are the docker-compose
-quick-start. **Still never actually exercised end to end in this dev
-environment** (no Docker here) — only the constituent scripts have been run
-manually via an embedded `pgserver` workaround.
+**Bootstrap CLI, once Slice D lands and this is a real deployment**:
+`uv run python -m app.cli.bootstrap_admin --email <e> --password <p>`
+(or `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` env vars) — not yet
+meaningful to run today, since nothing enforces authentication until
+Slice D.
 
-**GitHub remote + CI, now public** (`https://github.com/Pushplayhero/mini-ERP`,
-branch `main`):
-```
-gh run list --repo Pushplayhero/mini-ERP --limit 5   # recent CI runs
-gh run view <run-id> --repo Pushplayhero/mini-ERP     # job breakdown
-gh api repos/Pushplayhero/mini-ERP/branches/main/protection   # branch protection state
-```
-`gh` CLI is installed and authenticated as the `Pushplayhero` account. CI's
-`mypy` job scope is `app/` only.
-
-**Coverage badge**: lives on a dedicated `badges` branch (`coverage.svg` at
-its root), **not** on `main` — see "GitHub repo/CI infra" above for why.
-README links `https://raw.githubusercontent.com/Pushplayhero/mini-ERP/badges/coverage.svg`.
-Regenerated by `.github/workflows/coverage.yml`'s `coverage-badge` job on
-every push to `main`. Never hand-edit — it's overwritten on the next run
-regardless, and doing so would defeat the whole point (a static badge that
-lies).
-
-**Windows long-path workaround** (this session's environment): the real
-repo path is very long (Cowork-generated). A short junction `C:\wt\merp` →
-the real repo path, plus a venv outside the long path
-(`UV_PROJECT_ENVIRONMENT` pointed at `C:\wt\venv`), with `RUFF_CACHE_DIR`/
-`MYPY_CACHE_DIR` also redirected to `C:\wt\.ruff_cache`/`C:\wt\.mypy_cache`.
-Git commands against the real path need `-c core.longpaths=true`. Reuse the
-same junction/venv if it still exists at session start.
-
-**`.claude/review-state.md`** — a session-tooling marker file (the
-`codex-review` skill's plan-consensus pass marker), NOT a project
-deliverable. Left untracked/uncommitted deliberately. Don't `git add
-.claude/`.
-
-228 tests pass locally as of `7794fb9` (unchanged since — this session's
-work was all docs/ADRs/CI config, no application code); 87% coverage
-(measured for real, multiple times, in CI); ruff/lint-imports clean;
-`mypy app` (CI's exact scope) clean; `mypy .` (broader local scope) has 42
-pre-existing errors, all in `tests/`, confirmed not a regression and out of
-CI's actual gate scope.
+**Push gate**: same as always — `1507084`/`49be26a`/`1c35d85` are
+committed locally, never pushed, per this session's explicit per-commit
+confirmations. Do not push without asking again in the next session,
+regardless of this handoff's tone.
