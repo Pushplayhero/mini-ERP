@@ -18,6 +18,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+# Explicit "state immediately before migration N ran" revision ids, used by
+# the per-migration round-trip/backfill tests below instead of a relative
+# `command.downgrade(cfg, "-1")`. A relative "-1" step only means "before
+# migration N" while N is still `head` — it silently stops meaning that the
+# moment any later migration is appended (exactly what happened when Slice
+# A's migration 0009 landed: "-1" started meaning "undo 0009 only", leaving
+# 0005/0008's own schema/constraints in place and breaking these tests' setup
+# — Codex diff review caught one of the four call sites still pointed at the
+# wrong migration's pre-state after the first fix pass). Explicit revision
+# ids are robust to any number of future migrations landing after either.
+_BEFORE_MIGRATION_0005 = "a2f5d8e91c47"  # 0005's own down_revision (0004's revision id)
+_BEFORE_MIGRATION_0008 = "c7d2e6f1a840"  # 0008's own down_revision (0007's revision id)
+
 EXPECTED_TABLES = {
     "companies",
     "customers",
@@ -39,6 +52,13 @@ EXPECTED_TABLES = {
     "payment_allocation_commands",
     "payment_allocations",
     "receivables_sequences",
+    # ADR-009 / WEEK9 Slice A / migration 0009.
+    "users",
+    "roles",
+    "permissions",
+    "role_permissions",
+    "user_company_roles",
+    "sessions",
     "alembic_version",
 }
 
@@ -165,7 +185,7 @@ async def test_migration_0005_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
     # exists.
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0005)
         await asyncio.to_thread(command.upgrade, cfg, "head")
     finally:
         await core_db.dispose_engine()
@@ -268,7 +288,7 @@ async def test_migration_0008_shipped_at_backfill_on_populated_database(
 
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0008)
     finally:
         await core_db.dispose_engine()
 
@@ -383,7 +403,7 @@ async def test_migration_0008_shipped_at_backfill_rejects_zero_matching_outbox_e
 
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0008)
     finally:
         await core_db.dispose_engine()
 
@@ -515,7 +535,7 @@ async def test_migration_0008_shipped_at_backfill_rejects_duplicate_outbox_event
 
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0008)
     finally:
         await core_db.dispose_engine()
 

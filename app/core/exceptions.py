@@ -21,6 +21,18 @@ class TenancyContextError(AppError):
     """
 
 
+class ActionDeniedError(AppError):
+    """Raised by `app.core.authorization.require_permission()` (ADR-009).
+
+    Fail-closed for two distinct reasons, both raising this same exception:
+    no `ActorContext` is bound at all (unauthenticated, in the HTTP path
+    this is a 401 — but that mapping happens in `AuthenticationMiddleware`,
+    not here, since a CLI/non-HTTP caller sees this exception directly with
+    no HTTP status to map to), or a bound actor's `permission_codes` does
+    not include the requested action (authenticated but unauthorized, 403).
+    """
+
+
 class NotFoundError(AppError):
     """Requested entity does not exist (or is not visible in the current tenant)."""
 
