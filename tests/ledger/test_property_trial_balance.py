@@ -27,11 +27,13 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.authorization import actor_context
 from app.core.tenancy import company_context
 from app.modules.ledger import service as ledger_service
 from app.modules.ledger.schemas import AccountingPeriodCreate, JournalEntryCreate, JournalLineCreate
 from app.modules.masterdata import service as masterdata_service
 from app.modules.masterdata.schemas import AccountCreate, CompanyCreate
+from tests.conftest import TEST_ADMIN_ACTOR
 
 ENTRY_DATE = date(2026, 1, 15)
 
@@ -43,29 +45,31 @@ async def _setup_company(dsn: str) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     engine = create_async_engine(dsn)
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with session_factory() as session:
-            company = await masterdata_service.create_company(
-                session,
-                CompanyCreate(
-                    code=f"HYP{uuid.uuid4().hex[:10].upper()}",
-                    name="Hypothesis Co",
-                    functional_currency_code="TWD",
-                ),
-            )
-        with company_context(company.id):
+        with actor_context(TEST_ADMIN_ACTOR):
             async with session_factory() as session:
-                debit_account = await masterdata_service.create_account(
-                    session, AccountCreate(code="1000", name="Cash", type="asset")
+                company = await masterdata_service.create_company(
+                    session,
+                    CompanyCreate(
+                        code=f"HYP{uuid.uuid4().hex[:10].upper()}",
+                        name="Hypothesis Co",
+                        functional_currency_code="TWD",
+                    ),
                 )
-            async with session_factory() as session:
-                credit_account = await masterdata_service.create_account(
-                    session, AccountCreate(code="4000", name="Revenue", type="revenue")
-                )
-            async with session_factory() as session:
-                await ledger_service.create_period(
-                    session, AccountingPeriodCreate(year=ENTRY_DATE.year, month=ENTRY_DATE.month)
-                )
-        return company.id, debit_account.id, credit_account.id
+            with company_context(company.id):
+                async with session_factory() as session:
+                    debit_account = await masterdata_service.create_account(
+                        session, AccountCreate(code="1000", name="Cash", type="asset")
+                    )
+                async with session_factory() as session:
+                    credit_account = await masterdata_service.create_account(
+                        session, AccountCreate(code="4000", name="Revenue", type="revenue")
+                    )
+                async with session_factory() as session:
+                    await ledger_service.create_period(
+                        session,
+                        AccountingPeriodCreate(year=ENTRY_DATE.year, month=ENTRY_DATE.month),
+                    )
+            return company.id, debit_account.id, credit_account.id
     finally:
         await engine.dispose()
 
@@ -88,7 +92,7 @@ async def _post_entries_and_check_balance(
     engine = create_async_engine(dsn)
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        with company_context(company_id):
+        with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
             posted_total = Decimal("0")
             for amount_cents in cents:
                 amount = (Decimal(amount_cents) / Decimal(100)).quantize(Decimal("0.01"))

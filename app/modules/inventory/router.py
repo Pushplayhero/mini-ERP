@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import RequiresPermission
 from app.core.db import get_db_session
 from app.modules.inventory import service
 from app.modules.inventory.schemas import StockAdjustmentCreate, StockMoveRead, StockSummaryRead
@@ -17,13 +18,22 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
-@router.post("/adjustments", response_model=StockMoveRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/adjustments",
+    response_model=StockMoveRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequiresPermission("inventory.adjustment.create"))],
+)
 async def create_adjustment(payload: StockAdjustmentCreate, session: DbSession) -> StockMoveRead:
     move = await service.create_adjustment(session, payload)
     return StockMoveRead.model_validate(move)
 
 
-@router.get("/summary", response_model=list[StockSummaryRead])
+@router.get(
+    "/summary",
+    response_model=list[StockSummaryRead],
+    dependencies=[Depends(RequiresPermission("inventory.summary.read"))],
+)
 async def get_stock_summary(
     session: DbSession, product_id: uuid.UUID | None = None
 ) -> list[StockSummaryRead]:
@@ -31,7 +41,11 @@ async def get_stock_summary(
     return [StockSummaryRead.model_validate(s) for s in summaries]
 
 
-@router.get("/moves", response_model=list[StockMoveRead])
+@router.get(
+    "/moves",
+    response_model=list[StockMoveRead],
+    dependencies=[Depends(RequiresPermission("inventory.move.read"))],
+)
 async def list_stock_moves(
     session: DbSession, product_id: uuid.UUID | None = None
 ) -> list[StockMoveRead]:

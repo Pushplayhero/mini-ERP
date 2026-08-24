@@ -16,6 +16,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import TenancyContextError
 from app.core.tenancy import company_context
@@ -24,17 +25,15 @@ from tests.conftest import company_headers
 
 
 async def _create_company(client: AsyncClient, code: str) -> uuid.UUID:
-    response = await client.post(
-        "/api/v1/companies",
-        json={"code": code, "name": f"{code} Inc.", "functional_currency_code": "TWD"},
-    )
-    assert response.status_code == 201, response.text
-    return uuid.UUID(response.json()["id"])
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code=code)
+    return auth.company_id
 
 
 async def _uom_id(client: AsyncClient, company_id: uuid.UUID) -> str:
     response = await client.get("/api/v1/uom", headers=company_headers(company_id))
-    return next(u["id"] for u in response.json() if u["code"] == "EA")
+    return str(next(u["id"] for u in response.json() if u["code"] == "EA"))
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +229,7 @@ async def test_all_tenant_endpoints_reject_missing_company_context(client: Async
         ("GET", "/api/v1/accounts"),
     ]:
         response = await client.request(method, path)
-        assert response.status_code == 403, f"{method} {path} did not fail-closed"
+        assert response.status_code == 401, f"{method} {path} did not fail-closed"
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +238,9 @@ async def test_all_tenant_endpoints_reject_missing_company_context(client: Async
 
 
 @pytest.mark.asyncio
-async def test_orm_query_without_company_context_raises_not_silently_empty(db_session) -> None:
+async def test_orm_query_without_company_context_raises_not_silently_empty(
+    db_session: AsyncSession,
+) -> None:
     """Directly exercises app.core.db's do_orm_execute hook.
 
     Master-plan §10.2 requires fail-*closed*: an unbound context must raise,
@@ -251,7 +252,9 @@ async def test_orm_query_without_company_context_raises_not_silently_empty(db_se
 
 
 @pytest.mark.asyncio
-async def test_orm_query_with_company_context_is_filtered(client: AsyncClient, db_session) -> None:
+async def test_orm_query_with_company_context_is_filtered(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     company_a = await _create_company(client, "ISODBA")
     company_b = await _create_company(client, "ISODBB")
 
@@ -270,3 +273,56 @@ async def test_orm_query_with_company_context_is_filtered(client: AsyncClient, d
         result = await db_session.execute(select(Customer))
         rows = result.scalars().all()
     assert {r.code for r in rows} == {"DBX"}
+
+
+@pytest.mark.asyncio
+async def test_cross_company_entitlement_isolation_http(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """ADR-009 Decision 8 & 12: A user entitled only to Company A cannot
+    read Company B in list_companies, get_company(B) -> 404, nor switch-company to B (403).
+    """
+    from tests.platform.permissions._helpers import create_user_with_role
+
+    company_a = await _create_company(client, "ENTITA")
+    company_b = await _create_company(client, "ENTITB")
+
+    await create_user_with_role(
+        db_session,
+        email="entitled_user@example.com",
+        password="secretpassword123",
+        company_id=company_a,
+        role_code="admin",
+    )
+
+    # Login to Company A
+    login_resp = await client.post(
+        "/auth/login",
+        json={
+            "email": "entitled_user@example.com",
+            "password": "secretpassword123",
+            "company_id": str(company_a),
+        },
+    )
+    assert login_resp.status_code == 200, login_resp.text
+    token = login_resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. list_companies only returns Company A (entitled), never Company B
+    companies_resp = await client.get("/api/v1/companies", headers=headers)
+    assert companies_resp.status_code == 200
+    returned_ids = {c["id"] for c in companies_resp.json()}
+    assert str(company_a) in returned_ids
+    assert str(company_b) not in returned_ids
+
+    # 2. get_company on Company B returns 404
+    get_b_resp = await client.get(f"/api/v1/companies/{company_b}", headers=headers)
+    assert get_b_resp.status_code == 404
+
+    # 3. switch-company to Company B fails with 403 Forbidden
+    switch_resp = await client.post(
+        "/auth/switch-company",
+        json={"company_id": str(company_b)},
+        headers=headers,
+    )
+    assert switch_resp.status_code == 403

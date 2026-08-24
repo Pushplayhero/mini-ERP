@@ -102,8 +102,9 @@ warn_unused_ignores = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "pgserver.*"]
+module = ["testcontainers.*", "pgserver.*", "pgserver", "asyncpg.*", "asyncpg"]
 ignore_missing_imports = true
+
 
 # --------------------------------------------------------------------------
 # pytest

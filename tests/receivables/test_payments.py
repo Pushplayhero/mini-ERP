@@ -13,16 +13,19 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from app.core.authorization import actor_context
 from app.core.exceptions import ConflictError
 from app.core.tenancy import company_context
 from app.modules.receivables import service as receivables_service
 from app.modules.receivables.schemas import PaymentAllocationIn
+from tests.conftest import TEST_ADMIN_ACTOR, company_headers
 from tests.receivables._helpers import (
     allocate_payment,
     allocation,
@@ -32,6 +35,12 @@ from tests.receivables._helpers import (
     setup_shipped_order,
     void_payment,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 @pytest.mark.asyncio
@@ -89,7 +98,7 @@ async def test_void_payment_posts_contra_and_drops_unapplied_credit(client: Asyn
     assert tb["1000"]["total_debit"] == tb["1000"]["total_credit"] == "50.000000"
 
     aging = await client.get(
-        "/api/v1/receivables/reports/ar-aging", headers={"X-Company-Id": str(company_id)}
+        "/api/v1/receivables/reports/ar-aging", headers=company_headers(company_id)
     )
     rows = aging.json()
     matching = [r for r in rows if r["customer_id"] == str(customer_id)]
@@ -140,7 +149,7 @@ async def test_inline_allocation_settles_invoice(client: AsyncClient) -> None:
     assert payment["allocated_amount"] == "80.000000"
 
     invoice_resp = await client.get(
-        f"/api/v1/receivables/invoices/{invoice['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/receivables/invoices/{invoice['id']}", headers=company_headers(company_id)
     )
     assert invoice_resp.json()["status"] == "paid"
     assert invoice_resp.json()["settled_amount"] == "80.000000"
@@ -163,7 +172,7 @@ async def test_late_allocation_settles_invoice(client: AsyncClient) -> None:
     assert alloc_resp.json()["allocated_amount"] == "60.000000"
 
     invoice_resp = await client.get(
-        f"/api/v1/receivables/invoices/{invoice['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/receivables/invoices/{invoice['id']}", headers=company_headers(company_id)
     )
     assert invoice_resp.json()["status"] == "paid"
 
@@ -183,7 +192,7 @@ async def test_partial_allocation_leaves_invoice_partial(client: AsyncClient) ->
     assert alloc_resp.status_code == 200, alloc_resp.text
 
     invoice_resp = await client.get(
-        f"/api/v1/receivables/invoices/{invoice['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/receivables/invoices/{invoice['id']}", headers=company_headers(company_id)
     )
     assert invoice_resp.json()["status"] == "partial"
     assert invoice_resp.json()["settled_amount"] == "40.000000"
@@ -437,7 +446,7 @@ async def test_concurrent_allocations_same_invoice_capacity_respected(
     assert len(losers) == 1
 
     invoice_resp = await client.get(
-        f"/api/v1/receivables/invoices/{invoice['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/receivables/invoices/{invoice['id']}", headers=company_headers(company_id)
     )
     # Capacity respected: settled_amount never exceeds total (100), even
     # though both payments together (120) could have overshot it.

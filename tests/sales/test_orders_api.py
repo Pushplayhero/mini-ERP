@@ -165,7 +165,7 @@ async def test_draft_order_can_be_edited_and_total_recomputed(client: AsyncClien
     patch = await client.patch(
         f"/api/v1/sales-orders/{order['id']}",
         json={"lines": [order_line(product_id, "5", unit_price="10")]},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert patch.status_code == 200, patch.text
     body = patch.json()
@@ -189,7 +189,7 @@ async def test_non_draft_order_edit_is_409(client: AsyncClient) -> None:
     patch = await client.patch(
         f"/api/v1/sales-orders/{order['id']}",
         json={"custom_data": {"note": "trying to sneak an edit in"}},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert patch.status_code == 409
 
@@ -218,12 +218,12 @@ async def test_confirm_freezes_customer_snapshot_against_later_masterdata_edits(
     rename = await client.patch(
         f"/api/v1/customers/{customer_id}",
         json={"name": "Renamed After Confirm"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert rename.status_code == 200, rename.text
 
     reread = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)
     )
     assert reread.json()["snapshot_customer_name"] == "CUSTC1 customer"
 
@@ -252,12 +252,12 @@ async def test_confirm_freezes_product_snapshot_against_later_masterdata_edits(
     rename = await client.patch(
         f"/api/v1/products/{product_id}",
         json={"name": "Renamed After Confirm"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert rename.status_code == 200, rename.text
 
     reread = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)
     )
     assert reread.json()["lines"][0]["snapshot_product_name"] == "SKU-C1B widget"
 
@@ -287,7 +287,7 @@ async def test_confirm_reprices_non_override_line_to_current_product_price(
     reprice = await client.patch(
         f"/api/v1/products/{product_id}",
         json={"list_price": "25"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert reprice.status_code == 200, reprice.text
 
@@ -321,7 +321,7 @@ async def test_confirm_preserves_manual_unit_price_override_despite_price_change
     reprice = await client.patch(
         f"/api/v1/products/{product_id}",
         json={"list_price": "25"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert reprice.status_code == 200, reprice.text
 
@@ -352,7 +352,7 @@ async def test_confirm_rejects_when_reprice_drops_total_to_zero(client: AsyncCli
     reprice = await client.patch(
         f"/api/v1/products/{product_id}",
         json={"list_price": "0"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert reprice.status_code == 200, reprice.text
 
@@ -377,7 +377,7 @@ async def test_confirm_accepts_when_reprice_raises_total_above_zero(client: Asyn
     reprice = await client.patch(
         f"/api/v1/products/{product_id}",
         json={"list_price": "15"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert reprice.status_code == 200, reprice.text
 
@@ -410,7 +410,7 @@ async def test_confirm_publishes_event_and_writes_one_outbox_row(
     assert len(rows) == 1
     assert rows[0].payload["company_id"] == str(company_id)
     assert rows[0].payload["customer_id"] == str(customer_id)
-    assert Decimal(rows[0].payload["total"]) == Decimal("30")
+    assert Decimal(str(rows[0].payload["total"])) == Decimal("30")
 
 
 @pytest.mark.asyncio
@@ -445,7 +445,7 @@ async def test_confirm_empty_order_is_422(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
     reread = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)
     )
     assert reread.json()["status"] == "draft"
 
@@ -464,7 +464,7 @@ async def test_confirm_zero_total_order_is_422(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
     reread = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)
     )
     assert reread.json()["status"] == "draft"
 
@@ -552,12 +552,12 @@ async def test_sales_order_cross_company_get_is_404(client: AsyncClient) -> None
     order = await create_draft_order(client, company_a, customer_id, [])
 
     own = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_a)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_a)
     )
     assert own.status_code == 200
 
     cross = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_b)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_b)
     )
     assert cross.status_code == 404
 
@@ -570,7 +570,7 @@ async def test_sales_order_list_never_leaks_across_companies(client: AsyncClient
 
     await create_draft_order(client, company_a, customer_id, [])
 
-    list_b = await client.get("/api/v1/sales-orders", headers={"X-Company-Id": str(company_b)})
+    list_b = await client.get("/api/v1/sales-orders", headers=company_headers(company_b))
     assert list_b.json() == []
 
 
@@ -593,7 +593,7 @@ async def test_sales_order_cross_company_confirm_and_cancel_are_404(client: Asyn
 
     # Still draft for company A.
     still_own = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_a)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_a)
     )
     assert still_own.json()["status"] == "draft"
 

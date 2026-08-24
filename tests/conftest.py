@@ -39,9 +39,12 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+
+from app.core.authorization import ActorContext
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,22 +69,28 @@ def _start_testcontainers_postgres() -> tuple[str, object]:
 
 
 def _start_pgserver_postgres() -> tuple[str, object]:
+    import asyncio
+
+    import asyncpg
     import pgserver
 
     pgdata = Path(tempfile.mkdtemp(prefix="mini_erp_pgtest_"))
-    server = pgserver.get_server(pgdata, cleanup_mode="delete")
-    server.psql("CREATE DATABASE mini_erp_test;")
-    # Windows fix: pgserver's own `get_postmaster_info()` reports a real
-    # TCP `hostname`/`port` (127.0.0.1, an ephemeral port) — the previous
-    # version of this function built the DSN with `host=<pgdata directory
-    # path>` instead, which only works where asyncpg can treat that value
-    # as a Unix-domain-socket directory. Windows has no such thing, so
-    # asyncpg fell through to plain DNS resolution on the literal path
-    # string and failed with `getaddrinfo failed` — this is what HANDOFF.md
-    # previously documented as "the pgserver fallback path does NOT work on
-    # Windows". It does; the DSN construction was just wrong. `psql()`
-    # above already proves TCP works (it uses the same postmaster).
+    server = pgserver.get_server(pgdata, cleanup_mode="delete")  # type: ignore[attr-defined]
     info = server.get_postmaster_info()
+
+    async def _init_db() -> None:
+        conn = await asyncpg.connect(
+            user="postgres",
+            host=info.hostname,
+            port=info.port,
+            database="postgres",
+        )
+        try:
+            await conn.execute("CREATE DATABASE mini_erp_test;")
+        finally:
+            await conn.close()
+
+    asyncio.run(_init_db())
     dsn = f"postgresql+asyncpg://postgres:@{info.hostname}:{info.port}/mini_erp_test"
     return dsn, server
 
@@ -182,6 +191,9 @@ async def _clean_tenant_tables(
     global, read-mostly data shared by design (master-plan §10.2 only
     requires isolation of tenant-scoped rows).
     """
+    from tests._auth_helpers import clear_company_token_cache
+
+    clear_company_token_cache()
     async with db_engine.begin() as conn:
         # journal_entries/journal_lines carry `BEFORE UPDATE OR DELETE`
         # triggers (ADR-005 Decision 3) that unconditionally raise — but
@@ -214,7 +226,7 @@ async def _clean_tenant_tables(
 
 
 @pytest_asyncio.fixture
-async def db_session(db_engine: AsyncEngine):
+async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -222,15 +234,94 @@ async def db_session(db_engine: AsyncEngine):
         yield session
 
 
+ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
+    {
+        "session.manage",
+        "masterdata.company.create",
+        "masterdata.company.read",
+        "masterdata.customer.create",
+        "masterdata.customer.read",
+        "masterdata.customer.update",
+        "masterdata.customer.delete",
+        "masterdata.product.create",
+        "masterdata.product.read",
+        "masterdata.product.update",
+        "masterdata.product.delete",
+        "masterdata.account.create",
+        "masterdata.account.read",
+        "masterdata.account.update",
+        "masterdata.account.delete",
+        "masterdata.uom.create",
+        "masterdata.uom_conversion.create",
+        "masterdata.uom_conversion.read",
+        "masterdata.currency.create",
+        "masterdata.exchange_rate.create",
+        "masterdata.exchange_rate.read",
+        "sales.order.create",
+        "sales.order.read",
+        "sales.order.update",
+        "sales.order.confirm",
+        "sales.order.cancel",
+        "sales.order.ship",
+        "ledger.period.create",
+        "ledger.period.read",
+        "ledger.period.close",
+        "ledger.journal_entry.create",
+        "ledger.journal_entry.read",
+        "ledger.journal_entry.reverse",
+        "ledger.report.read",
+        "inventory.adjustment.create",
+        "inventory.summary.read",
+        "inventory.move.read",
+        "receivables.invoice.create",
+        "receivables.invoice.read",
+        "receivables.invoice.void",
+        "receivables.payment.create",
+        "receivables.payment.read",
+        "receivables.payment.void",
+        "receivables.payment.allocate",
+        "receivables.report.read",
+    }
+)
+
+TEST_ADMIN_ACTOR = ActorContext(
+    user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+    permission_codes=ALL_ADMIN_PERMISSION_CODES,
+    is_system_actor=True,
+)
+
+
 @pytest_asyncio.fixture
 async def client(db_engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
     from app.main import app
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
-        yield ac
+    async with LifespanManager(app) as manager:
+        transport = ASGITransport(app=manager.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            yield ac
+
+
+@pytest_asyncio.fixture
+async def anchor_admin(db_session: object) -> None:
+    """Rule 10b bootstrap an anchor admin user/company/role in test DB."""
+    from app.cli.bootstrap_admin import bootstrap_admin
+
+    await bootstrap_admin(
+        email="admin@example.com",
+        password="adminpassword123",
+        company_code="MAIN",
+        company_name="Main Company",
+    )
 
 
 def company_headers(company_id: uuid.UUID) -> dict[str, str]:
-    """Build the `X-Company-Id` header a real deployment's auth layer would set."""
-    return {"X-Company-Id": str(company_id)}
+    """Build Authorization bearer headers for tests (fail-closed per ADR-009)."""
+    from tests._auth_helpers import get_company_token
+
+    token = get_company_token(company_id)
+    if token is None:
+        raise RuntimeError(
+            f"No test auth token found for company {company_id}. "
+            "Every HTTP test must authenticate via a real session token (ADR-009 Cutover)."
+        )
+    return {"Authorization": f"Bearer {token}"}

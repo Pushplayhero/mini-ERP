@@ -58,6 +58,21 @@ scope change Claude decided unilaterally — flagged explicitly to the scope own
 ADR-009's own Action Item 4 (not silently overridden by this downstream document).
 
 ---
+## 2026-08-24 correction — Slice D session lifecycle
+
+This dated correction supersedes earlier binary `Public`/`RequiresPermission`
+statements in the implementation narrative. The classifier accepts exactly one of
+`Public()`, `Authenticated()`, or `RequiresPermission(code)` for each non-Tier-1
+route. `Authenticated()` calls `require_current_actor()` and succeeds for an actor
+with an empty permission set.
+
+`/auth/switch-company` and `/auth/logout` use `Depends(Authenticated())`; their
+services require actor presence, current session context, and actor/session
+ownership, while preserving entitlement, invalid-session, expiry, disabled-user,
+and missing-token behavior. `session.manage` catalog rows and admin grants remain
+unchanged. Earlier text prescribing `RequiresPermission("session.manage")` for
+these two lifecycle endpoints is retained as historical review narrative only and
+is superseded by this 2026-08-24 correction.
 
 ## 0. Context / where Phase 2 stands
 

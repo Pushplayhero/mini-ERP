@@ -18,7 +18,7 @@ Two pieces:
    module — this module only *consumes* an already-built `ActorContext`,
    it never resolves one itself.
 
-2. `Public` / `RequiresPermission` — the FastAPI dependency factories a
+2. `Public` / `Authenticated` / `RequiresPermission` — the FastAPI dependency factories a
    route attaches to declare its own classification (ADR-009 Decision 7).
    **Amended per the WEEK9 brief's round-1 Codex finding**: ADR-009's
    Action Item 4 originally placed these in `app.platform.permissions`,
@@ -86,6 +86,16 @@ def current_actor_or_none() -> ActorContext | None:
     return _current_actor.get()
 
 
+def require_current_actor() -> ActorContext:
+    """Return the active `ActorContext`, or raise ActionDeniedError if none is bound."""
+    ctx = _current_actor.get()
+    if ctx is None:
+        raise ActionDeniedError(
+            "No actor context is bound. Fail-closed per ADR-009 / app.core.authorization."
+        )
+    return ctx
+
+
 def require_permission(action: str) -> None:
     """Raise `ActionDeniedError` unless the bound actor may perform `action`.
 
@@ -136,13 +146,13 @@ actor_context = _ActorContextManager
 # ---------------------------------------------------------------------------
 # Route classification (ADR-009 Decision 7) — FastAPI dependency factories.
 # ---------------------------------------------------------------------------
-# Every route must carry exactly one of these two, attached via FastAPI's
+# Every route must carry exactly one of these three, attached via FastAPI's
 # `dependencies=[Depends(...)]`. Slice D's `AuthenticationMiddleware` and
 # startup route-classification check both detect which one a route carries
-# by inspecting `route.dependencies` for an instance of `Public`/
+# by inspecting `route.dependencies` for one of `Public`, `Authenticated`, or
 # `RequiresPermission` (see the WEEK9 brief's Decision 5 for the full
 # route-matching mechanism) — that inspection logic is Slice D's job; this
-# module only defines the two markers themselves.
+# module only defines the three markers themselves.
 
 
 class Public:
@@ -154,6 +164,18 @@ class Public:
 
     def __call__(self) -> None:
         return None
+
+
+class Authenticated:
+    """Dependency: require an authenticated actor without requiring a permission.
+
+    This is a real fail-closed dependency. It is used for session-lifecycle
+    operations whose authorization is established by the authenticated session
+    and ownership checks rather than by the active company's permission set.
+    """
+
+    def __call__(self) -> None:
+        require_current_actor()
 
 
 class RequiresPermission:

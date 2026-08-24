@@ -11,13 +11,12 @@ walkthrough would, which is exactly why it's a real script instead of
 inline `curl`/jq piped through a Makefile recipe (Codex diff review
 2026-08-15, v1 P2: brittle, not cross-platform, hard to read).
 
-Deliberately self-contained — it does NOT depend on `seed_demo` having run
-first, including reference data: a genuinely fresh migrated database has
-no `currencies`/`uom` rows at all (same fact `seed_demo`'s own module
-docstring documents), so this script ensures `TWD`/`EA` itself, over HTTP,
-before ever creating a company (Codex diff review 2026-08-15, slice-3
-finding 1 — a prior revision skipped this and only worked by accident,
-against the pytest fixture's pre-seeded reference data).
+Requires bootstrap first — administrator credentials and tenant company
+must be provisioned via `make bootstrap` (or `python -m app.cli.bootstrap_admin`)
+prior to execution. This script logs in via `POST /auth/login` using
+`BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` (or `DEMO_ADMIN_EMAIL`/
+`DEMO_ADMIN_PASSWORD`) to obtain an authenticated session bearer token, then
+walks the full O2C workflow end to end over live HTTP endpoints (ADR-009 Decision 6).
 
 **Resumable, not repeat-creating** (v1 P2): every rerun resumes the SAME
 stable demo order/invoice/payment/allocation, walking forward from
@@ -55,7 +54,6 @@ import httpx
 BASE_URL = os.environ.get("DEMO_BASE_URL", "http://127.0.0.1:8000")
 API = f"{BASE_URL}/api/v1"
 
-COMPANY_CODE = "MAKEDEMO"
 CUSTOMER_CODE = "MAKEDEMOCUST"
 PRODUCT_SKU = "MAKEDEMO-SKU"
 ORDER_TAG = "make-demo-order-1"
@@ -72,8 +70,36 @@ CHART = (
 )
 
 
-def _headers(company_id: str) -> dict[str, str]:
-    return {"X-Company-Id": company_id}
+def _get_admin_credentials() -> tuple[str, str]:
+    email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL") or os.environ.get("DEMO_ADMIN_EMAIL")
+    password = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD") or os.environ.get("DEMO_ADMIN_PASSWORD")
+    if not email or not password:
+        raise RuntimeError(
+            "demo_o2c: BOOTSTRAP_ADMIN_EMAIL/BOOTSTRAP_ADMIN_PASSWORD (or DEMO_ADMIN_EMAIL/"
+            "DEMO_ADMIN_PASSWORD) must be provided in the environment — credentials are "
+            "never hardcoded (ADR-009 Decision 6)."
+        )
+    return email, password
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _login(client: httpx.AsyncClient) -> str:
+    email, password = _get_admin_credentials()
+    resp = await client.post(
+        f"{BASE_URL}/auth/login",
+        json={"email": email, "password": password},
+    )
+    if resp.status_code == 401:
+        raise RuntimeError(
+            f"demo_o2c: login failed for {email}. Did you run 'make bootstrap' "
+            "(or python -m app.cli.bootstrap_admin) first?"
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return str(data["access_token"])
 
 
 async def _get_or_create(
@@ -83,22 +109,10 @@ async def _get_or_create(
     create_path: str,
     payload: dict[str, Any],
     match: Any,
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str],
     entity: str,
     compatible: Any = None,
 ) -> dict[str, Any]:
-    """The same get-or-create-by-code idempotency `seed_demo` uses at the
-
-    service layer, replayed over HTTP: check the list endpoint first
-    (never blind-POST), and treat a 409 from a lost create-time race as
-    "look it up again", not a failure.
-
-    `compatible`, if given, is `(existing_row) -> bool` — checked whenever
-    an existing row is found (by lookup OR by 409-recovery); a `False`
-    raises loudly instead of silently reusing a same-code-but-different
-    row (finding 3).
-    """
-
     def _check(row: dict[str, Any]) -> dict[str, Any]:
         if compatible is not None and not compatible(row):
             raise RuntimeError(
@@ -127,48 +141,6 @@ async def _get_or_create(
         )
     create_resp.raise_for_status()
     return create_resp.json()  # type: ignore[no-any-return]
-
-
-async def _ensure_currency_and_uom(client: httpx.AsyncClient) -> None:
-    """No `X-Company-Id` needed — currencies/UoM are global reference data,
-
-    not tenant-scoped. Must run before anything that references them
-    (see module docstring) — a fresh migrated database has neither.
-    """
-    await _get_or_create(
-        client,
-        list_path=f"{API}/currencies",
-        create_path=f"{API}/currencies",
-        payload={"code": "TWD", "name": "New Taiwan Dollar", "decimal_places": 0},
-        match=lambda row: row["code"] == "TWD",
-        compatible=lambda row: row["decimal_places"] == 0,
-        entity="currency TWD",
-    )
-    await _get_or_create(
-        client,
-        list_path=f"{API}/uom",
-        create_path=f"{API}/uom",
-        payload={"code": "EA", "name": "Each"},
-        match=lambda row: row["code"] == "EA",
-        entity="uom EA",
-    )
-
-
-async def _ensure_company(client: httpx.AsyncClient) -> str:
-    company = await _get_or_create(
-        client,
-        list_path=f"{API}/companies",
-        create_path=f"{API}/companies",
-        payload={
-            "code": COMPANY_CODE,
-            "name": "Makefile Demo Co.",
-            "functional_currency_code": "TWD",
-        },
-        match=lambda row: row["code"] == COMPANY_CODE,
-        compatible=lambda row: row["functional_currency_code"] == "TWD",
-        entity="company",
-    )
-    return str(company["id"])
 
 
 async def _ensure_period(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
@@ -257,13 +229,6 @@ async def _find_order(client: httpx.AsyncClient, headers: dict[str, str]) -> dic
 async def _ensure_stock(
     client: httpx.AsyncClient, headers: dict[str, str], product_id: str, remaining_to_ship: Decimal
 ) -> None:
-    """Remaining-work-aware (Codex diff review 2026-08-15, finding 2 — see
-
-    module docstring): reconcile to `INITIAL_STOCK + remaining_to_ship`, not
-    a fixed target, so a rerun against an already-shipped demo order lands
-    on `INITIAL_STOCK` with no new adjustment, exactly like `seed_demo`'s
-    `_reconcile_stock` for the same reason.
-    """
     summary_resp = await client.get(
         f"{API}/inventory/summary", params={"product_id": product_id}, headers=headers
     )
@@ -308,12 +273,6 @@ async def _ensure_order(
         order = create_resp.json()
     assert order is not None
 
-    # A fresh, explicitly-typed local (rather than continuing to reassign
-    # the `dict[str, Any] | None`-typed parameter) — mypy's flow narrowing
-    # doesn't reliably carry a "not None" fact across a `.json()` (`Any`)
-    # reassignment inside a later conditional block, so working through a
-    # variable whose declared type never includes `None` sidesteps that
-    # instead of fighting it.
     result: dict[str, Any] = order
 
     if result["status"] == "draft":
@@ -370,10 +329,6 @@ async def _ensure_payment_and_allocation(
         create_resp.raise_for_status()
         payment = create_resp.json()
 
-    # Stable request_ref + identical payload every run — the module's own
-    # allocation-command fingerprint (ADR-008 R14) makes a repeat a no-op
-    # replay; this script relies on that rather than checking "already
-    # allocated?" itself (same discipline seed_demo follows).
     request_ref = f"demo-{ORDER_TAG}-alloc1"
     alloc_resp = await client.post(
         f"{API}/receivables/payments/{payment['id']}/allocations",
@@ -406,31 +361,18 @@ async def _print_trial_balance(client: httpx.AsyncClient, headers: dict[str, str
 
 
 async def run_demo(client: httpx.AsyncClient | None = None) -> None:
-    """`client` is injectable so a test can pass an ASGI-transport client
-
-    bound to the real app object (same pattern `tests/conftest.py`'s own
-    `client` fixture uses) — proving this script's logic actually works
-    against the real app without needing a live network server. `make
-    demo`'s real invocation leaves it `None` and gets a real network
-    client bound to `BASE_URL`.
-    """
     owns_client = client is None
     if client is None:
         client = httpx.AsyncClient(timeout=10.0)
 
     try:
-        await _ensure_currency_and_uom(client)
-        company_id = await _ensure_company(client)
-        headers = _headers(company_id)
+        token = await _login(client)
+        headers = _headers(token)
 
         await _ensure_period(client, headers)
         await _ensure_chart(client, headers)
         customer_id, product_id = await _ensure_customer_and_product(client, headers)
 
-        # Remaining-work-aware stock reconciliation needs to know the demo
-        # order's CURRENT state before deciding the target (see
-        # `_ensure_stock`'s docstring) — look it up first, reconcile stock,
-        # THEN actually walk it forward.
         existing_order = await _find_order(client, headers)
         remaining_to_ship = (
             QTY

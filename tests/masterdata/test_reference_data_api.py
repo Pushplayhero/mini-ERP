@@ -1,6 +1,7 @@
 """Light coverage for global reference-data endpoints (UoM / currencies).
 
-These are not tenant-scoped, so no company header is required and no
+These public reads do not require bearer authentication; company context is
+not supplied by an HTTP header and is not used as tenant authority.
 isolation semantics apply (see README "Design Decisions").
 """
 
@@ -28,6 +29,9 @@ async def test_list_seeded_uom(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_create_uom_conversion(client: AsyncClient) -> None:
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code="REF1")
     uoms = (await client.get("/api/v1/uom")).json()
     ea_id = next(u["id"] for u in uoms if u["code"] == "EA")
     kg_id = next(u["id"] for u in uoms if u["code"] == "KG")
@@ -35,12 +39,16 @@ async def test_create_uom_conversion(client: AsyncClient) -> None:
     response = await client.post(
         "/api/v1/uom-conversions",
         json={"from_uom_id": kg_id, "to_uom_id": ea_id, "factor": "1.000000"},
+        headers=auth.headers,
     )
     assert response.status_code == 201, response.text
 
 
 @pytest.mark.asyncio
 async def test_create_exchange_rate(client: AsyncClient) -> None:
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code="REF2")
     response = await client.post(
         "/api/v1/exchange-rates",
         json={
@@ -49,6 +57,7 @@ async def test_create_exchange_rate(client: AsyncClient) -> None:
             "rate": "31.5000000000",
             "rate_date": "2026-08-13",
         },
+        headers=auth.headers,
     )
     assert response.status_code == 201, response.text
     # NUMERIC(20, 10) per master-plan §10.1 — full scale is preserved, not stripped.

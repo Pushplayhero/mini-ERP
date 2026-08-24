@@ -17,6 +17,7 @@ after the first.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 from typing import Any
 
@@ -24,12 +25,20 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.cli.seed_demo import seed_demo
+from app.core.authorization import actor_context
 from app.core.db import get_session_factory
 from app.core.tenancy import company_context
 from app.modules.inventory import service as inventory_service
 from app.modules.ledger import service as ledger_service
 from app.modules.receivables import service as receivables_service
 from app.modules.sales import service as sales_service
+from tests.conftest import TEST_ADMIN_ACTOR
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 async def _snapshot(company_id: uuid.UUID) -> dict[str, Any]:

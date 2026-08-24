@@ -13,20 +13,24 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.cli import replay_outbox
+from app.core.authorization import actor_context
 from app.core.exceptions import ConflictError
 from app.core.tenancy import company_context
 from app.modules.ledger import posting
 from app.modules.ledger import service as ledger_service
 from app.modules.masterdata.models import OutboxEvent
 from app.modules.sales import service as sales_service
+from tests.conftest import TEST_ADMIN_ACTOR, company_headers
 from tests.inventory._helpers import create_adjustment as inventory_adjust
 from tests.inventory._helpers import get_summary as inventory_get_summary
 from tests.ledger._helpers import create_account, create_period
@@ -40,6 +44,12 @@ from tests.sales._helpers import (
     order_line,
     ship_order,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 async def _setup_company_with_product(
@@ -79,7 +89,7 @@ async def _setup_shippable(
     list_price: str = "100",
     initial_stock: str = "10",
     qty: str = "2",
-) -> tuple[uuid.UUID, uuid.UUID, dict]:
+) -> tuple[uuid.UUID, uuid.UUID, dict[str, Any]]:
     """`_setup_company_with_product` plus a customer and a *confirmed* order
     for `qty` of that product. Returns `(company_id, product_id, order)`.
     """
@@ -127,7 +137,7 @@ async def test_ship_happy_path_moves_stock_and_posts_cogs(
     moves_resp = await client.get(
         "/api/v1/inventory/moves",
         params={"product_id": str(product_id)},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     shipment_moves = [m for m in moves_resp.json() if m["move_type"] == "shipment"]
     assert len(shipment_moves) == 1
@@ -195,7 +205,7 @@ async def test_ship_order_with_duplicate_product_line_deducts_full_quantity_once
     moves_resp = await client.get(
         "/api/v1/inventory/moves",
         params={"product_id": str(product_id)},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     shipment_moves = [m for m in moves_resp.json() if m["move_type"] == "shipment"]
     assert len(shipment_moves) == 1, "duplicate product lines must aggregate into one move"
@@ -229,7 +239,7 @@ async def test_ship_insufficient_stock_aborts_everything(
 
     # Order is still confirmed, not half-shipped.
     reread = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)
     )
     assert reread.json()["status"] == "confirmed"
 

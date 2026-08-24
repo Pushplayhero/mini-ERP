@@ -38,6 +38,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import require_permission
 from app.core.exceptions import ConflictError, DomainValidationError
 from app.core.locking import acquire_company_advisory_lock
 from app.core.tenancy import require_current_company_id
@@ -219,6 +220,7 @@ async def create_adjustment(session: AsyncSession, data: StockAdjustmentCreate) 
     `WHERE source_type IS NOT NULL` clause, exactly as manual journal
     entries are excluded from `uq_journal_entries_source`.
     """
+    require_permission("inventory.adjustment.create")
     company_id = require_current_company_id()
     await _ensure_product_belongs_to_company(session, company_id, data.product_id)
     move = await apply_stock_move(
@@ -329,6 +331,7 @@ async def list_stock_summary(
     """Explicit `company_id` filter — see module/model docstrings for why
     `StockSummary` cannot rely on the automatic tenant-scoping ORM hook.
     """
+    require_permission("inventory.summary.read")
     company_id = require_current_company_id()
     stmt = select(StockSummary).where(StockSummary.company_id == company_id)
     if product_id is not None:
@@ -344,6 +347,7 @@ async def list_stock_moves(
     `do_orm_execute` hook already restricts this to the active company —
     no explicit `company_id` predicate needed (unlike `list_stock_summary`).
     """
+    require_permission("inventory.move.read")
     stmt = select(StockMove).order_by(StockMove.created_at)
     if product_id is not None:
         stmt = stmt.where(StockMove.product_id == product_id)

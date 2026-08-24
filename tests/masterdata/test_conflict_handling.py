@@ -21,22 +21,27 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.conftest import company_headers
+from app.core.authorization import actor_context
+from app.core.exceptions import ConflictError
+from app.core.tenancy import company_context
+from app.modules.masterdata import service as masterdata_service
+from app.modules.masterdata.models import AccountType
+from app.modules.masterdata.schemas import AccountCreate, CustomerCreate, ProductCreate
+from tests.conftest import TEST_ADMIN_ACTOR, company_headers
 
 
 async def _create_company(client: AsyncClient, code: str) -> uuid.UUID:
-    response = await client.post(
-        "/api/v1/companies",
-        json={"code": code, "name": f"{code} Inc.", "functional_currency_code": "TWD"},
-    )
-    assert response.status_code == 201, response.text
-    return uuid.UUID(response.json()["id"])
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code=code)
+    return auth.company_id
 
 
 async def _uom_id(client: AsyncClient, company_id: uuid.UUID) -> str:
     response = await client.get("/api/v1/uom", headers=company_headers(company_id))
-    return next(u["id"] for u in response.json() if u["code"] == "EA")
+    return str(next(u["id"] for u in response.json() if u["code"] == "EA"))
 
 
 # ---------------------------------------------------------------------------
@@ -46,15 +51,20 @@ async def _uom_id(client: AsyncClient, company_id: uuid.UUID) -> str:
 
 @pytest.mark.asyncio
 async def test_duplicate_company_code_is_409(client: AsyncClient) -> None:
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code="ANCH")
     first = await client.post(
         "/api/v1/companies",
         json={"code": "DUPCO", "name": "First", "functional_currency_code": "TWD"},
+        headers=auth.headers,
     )
     assert first.status_code == 201
 
     second = await client.post(
         "/api/v1/companies",
         json={"code": "DUPCO", "name": "Second", "functional_currency_code": "TWD"},
+        headers=auth.headers,
     )
     assert second.status_code == 409, second.text
 
@@ -142,43 +152,59 @@ async def test_duplicate_account_code_within_same_company_is_409(client: AsyncCl
 
 
 # ---------------------------------------------------------------------------
-# Nonexistent company_id (well-formed UUID, no matching row) -> 409, not 500
+# Service-level nonexistent company_id (well-formed UUID, no matching row)
+# raises ConflictError; company context is server-bound, not supplied by an
+# HTTP company header.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_create_customer_with_nonexistent_company_id_is_409(client: AsyncClient) -> None:
+async def test_create_customer_with_nonexistent_company_id_is_409(
+    db_session: AsyncSession,
+) -> None:
     bogus_company_id = uuid.uuid4()
-
-    response = await client.post(
-        "/api/v1/customers",
-        json={"code": "GHOST", "name": "Ghost", "currency_code": "TWD"},
-        headers=company_headers(bogus_company_id),
-    )
-    assert response.status_code == 409, response.text
+    with (
+        actor_context(TEST_ADMIN_ACTOR),
+        company_context(bogus_company_id),
+        pytest.raises(ConflictError),
+    ):
+        await masterdata_service.create_customer(
+            db_session,
+            CustomerCreate(code="GHOST", name="Ghost", currency_code="TWD"),
+        )
 
 
 @pytest.mark.asyncio
-async def test_create_product_with_nonexistent_company_id_is_409(client: AsyncClient) -> None:
+async def test_create_product_with_nonexistent_company_id_is_409(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     real_company_id = await _create_company(client, "CONFP2")
-    uom_id = await _uom_id(client, real_company_id)
+    uom_id = uuid.UUID(await _uom_id(client, real_company_id))
     bogus_company_id = uuid.uuid4()
 
-    response = await client.post(
-        "/api/v1/products",
-        json={"sku": "GHOST-SKU", "name": "Ghost", "uom_id": uom_id},
-        headers=company_headers(bogus_company_id),
-    )
-    assert response.status_code == 409, response.text
+    with (
+        actor_context(TEST_ADMIN_ACTOR),
+        company_context(bogus_company_id),
+        pytest.raises(ConflictError),
+    ):
+        await masterdata_service.create_product(
+            db_session,
+            ProductCreate(sku="GHOST-SKU", name="Ghost", uom_id=uom_id),
+        )
 
 
 @pytest.mark.asyncio
-async def test_create_account_with_nonexistent_company_id_is_409(client: AsyncClient) -> None:
+async def test_create_account_with_nonexistent_company_id_is_409(
+    db_session: AsyncSession,
+) -> None:
     bogus_company_id = uuid.uuid4()
 
-    response = await client.post(
-        "/api/v1/accounts",
-        json={"code": "9000", "name": "Ghost", "type": "asset"},
-        headers=company_headers(bogus_company_id),
-    )
-    assert response.status_code == 409, response.text
+    with (
+        actor_context(TEST_ADMIN_ACTOR),
+        company_context(bogus_company_id),
+        pytest.raises(ConflictError),
+    ):
+        await masterdata_service.create_account(
+            db_session,
+            AccountCreate(code="9000", name="Ghost", type=AccountType.ASSET),
+        )

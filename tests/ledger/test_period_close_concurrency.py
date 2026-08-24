@@ -57,12 +57,15 @@ async def test_close_period_blocks_until_inflight_posting_commits(
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
     posting_locked = asyncio.Event()
+    from app.core.authorization import actor_context
+    from tests.conftest import TEST_ADMIN_ACTOR
+
     release_posting = asyncio.Event()
     order: list[str] = []
 
     async def posting_task() -> None:
         async with session_factory() as session:
-            with company_context(company_id):
+            with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
                 # Same call `create_journal_entry` makes before inserting anything.
                 await ledger_service._resolve_and_lock_period(session, company_id, entry_date)
                 posting_locked.set()
@@ -73,7 +76,7 @@ async def test_close_period_blocks_until_inflight_posting_commits(
     async def close_task() -> None:
         await posting_locked.wait()
         async with session_factory() as session:
-            with company_context(company_id):
+            with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
                 await ledger_service.close_period(session, period_id)
         order.append("close_completed")
 
@@ -100,6 +103,6 @@ async def test_close_period_blocks_until_inflight_posting_commits(
     # against it must be rejected — no entry can land in a period that was
     # closed by the time its transaction committed.
     async with session_factory() as session:
-        with company_context(company_id):
+        with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
             with pytest.raises(PeriodNotOpenError):
                 await ledger_service._resolve_and_lock_period(session, company_id, entry_date)

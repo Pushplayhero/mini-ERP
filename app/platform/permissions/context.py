@@ -17,6 +17,13 @@ from __future__ import annotations
 import uuid
 from contextvars import ContextVar, Token
 
+from app.core.exceptions import AppError
+
+
+class InvalidSessionError(AppError):
+    """No valid, unexpired session matches the presented bearer token (401)."""
+
+
 _current_session_id: ContextVar[uuid.UUID | None] = ContextVar("current_session_id", default=None)
 
 
@@ -30,6 +37,13 @@ def reset_current_session_id(token: Token[uuid.UUID | None]) -> None:
 
 def current_session_id_or_none() -> uuid.UUID | None:
     return _current_session_id.get()
+
+
+def require_current_session_id() -> uuid.UUID:
+    session_id = _current_session_id.get()
+    if session_id is None:
+        raise InvalidSessionError("No session context is bound; cannot retrieve session_id.")
+    return session_id
 
 
 class _SessionContextManager:

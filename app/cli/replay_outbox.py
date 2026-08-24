@@ -10,7 +10,7 @@ Each row gets its own session/transaction and its own bound tenancy context
 (`app.core.tenancy.company_context`, keyed off the row's own
 `payload["company_id"]` — ADR-004 R2/R3). This is precisely what lets replay
 run correctly with no HTTP request anywhere in sight: nothing here depends
-on `TenancyMiddleware` or any other request-scoped state. A row that fails
+on `AuthenticationMiddleware` or any other request-scoped state. A row that fails
 is logged, rolled back, and skipped — it does not block the rows after it
 (ADR-004 R3, "one poison row aborts only itself").
 

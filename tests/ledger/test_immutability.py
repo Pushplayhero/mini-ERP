@@ -9,18 +9,23 @@ plugin, a bulk-import script, or a careless manual fix in psql).
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.conftest import company_headers
 from tests.ledger._helpers import balanced_lines, create_account, create_company, create_period
 
 
-async def _post_entry(client: AsyncClient, company_id, cash, revenue) -> dict:
+async def _post_entry(
+    client: AsyncClient, company_id: uuid.UUID, cash: uuid.UUID, revenue: uuid.UUID
+) -> dict[str, Any]:
     await create_period(client, company_id, 2026, 1)
     response = await client.post(
         "/api/v1/journal-entries",
@@ -28,11 +33,13 @@ async def _post_entry(client: AsyncClient, company_id, cash, revenue) -> dict:
         headers=company_headers(company_id),
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    return dict(response.json())
 
 
 @pytest.mark.asyncio
-async def test_direct_sql_update_on_journal_entries_is_blocked(client, db_session) -> None:
+async def test_direct_sql_update_on_journal_entries_is_blocked(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     company_id = await create_company(client, "IMMC1")
     cash = await create_account(client, company_id, "1000", "Cash")
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
@@ -47,7 +54,9 @@ async def test_direct_sql_update_on_journal_entries_is_blocked(client, db_sessio
 
 
 @pytest.mark.asyncio
-async def test_direct_sql_delete_on_journal_entries_is_blocked(client, db_session) -> None:
+async def test_direct_sql_delete_on_journal_entries_is_blocked(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     company_id = await create_company(client, "IMMC2")
     cash = await create_account(client, company_id, "1000", "Cash")
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
@@ -61,7 +70,9 @@ async def test_direct_sql_delete_on_journal_entries_is_blocked(client, db_sessio
 
 
 @pytest.mark.asyncio
-async def test_direct_sql_update_on_journal_lines_is_blocked(client, db_session) -> None:
+async def test_direct_sql_update_on_journal_lines_is_blocked(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     company_id = await create_company(client, "IMMC3")
     cash = await create_account(client, company_id, "1000", "Cash")
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
@@ -76,7 +87,9 @@ async def test_direct_sql_update_on_journal_lines_is_blocked(client, db_session)
 
 
 @pytest.mark.asyncio
-async def test_direct_sql_delete_on_journal_lines_is_blocked(client, db_session) -> None:
+async def test_direct_sql_delete_on_journal_lines_is_blocked(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     company_id = await create_company(client, "IMMC4")
     cash = await create_account(client, company_id, "1000", "Cash")
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
@@ -90,7 +103,7 @@ async def test_direct_sql_delete_on_journal_lines_is_blocked(client, db_session)
 
 @pytest.mark.asyncio
 async def test_unbalanced_insert_is_rejected_by_db_trigger_defense_in_depth(
-    client: AsyncClient, db_session
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Bypasses `service._validate_lines` entirely (raw ORM inserts) to prove
 
@@ -100,16 +113,18 @@ async def test_unbalanced_insert_is_rejected_by_db_trigger_defense_in_depth(
     """
     from decimal import Decimal
 
+    from app.core.authorization import actor_context
     from app.core.tenancy import company_context
     from app.modules.ledger.models import JournalEntry, JournalLine
     from app.modules.ledger.service import get_period
+    from tests.conftest import TEST_ADMIN_ACTOR
 
     company_id = await create_company(client, "IMMC5")
     cash = await create_account(client, company_id, "1000", "Cash")
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
     period_json = await create_period(client, company_id, 2026, 1)
 
-    with company_context(company_id):
+    with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
         period = await get_period(db_session, period_json["id"])
         entry = JournalEntry(
             company_id=company_id,

@@ -17,6 +17,23 @@ relitigate them.
 > "each of the five platform modules gets its own ADR" and per §7.2's Q4
 > decision (`platform.permissions` first, contract-before-feature).
 
+
+## 2026-08-24 correction — authenticated session lifecycle
+
+The Slice D implementation correction supersedes any earlier binary route-classification
+wording in this ADR: every non-Tier-1 `APIRoute` carries exactly one of
+`Public()`, `Authenticated()`, or `RequiresPermission(code)`. `Authenticated()` is a
+real fail-closed dependency that calls `require_current_actor()` and does not inspect
+the active permission set.
+
+`POST /auth/switch-company` and `POST /auth/logout` are therefore authenticated
+session-lifecycle operations, not `session.manage`-gated operations. Their services
+require a current actor, current session id, and actor/session ownership; switching
+re-checks target-company entitlement and logout deletes the owned session row.
+The `session.manage` catalog row and admin grant remain unchanged as retained
+compatibility/reserved catalog state until a future migration revisits them. Earlier
+`RequiresPermission("session.manage")` statements below are historical review
+narrative and are superseded by this dated correction.
 ## Context
 
 Phase 1 shipped with a deliberate, documented Non-Goal: `X-Company-Id` is a

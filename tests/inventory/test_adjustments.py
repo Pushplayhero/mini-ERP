@@ -13,6 +13,7 @@ from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 
+from tests.conftest import company_headers
 from tests.inventory._helpers import (
     create_adjustment,
     create_company,
@@ -85,7 +86,7 @@ async def test_adjustment_reason_is_required(client: AsyncClient) -> None:
     resp = await client.post(
         "/api/v1/inventory/adjustments",
         json={"product_id": str(product_id), "qty_delta": "5"},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert resp.status_code == 422
 

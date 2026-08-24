@@ -80,9 +80,21 @@ async def _ensure_reference_data(session: AsyncSession) -> None:
 
 async def _ensure_company(session: AsyncSession, *, code: str, name: str) -> uuid.UUID:
     """Non-committing — see `_ensure_reference_data`'s docstring."""
-    existing = await masterdata_service.list_companies(session)
+    existing = await masterdata_service.list_companies_unchecked(session)
+    for company in existing:
+        if company.code == code:
+            if company.functional_currency_code != "TWD":
+                raise BootstrapRefusedError(
+                    f"Existing company {code!r} has unsupported functional currency "
+                    f"{company.functional_currency_code!r}. Phase 1 requires 'TWD'."
+                )
+            return company.id
     if existing:
-        return existing[0].id
+        codes = [c.code for c in existing]
+        raise BootstrapRefusedError(
+            f"Existing companies {codes!r} do not match requested bootstrap code {code!r}. "
+            "Refusing to bind initial administrator to a mismatched tenant."
+        )
 
     company = Company(code=code, name=name, functional_currency_code="TWD")
     session.add(company)
@@ -143,10 +155,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--email", default=os.environ.get("BOOTSTRAP_ADMIN_EMAIL"))
     parser.add_argument("--password", default=os.environ.get("BOOTSTRAP_ADMIN_PASSWORD"))
     parser.add_argument(
-        "--company-code", default=os.environ.get("BOOTSTRAP_ADMIN_COMPANY_CODE", "MAIN")
+        "--company-code",
+        default=os.environ.get("BOOTSTRAP_COMPANY_CODE")
+        or os.environ.get("BOOTSTRAP_ADMIN_COMPANY_CODE", "MAIN"),
     )
     parser.add_argument(
-        "--company-name", default=os.environ.get("BOOTSTRAP_ADMIN_COMPANY_NAME", "Main Company")
+        "--company-name",
+        default=os.environ.get("BOOTSTRAP_COMPANY_NAME")
+        or os.environ.get("BOOTSTRAP_ADMIN_COMPANY_NAME", "Main Company"),
     )
     args = parser.parse_args(argv)
     if not args.email or not args.password:

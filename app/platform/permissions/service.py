@@ -2,9 +2,10 @@
 
 `login()` / `resolve_actor()` / `switch_company()` / `logout()` — the sole
 producer of `app.core.authorization.ActorContext` (ADR-009 Decision 4).
-Every exception here is this module's own (never `app.core`'s
-`ActionDeniedError`, which is reserved for `require_permission()`'s
-fail-closed cases) — `router.py` maps each to a specific HTTP status.
+Session-lifecycle entry points call `require_current_actor()` and may raise
+`ActionDeniedError` when called without an actor. Ownership and entitlement failures
+remain this module's own exceptions; `router.py` maps its domain exceptions to HTTP
+status.
 """
 
 from __future__ import annotations
@@ -20,9 +21,19 @@ from argon2.exceptions import VerifyMismatchError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.authorization import ActorContext
+from app.core.authorization import (
+    ActorContext,
+    current_actor_or_none,
+    require_current_actor,
+)
 from app.core.exceptions import AppError
 from app.core.settings import get_settings
+from app.platform.permissions.context import (
+    InvalidSessionError as InvalidSessionError,  # noqa: PLC0414
+)
+from app.platform.permissions.context import (
+    require_current_session_id,
+)
 from app.platform.permissions.models import RolePermission, User, UserCompanyRole
 from app.platform.permissions.models import Session as SessionModel
 
@@ -84,10 +95,6 @@ class AmbiguousCompanySelectionError(AppError):
 
 class CompanyNotEntitledError(AppError):
     """The requested `company_id` is not one this user/session is entitled to."""
-
-
-class InvalidSessionError(AppError):
-    """No valid, unexpired session matches the presented bearer token (401)."""
 
 
 class UserDisabledError(AppError):
@@ -237,14 +244,24 @@ async def resolve_actor(session: AsyncSession, raw_token: str) -> ResolvedActor:
     )
 
 
-async def switch_company(
-    session: AsyncSession, session_id: uuid.UUID, company_id: uuid.UUID
-) -> uuid.UUID:
+def _assert_current_actor_owns_session(session_row: SessionModel) -> None:
+    actor = current_actor_or_none()
+    if actor is None:
+        raise InvalidSessionError("No actor context is bound for the current session.")
+    if session_row.user_id != actor.user_id:
+        raise InvalidSessionError("The current actor does not own the requested session.")
+
+
+async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.UUID:
     """Re-point a session's active company, re-checking entitlement immediately."""
+    require_current_actor()
+    session_id = require_current_session_id()
     result = await session.execute(select(SessionModel).where(SessionModel.id == session_id))
     session_row = result.scalars().first()
     if session_row is None:
         raise InvalidSessionError(f"Session {session_id} not found.")
+
+    _assert_current_actor_owns_session(session_row)
 
     entitled = await session.execute(
         select(UserCompanyRole.id).where(
@@ -262,15 +279,20 @@ async def switch_company(
     return company_id
 
 
-async def logout(session: AsyncSession, session_id: uuid.UUID) -> None:
+async def logout(session: AsyncSession) -> None:
     """Revoke a session — deletion, not a soft-revoke flag.
 
     ADR-009 Decision 3: "Revocation: Trivial — delete the row."
     """
+    require_current_actor()
+    session_id = require_current_session_id()
     result = await session.execute(select(SessionModel).where(SessionModel.id == session_id))
     session_row = result.scalars().first()
     if session_row is None:
         raise InvalidSessionError(f"Session {session_id} not found.")
+
+    _assert_current_actor_owns_session(session_row)
+
     await session.delete(session_row)
     await session.commit()
 
@@ -279,24 +301,6 @@ async def logout(session: AsyncSession, session_id: uuid.UUID) -> None:
 # Bootstrap-only helpers (used by `app/cli/bootstrap_admin.py`, Rule 10b —
 # no `ActorContext`/`require_permission()` involved, see that module).
 # ---------------------------------------------------------------------------
-
-
-async def create_user(session: AsyncSession, email: str, password: str) -> User:
-    user = User(email=email, password_hash=hash_password(password))
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-async def grant_role(
-    session: AsyncSession, user_id: uuid.UUID, company_id: uuid.UUID, role_code: str
-) -> UserCompanyRole:
-    grant = UserCompanyRole(user_id=user_id, company_id=company_id, role_code=role_code)
-    session.add(grant)
-    await session.commit()
-    await session.refresh(grant)
-    return grant
 
 
 async def add_user_with_grant(

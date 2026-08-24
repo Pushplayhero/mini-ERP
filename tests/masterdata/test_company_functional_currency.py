@@ -14,14 +14,18 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from tests._auth_helpers import setup_company_with_admin
+
 
 @pytest.mark.asyncio
 async def test_create_company_with_non_twd_functional_currency_is_422(
     client: AsyncClient,
 ) -> None:
+    auth = await setup_company_with_admin(client, code="ANCH1")
     response = await client.post(
         "/api/v1/companies",
         json={"code": "USDCO", "name": "USD Co.", "functional_currency_code": "USD"},
+        headers=auth.headers,
     )
     assert response.status_code == 422, response.text
 
@@ -30,8 +34,10 @@ async def test_create_company_with_non_twd_functional_currency_is_422(
 async def test_create_company_with_twd_functional_currency_still_succeeds(
     client: AsyncClient,
 ) -> None:
+    auth = await setup_company_with_admin(client, code="ANCH2")
     response = await client.post(
         "/api/v1/companies",
         json={"code": "TWDCO", "name": "TWD Co.", "functional_currency_code": "TWD"},
+        headers=auth.headers,
     )
     assert response.status_code == 201, response.text

@@ -51,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import events, hooks
+from app.core.authorization import require_permission
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.hooks import HookContext
 from app.core.tenancy import require_current_company_id
@@ -226,6 +227,7 @@ async def _allocate_order_no(session: AsyncSession, company_id: uuid.UUID, year:
 
 
 async def create_order(session: AsyncSession, data: SalesOrderCreate) -> SalesOrder:
+    require_permission("sales.order.create")
     company_id = require_current_company_id()
     customer = await _fetch_customer(session, company_id, data.customer_id)
     products = await _fetch_products(session, company_id, {line.product_id for line in data.lines})
@@ -253,17 +255,24 @@ async def create_order(session: AsyncSession, data: SalesOrderCreate) -> SalesOr
     # it — a plain re-select (same shape `get_order` already does) is the
     # simplest way to guarantee every column and the `lines` relationship
     # are both loaded and non-expired before Pydantic serializes the result.
-    return await get_order(session, order.id)
+    return await load_order_unchecked(session, order.id)
 
 
 async def list_orders(session: AsyncSession) -> Sequence[SalesOrder]:
+    require_permission("sales.order.read")
     result = await session.execute(
         select(SalesOrder).options(selectinload(SalesOrder.lines)).order_by(SalesOrder.order_no)
     )
     return result.scalars().all()
 
 
-async def get_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
+async def load_order_unchecked(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
+    """Fetch a `SalesOrder` row with NO permission check.
+
+    For same-transaction reload after an already-authorized write (by a caller one
+    layer up that already ran its own `require_permission()`), or a Rule
+    10a/10b-exempt CLI script — never for a fresh, independently-authorized read.
+    """
     result = await session.execute(
         select(SalesOrder).where(SalesOrder.id == order_id).options(selectinload(SalesOrder.lines))
     )
@@ -271,6 +280,11 @@ async def get_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
     if order is None:
         raise NotFoundError("SalesOrder", order_id)
     return order
+
+
+async def get_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
+    require_permission("sales.order.read")
+    return await load_order_unchecked(session, order_id)
 
 
 async def update_order(
@@ -282,6 +296,7 @@ async def update_order(
     slip in between "check status" and "apply the edit" and leave a
     confirmed order silently mutated.
     """
+    require_permission("sales.order.update")
     company_id = require_current_company_id()
     result = await session.execute(
         select(SalesOrder)
@@ -324,7 +339,7 @@ async def update_order(
         order.custom_data = data.custom_data
 
     await _commit_or_conflict(session, entity="SalesOrder")
-    return await get_order(session, order.id)
+    return await load_order_unchecked(session, order.id)
 
 
 # ---------------------------------------------------------------------------
@@ -333,47 +348,7 @@ async def update_order(
 
 
 async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
-    """Non-committing core of order confirmation (ADR-006 Decision 3, R1, R2).
-
-    Flow, all inside one `SELECT ... FOR UPDATE`-locked window:
-
-    1. Lock the order row, THEN re-check `status` (R1) — locking before
-       checking is what makes two concurrent confirms serialize instead of
-       race: the second caller's `SELECT ... FOR UPDATE` blocks until the
-       first's transaction ends, and by the time it acquires the lock it
-       observes `status=confirmed` and 409s. Same doctrine as ADR-005 R4.
-    2. Require at least one line and `total > 0` (R2) — before hooks run,
-       so a plugin never even sees an order that cannot legally confirm.
-       Checked against the *current* `order.total` (pre-repricing) purely
-       to reject empty/zero-line orders early and cheaply; repricing in
-       step 3 recomputes the real total hooks then see.
-    3. Re-freeze `snapshot_customer_*`/`snapshot_sku`/`snapshot_product_name`
-       from *current* masterdata — this is the actual "freeze" moment
-       (ADR-006 Decision 3). **Diff-review fix**: pricing is now also
-       resolved here, not deferred to draft-editing as this module's prior
-       docstring claimed — ADR-006 Decision 3's own words are "a draft that
-       sat for a week confirms at *current* prices unless lines carried
-       manual overrides", which only actually holds if confirm itself
-       reprices. Every line with `unit_price_is_override=False` (never had
-       a client-supplied price) gets `unit_price`/`amount` recomputed from
-       the product's *current* `list_price`; override lines are left
-       untouched. `order.total` is then recomputed as the sum of every
-       line's (possibly just-updated) `amount` — never the pre-repricing
-       value.
-    4. Run `hooks.SALES_ORDER_VALIDATE_CONFIRM` handlers (seeing the
-       *repriced* total) — any exception propagates, aborting the whole
-       transaction (nothing committed yet).
-    5. Set `status=confirmed`, `confirmed_at=now()`.
-    6. `events.publish(...)` the `sales.order_confirmed` event (outbox write
-       + synchronous dispatch, still inside this same uncommitted
-       transaction) — carries the repriced total.
-    7. `flush()` — **never commit or rollback**. ADR-003 R1's "the
-       transaction belongs to whoever opened it" applies here exactly as it
-       does to `ledger.service.post_journal_entry`: the HTTP route
-       (`router.confirm_sales_order`) owns the commit boundary and the
-       `IntegrityError` -> 409 translation for it, per ADR-006's explicit
-       instruction to keep that translation out of this core function.
-    """
+    require_permission("sales.order.confirm")
     company_id = require_current_company_id()
     result = await session.execute(
         select(SalesOrder)
@@ -462,34 +437,7 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
 
 
 async def ship_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
-    """Non-committing core of order shipment (ADR-007 Decision 1, R1 doctrine).
-
-    1. `SELECT ... FOR UPDATE` on the order row, then re-check
-       `status == confirmed` under the lock — identical doctrine to
-       `confirm_order`/`cancel_order` (ADR-006 R1): a concurrent
-       ship-vs-ship or ship-vs-cancel attempt serializes on this lock, and
-       whichever caller acquires it second observes whatever status the
-       first left behind and 409s if it is no longer `confirmed`.
-    2. Build the `sales.goods_shipped` payload: `unit_cost` per line is read
-       from `products.standard_cost` (Core-level reference — see module
-       docstring) and snapshotted into the payload alongside the computed
-       `total_cost`, so the resulting journal entry (and this event itself)
-       stays reproducible from the event alone forever, independent of any
-       later edit to the product's standard cost (ADR-007 Decision 3).
-    3. `events.publish(...)` — this single call is what makes shipping
-       atomic across three modules in one transaction: inventory's
-       deduction handler runs first, ledger's posting handler runs second
-       (ADR-007 Decision 1, subscription order wired in `app.main` —
-       "move the goods, then account for them"). Either handler's
-       exception (insufficient stock, missing posting accounts) propagates
-       unchanged and aborts the whole `ship` call: the order stays
-       `confirmed`, no stock moves, no journal entry — all-or-nothing.
-    4. Set `status=shipped`. Full-order shipment only (ADR-007 Decision 5)
-       — there is no partial-ship/backorder path in Phase 1.
-    5. `flush()` — **never commit or rollback**, same ADR-003 R1 division
-       of labor as `confirm_order`: the HTTP route
-       (`router.ship_sales_order`) owns the commit boundary.
-    """
+    require_permission("sales.order.ship")
     company_id = require_current_company_id()
     result = await session.execute(
         select(SalesOrder)
@@ -548,25 +496,7 @@ async def ship_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
 
 
 async def cancel_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder:
-    """`draft` or `confirmed` -> `cancelled`. `SELECT ... FOR UPDATE` first (R1),
-
-    same doctrine as `confirm_order`/`ship_order`. `shipped` orders can no
-    longer cancel (ADR-007 "Order lifecycle update" — cancel-from-confirmed
-    ends the moment the goods actually left; Phase 2+ returns/RMA is the
-    undo mechanism for a shipped order, not cancel), so only `draft` and
-    `confirmed` remain legal source statuses.
-
-    Not idempotent: cancelling an already-cancelled order is a 409, not a
-    silent no-op — a deliberate divergence from `ledger.service.close_period`
-    (which treats a repeat close as idempotent). `close_period` has no
-    "wrong request" story worth flagging (Week 2 has no reopen workflow, so
-    a duplicate close request is just... satisfied twice, harmlessly);
-    `cancel` sits in the same state-machine family `confirm`/`ship` do,
-    where ADR-006 R1's whole point is that an illegal transition from the
-    current state must be visible to the caller as a 409, not silently
-    swallowed — a client re-cancelling something it does not realize is
-    already cancelled (or has since shipped) deserves to find out.
-    """
+    require_permission("sales.order.cancel")
     result = await session.execute(
         select(SalesOrder).where(SalesOrder.id == order_id).with_for_update()
     )
@@ -585,4 +515,4 @@ async def cancel_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder
     order.cancelled_at = datetime.now(timezone.utc)  # noqa: UP017 — see confirm_order's comment
 
     await _commit_or_conflict(session, entity="SalesOrder")
-    return await get_order(session, order.id)
+    return await load_order_unchecked(session, order.id)

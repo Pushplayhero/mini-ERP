@@ -12,12 +12,10 @@ from tests.conftest import company_headers
 
 
 async def _create_company(client: AsyncClient, code: str = "ACME") -> uuid.UUID:
-    response = await client.post(
-        "/api/v1/companies",
-        json={"code": code, "name": f"{code} Inc.", "functional_currency_code": "TWD"},
-    )
-    assert response.status_code == 201, response.text
-    return uuid.UUID(response.json()["id"])
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code=code)
+    return auth.company_id
 
 
 async def _get_uom_id(client: AsyncClient, company_id: uuid.UUID) -> uuid.UUID:

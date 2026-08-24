@@ -3,7 +3,8 @@
 Covers the WEEK9 brief's Slice A test list: `ActorContext` `ContextVar`
 bind/reset round-trips, `require_permission()`'s two fail-closed paths (no
 context bound; insufficient permission), and migration 0009's placeholder
-seed catalog (`admin` role granted `session.manage`) resolving correctly.
+seed catalog (`admin` role granted `session.manage`) resolving correctly. It also
+covers the fail-closed `Authenticated()` dependency, including an empty permission set.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import (
     ActorContext,
+    Authenticated,
     actor_context,
     current_actor_or_none,
     require_permission,
@@ -99,6 +101,15 @@ def test_is_system_actor_is_not_an_implicit_bypass() -> None:
         require_permission("sales.order.create")
 
 
+def test_authenticated_requires_actor_but_allows_empty_permission_set() -> None:
+    dependency = Authenticated()
+    with pytest.raises(ActionDeniedError, match="No actor context is bound"):
+        dependency()
+
+    with actor_context(_ctx(permission_codes=frozenset())):
+        dependency()
+
+
 # ---------------------------------------------------------------------------
 # Migration 0009's placeholder seed catalog
 # ---------------------------------------------------------------------------
@@ -118,10 +129,9 @@ _role_permissions = table(
 
 @pytest.mark.asyncio
 async def test_admin_role_is_granted_session_manage(db_session: AsyncSession) -> None:
-    """WEEK9 brief Decision 2: 0009 must seed `admin` -> `session.manage`
-    directly (not deferred to migration 0010) so the first bootstrap admin
-    (Slice B) can call `/auth/switch-company`/`/auth/logout` immediately
-    after Slice D's cutover.
+    """WEEK9 brief Decision 2: 0009 retains the `admin` -> `session.manage`
+    catalog grant for migration compatibility. Session lifecycle authorization
+    is now authenticated actor/session ownership, not a `session.manage` gate.
     """
     result = await db_session.execute(
         select(_role_permissions.c.permission_code).where(_role_permissions.c.role_code == "admin")

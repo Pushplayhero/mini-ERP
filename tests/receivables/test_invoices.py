@@ -12,14 +12,17 @@ actually true.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from datetime import date, timedelta
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import actor_context
 from app.core.tenancy import company_context
 from app.modules.ledger import service as ledger_service
+from tests.conftest import TEST_ADMIN_ACTOR, company_headers
 from tests.ledger._helpers import create_account
 from tests.receivables._helpers import (
     get_trial_balance_by_code,
@@ -27,6 +30,12 @@ from tests.receivables._helpers import (
     setup_shipped_order,
     void_invoice,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 @pytest.mark.asyncio
@@ -166,7 +175,7 @@ async def test_manual_journal_entry_to_control_account_is_rejected(client: Async
     company_id = ctx.company_id
 
     ar_account_id = None
-    accounts_resp = await client.get("/api/v1/accounts", headers={"X-Company-Id": str(company_id)})
+    accounts_resp = await client.get("/api/v1/accounts", headers=company_headers(company_id))
     for acct in accounts_resp.json():
         if acct["code"] == "1100":
             ar_account_id = acct["id"]
@@ -197,7 +206,7 @@ async def test_manual_journal_entry_to_control_account_is_rejected(client: Async
                 },
             ],
         },
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert resp.status_code == 422, resp.text
 
@@ -244,7 +253,7 @@ async def test_public_journal_entry_api_cannot_set_source_fields(
                 },
             ],
         },
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["source_type"] is None
@@ -270,6 +279,6 @@ async def test_manual_reversal_of_control_account_entry_is_rejected(
 
     resp = await client.post(
         f"/api/v1/journal-entries/{entry_id}/reverse",
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert resp.status_code == 422, resp.text

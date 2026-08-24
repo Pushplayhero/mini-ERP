@@ -107,18 +107,53 @@ async def test_bootstrap_admin_refuses_second_run(db_session: AsyncSession) -> N
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_admin_reuses_existing_company(db_session: AsyncSession) -> None:
+async def test_bootstrap_admin_reuses_matching_existing_company(db_session: AsyncSession) -> None:
     existing_company_id = await create_company(db_session, "PREEXIST")
 
     await bootstrap_admin(
         email="reuse@example.com",
         password="pw12345",
-        company_code="IGNORED",
-        company_name="Ignored",
+        company_code="PREEXIST",
+        company_name="Preexist Co",
     )
 
     result = await permissions_service.login(db_session, "reuse@example.com", "pw12345", None)
     assert result.active_company_id == existing_company_id
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_admin_refuses_mismatched_existing_company(
+    db_session: AsyncSession,
+) -> None:
+    await create_company(db_session, "PREEXIST")
+
+    with pytest.raises(BootstrapRefusedError, match="do not match"):
+        await bootstrap_admin(
+            email="mismatch@example.com",
+            password="pw12345",
+            company_code="DIFFERENT",
+            company_name="Different Co",
+        )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_admin_refuses_incompatible_currency_company(
+    db_session: AsyncSession,
+) -> None:
+    from app.modules.masterdata.models import Company
+
+    # Bypass service validator to create a non-TWD company
+    company = Company(code="NON_TWD_CO", name="Non-TWD Co", functional_currency_code="USD")
+    db_session.add(company)
+    await db_session.commit()
+
+    with pytest.raises(BootstrapRefusedError, match="unsupported functional currency"):
+        await bootstrap_admin(
+            email="incompat@example.com",
+            password="pw12345",
+            company_code="NON_TWD_CO",
+            company_name="Non-TWD Co",
+        )
 
 
 @pytest.mark.asyncio
@@ -157,7 +192,7 @@ async def test_bootstrap_admin_rolls_back_everything_on_failure(
     uoms = await masterdata_service.list_uoms(db_session)
     assert not any(c.code == "TWD" for c in currencies)
     assert not any(u.code == "EA" for u in uoms)
-    companies = await masterdata_service.list_companies(db_session)
+    companies = await masterdata_service.list_companies_unchecked(db_session)
     assert not any(c.code == "ROLLBACK" for c in companies)
     count = await permissions_service.count_users(db_session)
     assert count == 0

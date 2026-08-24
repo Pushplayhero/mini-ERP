@@ -12,6 +12,7 @@ stopped existing.
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import pytest
 from httpx import AsyncClient
@@ -22,6 +23,7 @@ from app.core.exceptions import ConflictError
 from app.core.tenancy import company_context
 from app.modules.sales import service as sales_service
 from app.plugins import credit_limit
+from tests.conftest import company_headers
 from tests.sales._helpers import (
     cancel_order,
     confirm_order,
@@ -62,7 +64,7 @@ async def test_confirm_exceeding_credit_limit_is_409_and_order_stays_draft(
     assert resp.status_code == 409
 
     reread = await client.get(
-        f"/api/v1/sales-orders/{order['id']}", headers={"X-Company-Id": str(company_id)}
+        f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)
     )
     body = reread.json()
     assert body["status"] == "draft"
@@ -148,17 +150,20 @@ async def test_concurrent_confirms_against_same_near_limit_customer_only_one_win
 
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
+    from app.core.authorization import actor_context
+    from tests.conftest import TEST_ADMIN_ACTOR
+
     first_locked = asyncio.Event()
     release_first = asyncio.Event()
-    results: dict[str, object] = {}
+    results: dict[str, tuple[str, str]] = {}
 
     async def confirm_task(key: str, order_id: str, *, is_first: bool) -> None:
         if not is_first:
             await first_locked.wait()
         async with session_factory() as session:
-            with company_context(company_id):
+            with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
                 try:
-                    order_obj = await sales_service.confirm_order(session, order_id)
+                    order_obj = await sales_service.confirm_order(session, uuid.UUID(order_id))
                     if is_first:
                         first_locked.set()
                         await release_first.wait()

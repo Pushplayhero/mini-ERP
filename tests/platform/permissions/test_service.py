@@ -7,16 +7,25 @@ SHA-256 lookup correctness.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import ActorContext, actor_context
+from app.core.exceptions import ActionDeniedError
 from app.platform.permissions import service
+from app.platform.permissions.context import session_context
 from app.platform.permissions.models import Session as SessionModel
 from app.platform.permissions.models import User
-from tests.platform.permissions._helpers import create_company, create_user_with_role
+from tests.platform.permissions._helpers import (
+    create_company,
+    create_test_user,
+    create_user_with_role,
+    grant_test_role,
+)
 
 # ---------------------------------------------------------------------------
 # Argon2id hashing (ADR-009 Decision 2)
@@ -92,7 +101,7 @@ async def test_login_rejects_disabled_user(db_session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_login_no_entitlement_raises(db_session: AsyncSession) -> None:
-    await service.create_user(db_session, "nowhere@example.com", "pw12345")
+    await create_test_user(db_session, email="nowhere@example.com", password="pw12345")
 
     with pytest.raises(service.NoCompanyEntitlementError):
         await service.login(db_session, "nowhere@example.com", "pw12345", None)
@@ -150,7 +159,7 @@ async def test_login_multi_company_requires_selection(db_session: AsyncSession) 
     user_id = await create_user_with_role(
         db_session, email="multi@example.com", password="pw12345", company_id=company_a
     )
-    await service.grant_role(db_session, user_id, company_b, "admin")
+    await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="admin")
 
     with pytest.raises(service.AmbiguousCompanySelectionError):
         await service.login(db_session, "multi@example.com", "pw12345", None)
@@ -263,16 +272,18 @@ async def test_switch_company_re_checks_entitlement(db_session: AsyncSession) ->
         db_session, email="switch@example.com", password="pw12345", company_id=company_a
     )
     result = await service.login(db_session, "switch@example.com", "pw12345", None)
-
-    with pytest.raises(service.CompanyNotEntitledError):
-        await service.switch_company(db_session, result.session_id, company_b)
-
-    await service.grant_role(db_session, user_id, company_b, "admin")
-    new_company = await service.switch_company(db_session, result.session_id, company_b)
-    assert new_company == company_b
-
     resolved = await service.resolve_actor(db_session, result.raw_token)
-    assert resolved.active_company_id == company_b
+
+    with actor_context(resolved.actor_context), session_context(result.session_id):
+        with pytest.raises(service.CompanyNotEntitledError):
+            await service.switch_company(db_session, company_b)
+
+        await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="admin")
+        new_company = await service.switch_company(db_session, company_b)
+        assert new_company == company_b
+
+    resolved_after = await service.resolve_actor(db_session, result.raw_token)
+    assert resolved_after.active_company_id == company_b
 
 
 @pytest.mark.asyncio
@@ -282,10 +293,81 @@ async def test_logout_deletes_session_row(db_session: AsyncSession) -> None:
         db_session, email="out@example.com", password="pw12345", company_id=company_id
     )
     result = await service.login(db_session, "out@example.com", "pw12345", None)
+    resolved = await service.resolve_actor(db_session, result.raw_token)
 
-    await service.logout(db_session, result.session_id)
+    with actor_context(resolved.actor_context), session_context(result.session_id):
+        await service.logout(db_session)
 
     row = await db_session.execute(select(SessionModel).where(SessionModel.id == result.session_id))
     assert row.scalars().first() is None
     with pytest.raises(service.InvalidSessionError):
         await service.resolve_actor(db_session, result.raw_token)
+
+
+@pytest.mark.asyncio
+async def test_switch_company_and_logout_require_actor(db_session: AsyncSession) -> None:
+    with pytest.raises(ActionDeniedError, match="No actor context is bound"):
+        await service.switch_company(db_session, uuid.uuid4())
+    with pytest.raises(ActionDeniedError, match="No actor context is bound"):
+        await service.logout(db_session)
+
+
+@pytest.mark.asyncio
+async def test_switch_company_and_logout_require_session_context(
+    db_session: AsyncSession,
+) -> None:
+    actor = ActorContext(user_id=uuid.uuid4(), permission_codes=frozenset())
+    with (
+        actor_context(actor),
+        pytest.raises(service.InvalidSessionError, match="No session context"),
+    ):
+        await service.switch_company(db_session, uuid.uuid4())
+    with (
+        actor_context(actor),
+        pytest.raises(service.InvalidSessionError, match="No session context"),
+    ):
+        await service.logout(db_session)
+
+
+@pytest.mark.asyncio
+async def test_switch_company_and_logout_reject_missing_session_row(
+    db_session: AsyncSession,
+) -> None:
+    actor = ActorContext(user_id=uuid.uuid4(), permission_codes=frozenset())
+    missing_session_id = uuid.uuid4()
+    with (
+        actor_context(actor),
+        session_context(missing_session_id),
+        pytest.raises(service.InvalidSessionError, match="not found"),
+    ):
+        await service.switch_company(db_session, uuid.uuid4())
+    with (
+        actor_context(actor),
+        session_context(missing_session_id),
+        pytest.raises(service.InvalidSessionError, match="not found"),
+    ):
+        await service.logout(db_session)
+
+
+@pytest.mark.asyncio
+async def test_switch_company_and_logout_reject_session_actor_mismatch(
+    db_session: AsyncSession,
+) -> None:
+    """Slice D requirement: ambient session user_id must match current actor user_id."""
+    company_a = await create_company(db_session, "HIJACKA")
+    await create_user_with_role(
+        db_session, email="victim@example.com", password="pw12345", company_id=company_a
+    )
+    await create_user_with_role(
+        db_session, email="attacker@example.com", password="pw12345", company_id=company_a
+    )
+    login_a = await service.login(db_session, "victim@example.com", "pw12345", None)
+    login_b = await service.login(db_session, "attacker@example.com", "pw12345", None)
+    actor_b = (await service.resolve_actor(db_session, login_b.raw_token)).actor_context
+
+    # Attacker tries to switch or logout Victim's session
+    with actor_context(actor_b), session_context(login_a.session_id):
+        with pytest.raises(service.InvalidSessionError):
+            await service.switch_company(db_session, company_a)
+        with pytest.raises(service.InvalidSessionError):
+            await service.logout(db_session)

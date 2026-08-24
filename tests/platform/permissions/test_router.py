@@ -1,10 +1,9 @@
 """tests/platform/permissions/test_router.py — `/auth/*` HTTP endpoints.
 
-Covers the WEEK9 brief's Slice B test list: `/auth/switch-company`/
-`/auth/logout`'s inline token resolution (valid/expired/missing token), and
-the round-4 addition — `actor_context(...)`/`session_context(...)` leave no
-bound `ContextVar` after both a successful request and a request that
-raises mid-handler.
+Covers the Slice D session-lifecycle HTTP contract: valid, expired, missing,
+and malformed bearer tokens; guest-role A → B → A switching followed by logout;
+and middleware cleanup of actor, session, and company `ContextVar`s after
+successful and rejected requests.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import current_actor_or_none
-from app.platform.permissions import service
+from app.core.tenancy import current_company_id_or_none
 from app.platform.permissions.context import current_session_id_or_none
 from app.platform.permissions.models import Session as SessionModel
 from app.platform.permissions.models import User
@@ -25,12 +24,14 @@ from tests.platform.permissions._helpers import (
     create_company,
     create_role_without_permissions,
     create_user_with_role,
+    grant_test_role,
 )
 
 
 def _assert_no_leaked_context() -> None:
     assert current_actor_or_none() is None
     assert current_session_id_or_none() is None
+    assert current_company_id_or_none() is None
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ async def test_login_endpoint_ambiguous_company_is_400(
     user_id = await create_user_with_role(
         db_session, email="httpmulti@example.com", password="pw12345", company_id=company_a
     )
-    await service.grant_role(db_session, user_id, company_b, "admin")
+    await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="admin")
 
     response = await client.post(
         "/auth/login", json={"email": "httpmulti@example.com", "password": "pw12345"}
@@ -112,7 +113,7 @@ async def test_switch_company_success_no_leak(
     user_id = await create_user_with_role(
         db_session, email="swhttp@example.com", password="pw12345", company_id=company_a
     )
-    await service.grant_role(db_session, user_id, company_b, "admin")
+    await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="admin")
 
     login_resp = await client.post(
         "/auth/login",
@@ -167,14 +168,10 @@ async def test_switch_company_expired_token_is_401_no_leak(
 
 
 @pytest.mark.asyncio
-async def test_switch_company_insufficient_permission_is_403_no_leak(
+async def test_guest_can_switch_company_round_trip_and_logout_no_leak(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """A role with no `session.manage` grant — 403, and the exception path
-
-    still resets both `ContextVar`s (round-4 addition's exception-path
-    leak test).
-    """
+    """Session lifecycle is authenticated, not gated by ``session.manage``."""
     company_a = await create_company(db_session, "NOPERMA")
     company_b = await create_company(db_session, "NOPERMB")
     await create_role_without_permissions(db_session, "guest")
@@ -185,7 +182,7 @@ async def test_switch_company_insufficient_permission_is_403_no_leak(
         company_id=company_a,
         role_code="guest",
     )
-    await service.grant_role(db_session, user_id, company_b, "guest")
+    await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="guest")
 
     login_resp = await client.post(
         "/auth/login",
@@ -202,7 +199,23 @@ async def test_switch_company_insufficient_permission_is_403_no_leak(
         json={"company_id": str(company_b)},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
+    assert response.json()["active_company_id"] == str(company_b)
+    _assert_no_leaked_context()
+
+    response_back = await client.post(
+        "/auth/switch-company",
+        json={"company_id": str(company_a)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response_back.status_code == 200, response_back.text
+    assert response_back.json()["active_company_id"] == str(company_a)
+    _assert_no_leaked_context()
+
+    logout_response = await client.post(
+        "/auth/logout", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert logout_response.status_code == 204
     _assert_no_leaked_context()
 
 
@@ -233,4 +246,43 @@ async def test_logout_endpoint_revokes_session_no_leak(
     # revocation is real deletion, not a soft-revoke flag).
     response2 = await client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
     assert response2.status_code == 401
+    _assert_no_leaked_context()
+
+
+@pytest.mark.asyncio
+async def test_bearer_scheme_case_insensitivity_and_malformed_headers(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    company_id = await create_company(db_session, "BEARERCASE")
+    await create_user_with_role(
+        db_session, email="bearer_case@example.com", password="pw", company_id=company_id
+    )
+    login_resp = await client.post(
+        "/auth/login", json={"email": "bearer_case@example.com", "password": "pw"}
+    )
+    token = login_resp.json()["access_token"]
+
+    # 1. Lowercase "bearer <token>"
+    resp = await client.get("/api/v1/customers", headers={"Authorization": f"bearer {token}"})
+    assert resp.status_code == 200
+    _assert_no_leaked_context()
+
+    # 2. Uppercase "BEARER <token>"
+    resp = await client.get("/api/v1/customers", headers={"Authorization": f"BEARER {token}"})
+    assert resp.status_code == 200
+    _assert_no_leaked_context()
+
+    # 3. Malformed: wrong scheme
+    resp = await client.get("/api/v1/customers", headers={"Authorization": f"Basic {token}"})
+    assert resp.status_code == 401
+    _assert_no_leaked_context()
+
+    # 4. Malformed: empty token
+    resp = await client.get("/api/v1/customers", headers={"Authorization": "Bearer "})
+    assert resp.status_code == 401
+    _assert_no_leaked_context()
+
+    # 5. Malformed: scheme only
+    resp = await client.get("/api/v1/customers", headers={"Authorization": "Bearer"})
+    assert resp.status_code == 401
     _assert_no_leaked_context()
