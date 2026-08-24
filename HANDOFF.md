@@ -1,14 +1,14 @@
 # HANDOFF — mini-erp (WEEK9 Slice D authenticated lifecycle correction retry — 2026-08-24)
 
-Updated 2026-08-24. Slice D remains in the shared uncommitted working copy. Final reviewer disposition: no P0-P2 findings; two P3 documentation-only findings are recorded below. Commit and push still require scope owner approval.
+Updated 2026-08-25. Slice D and the initial D.5 baseline are checkpointed at `1db8ed9`; no push has been made. Follow-up policy and wording corrections are pending the strict-scan checkpoint.
 
 ## Slice D.5 Security Baseline — implementation status
 
-The D.5 security architecture is documented in `docs/security/threat-model.md` and `docs/security/scan-policy.md`. Current status: **prepared, scan not executed**. No Codex Security login, canary, standard scan, deep scan, CI gate, or security certification has been performed in this worktree.
+The D.5 security architecture is documented in `docs/security/threat-model.md` and `docs/security/scan-policy.md`. Current status: **canary complete; strict standard scan pending**. CLI info, login, and dry-run preflight completed. Canary scan `1d73ff69` reviewed 26/26 files with complete coverage, 0 findings, exit 0, and cost US$0.6886922; it is diagnostic because it ran before the strict `approval_policy="never"` correction.
 
 Planned execution uses pinned `@openai/codex-security@0.1.18` with local ChatGPT authentication, a clean exact-SHA detached worktree, repo-external private state/results, a US$1 path canary followed by a US$5 full standard scan, and 30-day artifact retention. Critical/High findings block; Medium findings require an owner and deadline; exit 2/130/143 or incomplete coverage is no-pass. CI, SARIF, patching, publish, hooks, and deep scan remain deferred.
 
-The previous `290 passed` full-suite result remains historical evidence. A fresh full suite must pass on the exact checkpoint SHA before the D.5 baseline can be accepted. The pre-existing deletion of `.claude/review-state.md` remains excluded from checkpoint commits and scan knowledge-base inputs. No D.5 commit or push has been made.
+The previous `290 passed` full-suite result remains historical evidence. A fresh full suite must pass on the corrected exact checkpoint SHA before the D.5 baseline can be accepted. The pre-existing deletion of `.claude/review-state.md` remains excluded from checkpoint commits and scan knowledge-base inputs. Sol review found and corrected strict approval-policy, private disclosure, stale test wording, and deep-scan bounding gaps; standard scan remains blocked until that corrected checkpoint exists.
 
 ## 2026-08-24 Luna High re-review summary
 
@@ -17,7 +17,7 @@ The previous `290 passed` full-suite result remains historical evidence. A fresh
 - Fresh evidence this round: catalog `44/44/44`; route classification `58 routes = 4 Public / 2 Authenticated / 52 RequiresPermission / 0 unclassified`.
 - Historical evidence from the prior verification round: full pytest `290 passed in 162.54s`; prior format, mypy, and import-linter checks passed.
 - Runner note: two `uv` trampoline failures were environment/runner issues, not code findings; the `.venv` command completed successfully.
-- Final disposition: no P0-P2 findings; two P3 documentation-only findings are recorded below. This HANDOFF does not claim APPROVED.
+- Final disposition: initial checkpoint not approved pending the corrected strict-scan rerun; no scan finding was reported by canary. This HANDOFF does not claim APPROVED.
 ## Slice D correction — 2026-08-24
 
 ### Final reviewer findings

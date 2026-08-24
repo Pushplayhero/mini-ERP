@@ -1,18 +1,9 @@
-"""Regression tests for /CODEX REVIEW DIFF (2026-08-13) Important findings.
+"""Regression tests for master-data conflict handling.
 
-Before the fix in `app.modules.masterdata.service._commit_or_conflict`, two
-classes of request hit an unhandled `sqlalchemy.exc.IntegrityError` and
-surfaced as a generic 500 instead of the already-built `ConflictError` / 409
-path:
-
-1. Duplicate unique keys (company code, customer/product/account code-or-sku
-   scoped to a company).
-2. A well-formed but nonexistent `X-Company-Id` (no matching `companies`
-   row), which violates the `company_id` foreign key on create.
-
-Every test here asserts `409`, not just "no crash" — a regression that
-brings back the raw 500 (or silently swallows the conflict and returns 200)
-must fail this suite.
+Duplicate keys and nonexistent company references must be translated by the
+service into ``ConflictError``. HTTP adapters may map that domain error to
+409; tenant authority comes from server-bound context, never from a client
+company header.
 """
 
 from __future__ import annotations

@@ -55,7 +55,10 @@ see `app/plugins/README.md` for what does.
 ## Reporting a vulnerability
 
 This is a Phase 1 educational/reference kernel, not (yet) a project with a
-formal disclosure process or security contact. If you find an issue in the
-kernel itself (tenancy isolation, the posting engine, the event bus), please
-open an issue describing it; for anything sensitive, use your judgment about
-public disclosure timing given the project's current maturity.
+formal disclosure process or security contact. Do not publish sensitive
+security findings, raw scanner output, source excerpts, credentials, or
+proofs of concept in a public issue. Send them only to an authorized project
+owner through a private security channel; if no private channel is available,
+keep the material offline and request one before disclosure. Non-sensitive
+documentation issues may still be reported publicly after confirming that no
+security detail is exposed.

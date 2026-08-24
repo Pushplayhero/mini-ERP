@@ -1,8 +1,8 @@
 """Light coverage for global reference-data endpoints (UoM / currencies).
 
 These public reads do not require bearer authentication; company context is
-not supplied by an HTTP header and is not used as tenant authority.
-isolation semantics apply (see README "Design Decisions").
+not supplied by an HTTP header and is not used as tenant authority. They are
+global reference data, so company isolation is not part of these endpoints.
 """
 
 from __future__ import annotations

@@ -13,8 +13,8 @@ Status: Slice D.5 baseline policy, 2026-08-24.
 ## D.5 sequence
 
 1. Run `info --json`, login status, and dry-run preflight. Dry-run is not evidence of authentication, model access, or runtime execution.
-2. Run a report-only security-sensitive path canary with `gpt-5.6-luna`, high effort, `--max-cost 1`, and `--fail-on-severity high`.
-3. Only when the canary has complete coverage and sealed artifacts, run the full standard scan with `gpt-5.6-sol`, high effort, `--max-cost 5`, and `--fail-on-severity high`.
+2. Run a report-only security-sensitive path canary with `gpt-5.6-luna`, high effort, `--max-cost 1`, and `--fail-on-severity high`. Both real scans must include `--codex 'approval_policy="never"'`; if the strict override is unavailable or coverage is reduced, stop with no-pass and obtain an owner-reviewed rerun decision.
+3. Only when the canary has complete coverage and sealed artifacts, run the full standard scan with `gpt-5.6-sol`, high effort, `--max-cost 5`, `--fail-on-severity high`, and the same strict `--codex 'approval_policy="never"'` override.
 4. Never use `--patch`, `--create-pr`, publish, or install-hook in D.5.
 
 ## Gates and disposition
@@ -29,4 +29,4 @@ Status: Slice D.5 baseline policy, 2026-08-24.
 
 - D.5 establishes the local baseline only; CI, SARIF, API-key automation, and required PR checks are deferred.
 - Each later security-sensitive Slice uses a committed diff scan.
-- A bounded full-repository deep scan is a separate staging-before-release gate.
+- A bounded full-repository deep scan is a separate staging-before-release gate. Its default recipe is `--mode deep --workers 2 --subagents 2 --stop-after-no-new 2 --max-discovery-runs 8 --max-time-hours 4 --max-cost 20`; any time, run, or cost cap hit is no-pass and requires an explicit staging gate decision before rerun.
