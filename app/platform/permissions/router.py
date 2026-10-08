@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import Authenticated, Public
@@ -33,9 +33,23 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
 @router.post("/login", response_model=LoginResponse, dependencies=[Depends(Public())])
-async def login(payload: LoginRequest, session: DbSession) -> LoginResponse:
+async def login(request: Request, payload: LoginRequest, session: DbSession) -> LoginResponse:
+    # FastAPI validates the bounded request body before entering this function,
+    # so malformed requests cannot consume a shared peer's attempt quota.
+    peer = request.client.host if request.client is not None else "unknown"
+    allowed, retry_after = request.app.state.login_rate_limiter.allow(peer)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     try:
-        result = await service.login(session, payload.email, payload.password, payload.company_id)
+        async with request.app.state.login_verification_semaphore:
+            result = await service.login(
+                session, payload.email, payload.password, payload.company_id
+            )
     except service.InvalidCredentialsError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     except service.NoCompanyEntitlementError as exc:

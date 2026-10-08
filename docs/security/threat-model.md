@@ -36,10 +36,11 @@ Status: Slice D.5 baseline draft; reviewed 2026-08-24. This document is scan con
 - AB-003 user switches to an unentitled company; control: destination entitlement check; evidence: switch-company tests.
 - AB-004 caller reaches a high-impact mutation without a permission; control: route/service defense in depth; evidence: authorization and module tests.
 - AB-005 disabled or unauthenticated caller reaches protected data; control: authentication and route markers; evidence: smoke/auth tests.
+- AB-006 repeated public login attempts consume API resources; controls: a 16 KiB request-body cap, a 1,024-character password cap, a process-local per-peer limit of 10 schema-valid attempts per 60 seconds, no more than four concurrent login service/Argon2 executions per process, and Argon2 verification offloaded from the async event loop; evidence: permissions router and service tests.
 
 ## Gaps and accepted risks
 
-Token rotation/expiry, database RLS, production TLS/CORS, rate limiting, external secret scanning, and deployment hardening are not assumed by this document; they remain evidence gaps for the staging hardening phase. Any accepted risk requires an owner, rationale, compensating control, and expiry date. Critical and High findings are not accepted as a D.5 pass.
+Token rotation/expiry, database RLS, production TLS/CORS, external secret scanning, and deployment hardening are not assumed by this document; they remain evidence gaps for the staging hardening phase. The login limiter is process-local and keys the direct peer address: multiple workers/replicas do not share its counters, and callers behind one reverse proxy share that proxy's quota because forwarded headers are not trusted. Production ingress must provide an appropriate shared or edge rate limit before scale-out or proxy deployment. Any accepted risk requires an owner, rationale, compensating control, and expiry date. Critical and High findings are not accepted as a D.5 pass.
 
 ## Review triggers
 

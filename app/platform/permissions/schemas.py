@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 class LoginRequest(BaseModel):
     email: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=1)
+    password: str = Field(min_length=1, max_length=1024)
     # Required only when the user has more than one company entitlement
     # (ADR-009 Decision 8) — validated against `user_company_roles` at
     # login time; a user with exactly one entitlement gets it auto-selected

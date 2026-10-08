@@ -20,6 +20,7 @@ classification. See `docs/adr/ADR-009-platform-permissions.md`.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -60,6 +61,11 @@ from app.platform.permissions import service as permissions_service
 from app.platform.permissions.context import (
     reset_current_session_id,
     set_current_session_id,
+)
+from app.platform.permissions.middleware import (
+    MAX_CONCURRENT_LOGIN_VERIFICATIONS,
+    LoginProtectionMiddleware,
+    LoginRateLimiter,
 )
 from app.platform.permissions.router import router as permissions_router
 from app.plugins import credit_limit
@@ -134,15 +140,23 @@ def _classify_routes_or_crash(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _classify_routes_or_crash(app)
+    app.state.login_rate_limiter = LoginRateLimiter()
+    app.state.login_verification_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LOGIN_VERIFICATIONS)
     yield
 
 
 def create_app() -> FastAPI:
-    return FastAPI(
+    application = FastAPI(
         title="mini-ERP",
         version="0.1.0",
         lifespan=lifespan,
     )
+    application.state.login_rate_limiter = LoginRateLimiter()
+    application.state.login_verification_semaphore = asyncio.Semaphore(
+        MAX_CONCURRENT_LOGIN_VERIFICATIONS
+    )
+    application.add_middleware(LoginProtectionMiddleware)
+    return application
 
 
 app = create_app()

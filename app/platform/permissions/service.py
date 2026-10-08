@@ -10,6 +10,7 @@ status.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 import uuid
@@ -158,7 +159,7 @@ async def login(
     password_hash_to_check = (
         usable_user.password_hash if usable_user is not None else _DUMMY_PASSWORD_HASH
     )
-    password_ok = verify_password(password, password_hash_to_check)
+    password_ok = await asyncio.to_thread(verify_password, password, password_hash_to_check)
     if usable_user is None or not password_ok:
         raise InvalidCredentialsError("Invalid email or password.")
     user = usable_user

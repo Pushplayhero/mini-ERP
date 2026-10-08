@@ -7,6 +7,7 @@ SHA-256 lookup correctness.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -150,6 +151,25 @@ async def test_login_always_calls_verify_password_once(
     with pytest.raises(service.InvalidCredentialsError):
         await service.login(db_session, "timing@example.com", "wrong-password", None)
     assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_login_password_verification_runs_off_event_loop_thread(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    event_loop_thread = threading.get_ident()
+    verification_threads: list[int] = []
+
+    def verify_password(password: str, password_hash: str) -> bool:
+        verification_threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(service, "verify_password", verify_password)
+    with pytest.raises(service.InvalidCredentialsError):
+        await service.login(db_session, "unknown@example.com", "wrong", None)
+
+    assert len(verification_threads) == 1
+    assert verification_threads[0] != event_loop_thread
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,9 @@ successful and rejected requests.
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -17,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import current_actor_or_none
 from app.core.tenancy import current_company_id_or_none
+from app.platform.permissions import service
 from app.platform.permissions.context import current_session_id_or_none
 from app.platform.permissions.models import Session as SessionModel
 from app.platform.permissions.models import User
@@ -86,6 +90,137 @@ async def test_login_endpoint_ambiguous_company_is_400(
         "/auth/login", json={"email": "httpmulti@example.com", "password": "pw12345"}
     )
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_login_rejects_oversized_body_before_password_verification(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def verify_password(password: str, password_hash: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr("app.platform.permissions.service.verify_password", verify_password)
+
+    async def oversized_body() -> AsyncIterator[bytes]:
+        yield b'{"email":"large@example.com","password":"'
+        yield b"x" * 20_000
+        yield b'"}'
+
+    response = await client.post(
+        "/auth/login", content=oversized_body(), headers={"Content-Type": "application/json"}
+    )
+
+    assert response.status_code == 413
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_login_rejects_overlong_password_before_password_verification(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def verify_password(password: str, password_hash: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr("app.platform.permissions.service.verify_password", verify_password)
+    response = await client.post(
+        "/auth/login", json={"email": "large@example.com", "password": "x" * 1025}
+    )
+
+    assert response.status_code == 422
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limit_rejects_repeated_peer_before_password_verification(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def verify_password(password: str, password_hash: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr("app.platform.permissions.service.verify_password", verify_password)
+    responses = [
+        await client.post(
+            "/auth/login",
+            json={"email": f"user-{index}@example.com", "password": "wrong"},
+            headers={"X-Forwarded-For": f"198.51.100.{index + 1}"},
+        )
+        for index in range(11)
+    ]
+
+    assert [response.status_code for response in responses] == [401] * 10 + [429]
+    assert calls == 10
+
+
+@pytest.mark.asyncio
+async def test_malformed_login_requests_do_not_consume_peer_quota(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def verify_password(password: str, password_hash: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr("app.platform.permissions.service.verify_password", verify_password)
+    malformed = [
+        await client.post("/auth/login", content=b"", headers={"Content-Type": "application/json"})
+        for _ in range(10)
+    ]
+    valid_shape = await client.post(
+        "/auth/login", json={"email": "unknown@example.com", "password": "wrong"}
+    )
+
+    assert [response.status_code for response in malformed] == [422] * 10
+    assert valid_shape.status_code == 401
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_login_verifications_are_bounded_per_process(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    active = 0
+    maximum_active = 0
+
+    async def login(*_args: object, **_kwargs: object) -> service.LoginResult:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return service.LoginResult(
+            raw_token="test-token",
+            session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            active_company_id=uuid.uuid4(),
+        )
+
+    monkeypatch.setattr("app.platform.permissions.router.service.login", login)
+    responses = await asyncio.gather(
+        *[
+            client.post(
+                "/auth/login",
+                json={"email": f"parallel-{index}@example.com", "password": "valid"},
+            )
+            for index in range(8)
+        ]
+    )
+
+    assert [response.status_code for response in responses] == [200] * 8
+    assert maximum_active == 4
 
 
 # ---------------------------------------------------------------------------
