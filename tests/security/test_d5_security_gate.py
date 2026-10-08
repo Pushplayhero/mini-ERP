@@ -281,6 +281,25 @@ def test_active_micro_finalize_is_not_blocked_as_unactivated(
     assert "policy_not_activated" not in result.reasons
 
 
+def test_active_micro_baseline_accepts_later_units_without_rebinding_first_unit(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "results"
+    first = {
+        "sha": "a" * 40,
+        "profile": "micro-v2",
+        "profile_digest": gate.profile_digest("micro-v2"),
+        "inventory_digest": "b" * 64,
+        "unit": "u01_identity",
+    }
+    gate._ensure_pilot_baseline(root, first)
+
+    gate._ensure_pilot_baseline(root, {**first, "unit": "u02_runtime_config"})
+
+    baseline = json.loads((root / gate.BASELINE_FILENAME).read_text(encoding="utf-8"))
+    assert baseline["first_unit"] == "u01_identity"
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

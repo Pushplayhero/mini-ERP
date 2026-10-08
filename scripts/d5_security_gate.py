@@ -2585,17 +2585,26 @@ def _ensure_pilot_baseline(root: Path, evidence: dict[str, Any]) -> None:
     expected = {
         key: evidence[key] for key in ("sha", "profile", "profile_digest", "inventory_digest")
     }
-    expected.update({"schema_version": "2.0", "first_unit": evidence["unit"]})
+    expected["schema_version"] = "2.0"
     root.mkdir(parents=True, exist_ok=True)
     path = root / BASELINE_FILENAME
     try:
         with path.open("x", encoding="utf-8") as handle:
-            json.dump({**expected, "created_at": datetime.now(UTC).isoformat()}, handle, indent=2)
+            json.dump(
+                {
+                    **expected,
+                    "first_unit": evidence["unit"],
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+                handle,
+                indent=2,
+            )
     except FileExistsError:
         value = _strict_json_bytes(path)
         if (
             not isinstance(value, dict)
             or any(value.get(key) != val for key, val in expected.items())
+            or value.get("first_unit") not in _authorized_micro_units()
             or not _timestamp(value.get("created_at"))
         ):
             raise GateError("shared baseline binding mismatch") from None
