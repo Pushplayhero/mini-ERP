@@ -62,6 +62,7 @@ async def test_confirm_exceeding_credit_limit_is_409_and_order_stays_draft(
     )
     resp = await confirm_order(client, company_id, order["id"])
     assert resp.status_code == 409
+    assert resp.json()["detail"] == "Sales order exceeds the customer's credit limit"
 
     reread = await client.get(
         f"/api/v1/sales-orders/{order['id']}", headers=company_headers(company_id)

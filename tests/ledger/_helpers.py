@@ -8,6 +8,7 @@ balanced line payloads) before they can post a single journal entry.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -45,6 +46,31 @@ async def create_period(
     )
     assert response.status_code == 201, response.text
     return dict(response.json())
+
+
+async def create_current_posting_periods(client: AsyncClient, company_id: uuid.UUID) -> None:
+    """Open the nearby months used by service-generated posting dates.
+
+    Invoice and reversal defaults use the host's local date, while shipment
+    events use a UTC timestamp. Include adjacent months so a test that crosses
+    a month boundary during setup still has an open period for its postings.
+    """
+    reference_dates = (date.today(), datetime.now(UTC).date())
+    periods: set[tuple[int, int]] = set()
+    for reference_date in reference_dates:
+        first_of_month = reference_date.replace(day=1)
+        previous_month = first_of_month - timedelta(days=1)
+        next_month = (first_of_month + timedelta(days=32)).replace(day=1)
+        periods.update(
+            {
+                (previous_month.year, previous_month.month),
+                (reference_date.year, reference_date.month),
+                (next_month.year, next_month.month),
+            }
+        )
+
+    for year, month in sorted(periods):
+        await create_period(client, company_id, year, month)
 
 
 def twd_line(

@@ -21,7 +21,7 @@ from app.core.hooks import HookContext
 from app.core.tenancy import company_context
 from app.plugins.credit_limit import check_credit_limit
 from tests.inventory._helpers import create_adjustment
-from tests.ledger._helpers import create_account, create_period
+from tests.ledger._helpers import create_account, create_current_posting_periods
 from tests.receivables._helpers import allocation, create_payment, issue_invoice
 from tests.sales._helpers import (
     confirm_order,
@@ -35,7 +35,7 @@ from tests.sales._helpers import create_company as sales_create_company
 
 async def _company_with_chart(client: AsyncClient, code: str) -> uuid.UUID:
     company_id = await sales_create_company(client, code)
-    await create_period(client, company_id, 2026, 8)
+    await create_current_posting_periods(client, company_id)
     for account_code, name, acct_type in (
         ("1000", "Cash", "asset"),
         ("1100", "Accounts Receivable", "asset"),
