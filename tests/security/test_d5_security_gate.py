@@ -206,7 +206,7 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
     monkeypatch.setattr(
         gate,
         "build_child_environment",
-        lambda state, *_args: {
+        lambda state, *_args, **_kwargs: {
             "PATH": str(tmp_path),
             "CODEX_SECURITY_STATE_DIR": str(state.resolve()),
         },
@@ -970,12 +970,16 @@ def test_micro_preview_includes_scope_budget_and_destination(
     assert argv[argv.index("--auth") + 1] == "chatgpt"
     assert argv[argv.index("--output-dir") + 1] == preview["output_dir"]
     assert "app/core/events.py" in argv
-    assert "docs/security/scan-policy.md" in argv
+    knowledge_bases = [
+        Path(argv[index + 1]) for index, value in enumerate(argv) if value == "--knowledge-base"
+    ]
+    assert (repo / "docs/security/scan-policy.md").resolve() in knowledge_bases
 
 
 def test_micro_scanner_argv_preserves_capacity_and_never_changes_approval() -> None:
+    repo = Path("C:/repo")
     argv = gate.build_scanner_argv(
-        Path("C:/repo"),
+        repo,
         "u03_events_hooks",
         Path("C:/results"),
         profile="micro-v2",
@@ -983,6 +987,10 @@ def test_micro_scanner_argv_preserves_capacity_and_never_changes_approval() -> N
     codex_values = [argv[index + 1] for index, value in enumerate(argv) if value == "--codex"]
     assert 'approval_policy="never"' in codex_values
     assert "features.multi_agent_v2.max_concurrent_threads_per_session=3" in codex_values
+    knowledge_bases = [
+        Path(argv[index + 1]) for index, value in enumerate(argv) if value == "--knowledge-base"
+    ]
+    assert knowledge_bases == [(repo / path).resolve() for path in gate.COMMON_KNOWLEDGE_BASE]
     assert "--dry-run" not in argv
 
 
@@ -2376,6 +2384,7 @@ def test_real_scan_cli_records_success_and_exact_retention(
     )
     root = tmp_path / "real-results"
     original_run = gate.subprocess.run
+    scanner_runtime: dict[str, Any] = {}
 
     def run_scanner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         if args and isinstance(args[0], list) and args[0][0] == "git":
@@ -2384,6 +2393,8 @@ def test_real_scan_cli_records_success_and_exact_retention(
         if "--output-dir" not in argv:
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         output = Path(argv[argv.index("--output-dir") + 1])
+        scanner_runtime["environment"] = kwargs["env"]
+        scanner_runtime["cwd"] = kwargs["cwd"]
         _scan_artifacts_for_run(output, gate.SHARD_IDS[0], _git(repo, "rev-parse", "HEAD"))
         return subprocess.CompletedProcess(
             args=[], returncode=0, stdout="estimated cost: $1.00\n", stderr=""
@@ -2410,6 +2421,12 @@ def test_real_scan_cli_records_success_and_exact_retention(
     assert runner["exit_code"] == 0
     assert runner["passed"] is True
     assert runner["reasons"] == []
+    environment = cast(dict[str, str], scanner_runtime["environment"])
+    state = root / ".state" / sha / gate.SHARD_IDS[0]
+    assert Path(environment["CODEX_SECURITY_STATE_DIR"]) == evidence.parent.resolve()
+    assert Path(environment["NPM_CONFIG_USERCONFIG"]) == state / "npm-userconfig"
+    assert Path(environment["NPM_CONFIG_GLOBALCONFIG"]) == state / "npm-globalconfig"
+    assert Path(scanner_runtime["cwd"]) == state.resolve()
     finished = gate.datetime.fromisoformat(runner["finished_at"])
     retention = gate.datetime.fromisoformat(runner["retention_until"])
     assert retention - finished == gate.timedelta(days=30)
@@ -2477,9 +2494,10 @@ def test_private_state_flow_stays_outside_repo(tmp_path: Path) -> None:
             "NPM_CONFIG_USERCONFIG": "C:/caller-token-config",
             "NPM_CONFIG_PREFIX": "C:/caller-prefix",
         },
+        codex_state_dir=output.parent,
     )
     assert repo.resolve() not in output.resolve().parents
-    assert Path(env["CODEX_SECURITY_STATE_DIR"]).is_relative_to(root.resolve())
+    assert Path(env["CODEX_SECURITY_STATE_DIR"]) == output.parent.resolve()
     assert Path(env["NPM_CONFIG_USERCONFIG"]).is_relative_to(state.resolve())
     assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(state.resolve())
     assert "caller-token-config" not in json.dumps(env)

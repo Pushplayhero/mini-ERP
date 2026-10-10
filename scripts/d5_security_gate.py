@@ -403,7 +403,7 @@ def build_scanner_argv(
     for path in shard["paths"]:
         argv.extend(["--path", path])
     for path in COMMON_KNOWLEDGE_BASE:
-        argv.extend(["--knowledge-base", path])
+        argv.extend(["--knowledge-base", str((repo / path).resolve())])
     argv.extend(
         [
             "--auth",
@@ -505,20 +505,25 @@ def select_allowlisted_environment(source: Mapping[str, str], *, windows: bool) 
 
 
 def build_child_environment(
-    state_dir: Path, source: Mapping[str, str] | None = None
+    state_dir: Path,
+    source: Mapping[str, str] | None = None,
+    *,
+    codex_state_dir: Path | None = None,
 ) -> dict[str, str]:
     values = source if source is not None else os.environ
     state = state_dir.resolve()
+    codex_state = (codex_state_dir or state_dir).resolve()
     try:
         state.mkdir(parents=True, exist_ok=True)
+        codex_state.mkdir(parents=True, exist_ok=True)
         user_config = state / "npm-userconfig"
         global_config = state / "npm-globalconfig"
         user_config.write_text("", encoding="utf-8")
         global_config.write_text("", encoding="utf-8")
     except OSError as exc:
-        raise GateError("unable to create sanitized npm configuration") from exc
+        raise GateError("unable to create isolated scanner state") from exc
     env = select_allowlisted_environment(values, windows=os.name == "nt")
-    env["CODEX_SECURITY_STATE_DIR"] = str(state)
+    env["CODEX_SECURITY_STATE_DIR"] = str(codex_state)
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
     env["NPM_CONFIG_CACHE"] = str(state / "npm-cache")
@@ -856,7 +861,7 @@ def run_scan(
     state_dir = results_root.resolve() / ".state" / sha / shard_id
     started = datetime.now(UTC)
     try:
-        child_env = build_child_environment(state_dir)
+        child_env = build_child_environment(state_dir, codex_state_dir=output.parent)
     except GateError:
         if profile == MICRO_PROFILE_ID:
             output = _pilot_failed_preflight_output(repo, results_root, sha, shard_id)
@@ -912,7 +917,7 @@ def run_scan(
     try:
         completed = subprocess.run(
             argv,
-            cwd=Path(child_env["CODEX_SECURITY_STATE_DIR"]),
+            cwd=state_dir.resolve(),
             env=child_env,
             executable=scanner_executable,
             capture_output=True,
