@@ -15,7 +15,7 @@
       "effort": "high",
       "session_capacity": 3,
       "outer_concurrency": 1,
-      "max_cost_usd": 11.75,
+      "max_cost_usd": 15.0,
       "pilot_unit": "u03_events_hooks",
       "pilot_units": [
         "u01_identity",

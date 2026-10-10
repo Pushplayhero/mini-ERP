@@ -36,8 +36,8 @@ digest, unit, results root, and fixed command recipe. An active profile permits
 all manifest units but does not itself authorize any invocation. Each scan uses
 `@openai/codex-security@0.1.18`, `gpt-5.6-sol`, high effort, ChatGPT auth,
 `approval_policy="never"`, session capacity 3, outer concurrency 1, and a
-per-invocation maximum of **US$11.75**. The per-attempt accounting reservation
-remains US$13.00. Cumulative ceiling fields must be explicitly `null`; prior
+per-invocation maximum of **US$15.00**. The per-attempt accounting reservation
+is US$15.00. Cumulative ceiling fields must be explicitly `null`; prior
 receipts remain digest-bound and cumulative spend is reported without a total
 ceiling.
 

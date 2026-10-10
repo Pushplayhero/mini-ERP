@@ -33,7 +33,8 @@ SHARD_IDS = (
 )
 LEGACY_PROFILE_ID = "legacy-v1"
 MICRO_PROFILE_ID = "micro-v2"
-MAX_COST_USD = 11.75
+MAX_COST_USD = 15.0
+LEGACY_MAX_COST_USD = 11.75
 TOTAL_MAX_COST_USD = 58.75
 LEGACY_MICRO_PROFILE_DIGESTS = {"e48a10dbaa82d03fd8465244b47bcf7ef8bb3565a8443748c5afe7d8bd80eb86"}
 COST_QUANTUM = Decimal("0.000001")
@@ -98,7 +99,7 @@ def _profile_config(profile: str, manifest: dict[str, Any] | None = None) -> dic
             "effort": COMMAND_PROVENANCE["effort"],
             "session_capacity": None,
             "outer_concurrency": 1,
-            "max_cost_usd": MAX_COST_USD,
+            "max_cost_usd": LEGACY_MAX_COST_USD,
             "common_knowledge_base": data.get("common_knowledge_base"),
             "units": data.get("shards"),
         }
@@ -251,8 +252,8 @@ def validate_manifest(
             raise GateError("micro profile pilot authorization policy is malformed")
     for unit_id in unit_ids:
         unit = units[unit_id]
-        if profile == LEGACY_PROFILE_ID and unit.get("max_cost_usd") != MAX_COST_USD:
-            raise GateError(f"{unit_id}: max_cost_usd must be {MAX_COST_USD}")
+        if profile == LEGACY_PROFILE_ID and unit.get("max_cost_usd") != LEGACY_MAX_COST_USD:
+            raise GateError(f"{unit_id}: max_cost_usd must be {LEGACY_MAX_COST_USD}")
         paths = unit.get("paths")
         if not isinstance(paths, list) or not paths:
             raise GateError(f"{unit_id}: paths are required")
@@ -408,7 +409,7 @@ def build_scanner_argv(
             "--fail-on-severity",
             "high",
             "--max-cost",
-            str(MAX_COST_USD),
+            str(_profile_config(profile).get("max_cost_usd", MAX_COST_USD)),
             "--codex",
             'approval_policy="never"',
         ]
@@ -2372,7 +2373,7 @@ def _pilot_attempt_bindings_valid(output: Path, runner: Any) -> bool:
         ):
             return False
         command = {key: value for key, value in COMMAND_PROVENANCE.items() if key != "dry_run"}
-        command.update({"session_capacity": 3, "outer_concurrency": 1, "max_cost_usd": "11.750000"})
+        command.update({"session_capacity": 3, "outer_concurrency": 1, "max_cost_usd": "15.000000"})
         if (
             auth.get("schema_version") != "1.0"
             or auth.get("authorized_action")
@@ -2412,7 +2413,7 @@ def _pilot_attempt_bindings_valid(output: Path, runner: Any) -> bool:
         ceiling_valid, ceiling = _pilot_budget_ceiling(budget, _profile_config(MICRO_PROFILE_ID))
         if (
             budget.get("schema_version") != "1.0"
-            or _decimal_cost(budget.get("reservation_usd")) != Decimal("13")
+            or _decimal_cost(budget.get("reservation_usd")) != Decimal("15")
             or not ceiling_valid
             or history is None
             or _validate_budget_ledger(paths["budget_ledger"], root, history[0])
@@ -2488,7 +2489,7 @@ def validate_pilot_authorization(
         command = {key: value for key, value in COMMAND_PROVENANCE.items() if key != "dry_run"} | {
             "session_capacity": 3,
             "outer_concurrency": 1,
-            "max_cost_usd": "11.750000",
+            "max_cost_usd": "15.000000",
         }
         expected = {
             "schema_version": "1.0",
@@ -2529,7 +2530,7 @@ def validate_pilot_authorization(
             not isinstance(budget, dict)
             or budget.get("schema_version") != "1.0"
             or not ceiling_valid
-            or _decimal_cost(budget.get("reservation_usd")) != Decimal("13")
+            or _decimal_cost(budget.get("reservation_usd")) != Decimal("15")
             or history is None
             or _validate_budget_ledger(ledger_path, root, history[0])
         ):

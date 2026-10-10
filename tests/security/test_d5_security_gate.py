@@ -50,7 +50,7 @@ def _pilot_documents(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             {
                 "schema_version": "1.0",
                 "ceiling_usd": None,
-                "reservation_usd": "13.000000",
+                "reservation_usd": "15.000000",
                 "receipts": receipts,
             }
         ),
@@ -76,7 +76,7 @@ def _pilot_documents(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             "approval_policy": "never",
             "session_capacity": 3,
             "outer_concurrency": 1,
-            "max_cost_usd": "11.750000",
+            "max_cost_usd": "15.000000",
         },
     }
     authorization = tmp_path / "authorization.json"
@@ -821,7 +821,7 @@ def _write_attempt_fixture(output: Path) -> None:
             {
                 "schema_version": "1.0",
                 "ceiling_usd": None,
-                "reservation_usd": "13.000000",
+                "reservation_usd": "15.000000",
                 "receipts": sources,
             }
         ),
@@ -846,7 +846,7 @@ def _write_attempt_fixture(output: Path) -> None:
                 "approval_policy": "never",
                 "session_capacity": 3,
                 "outer_concurrency": 1,
-                "max_cost_usd": "11.750000",
+                "max_cost_usd": "15.000000",
             },
         }
     )
@@ -950,7 +950,7 @@ def test_micro_preview_includes_scope_budget_and_destination(
     monkeypatch.setattr(gate, "require_clean_revision", lambda _repo: "a" * 40)
     preview = gate.plan_unit(repo, "u03_events_hooks", profile="micro-v2")
     argv = preview["scanner_argv"]
-    assert argv[argv.index("--max-cost") + 1] == "11.75"
+    assert argv[argv.index("--max-cost") + 1] == "15.0"
     assert argv[argv.index("--auth") + 1] == "chatgpt"
     assert argv[argv.index("--output-dir") + 1] == preview["output_dir"]
     assert "app/core/events.py" in argv
@@ -1825,7 +1825,7 @@ def test_real_scan_requires_numeric_cost_and_rejects_cap(
     with patch.object(gate.subprocess, "run", side_effect=run_scanner):
         result = gate.run_scan(repo, tmp_path / "cap", "a_identity_runtime")
     assert result.exit_code != 0
-    assert result.total_cost_usd == gate.MAX_COST_USD
+    assert result.total_cost_usd == gate.LEGACY_MAX_COST_USD
 
 
 def test_real_scan_validates_sealed_artifacts_immediately(
@@ -2012,7 +2012,7 @@ def _small_manifest(tmp_path: Path, names: list[str]) -> tuple[Path, Path]:
             {
                 "id": shard,
                 "expected_file_count": 1,
-                "max_cost_usd": gate.MAX_COST_USD,
+                "max_cost_usd": gate.LEGACY_MAX_COST_USD,
                 "paths": [name],
             }
         )
