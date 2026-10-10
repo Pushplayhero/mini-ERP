@@ -215,10 +215,7 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
         gate,
         "_execute_preflight",
         lambda *_args: (
-            {
-                name: {"status": "passed", "exit_code": 0}
-                for name in gate.PREFLIGHT_EVIDENCE_CHECKS
-            },
+            {name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_EVIDENCE_CHECKS},
             [],
             0,
         ),
@@ -232,7 +229,9 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
             assert "--dry-run" in argv
             assert (
                 Path(kwargs["cwd"])
-                == (tmp_path / "results" / ".state" / sha / "u14_dependencies").resolve()
+                == (
+                    tmp_path / "results" / "dry-runs" / sha / ".state" / "u14_dependencies"
+                ).resolve()
             )
             assert Path(argv[6]) == repo.resolve()
             return subprocess.CompletedProcess(argv, 0, "estimated cost: 0.50", "")
@@ -433,10 +432,7 @@ def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
     def preflight(*_args: Any) -> tuple[dict[str, Any], list[str], int]:
         assert not (tmp_path / "claims").exists()
         return (
-            {
-                name: {"status": "passed", "exit_code": 0}
-                for name in gate.PREFLIGHT_EVIDENCE_CHECKS
-            },
+            {name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_EVIDENCE_CHECKS},
             ["node_crypto preflight failed"] if mode == "preflight" else [],
             2 if mode == "preflight" else 0,
         )
@@ -1403,9 +1399,10 @@ def test_child_environment_is_allowlisted_and_external_state_is_per_run(
     assert "OPENAI_API_KEY" not in env
     assert "DATABASE_URL" not in env
     assert "USERPROFILE" not in env
-    assert env["NPM_CONFIG_USERCONFIG"] == str((state / "npm-userconfig").resolve())
-    assert env["NPM_CONFIG_GLOBALCONFIG"] == str((state / "npm-globalconfig").resolve())
-    assert env["NPM_CONFIG_CACHE"] == str((state / "npm-cache").resolve())
+    npm_state = state / ".d5-npm-state"
+    assert env["NPM_CONFIG_USERCONFIG"] == str((npm_state / "npm-userconfig").resolve())
+    assert env["NPM_CONFIG_GLOBALCONFIG"] == str((npm_state / "npm-globalconfig").resolve())
+    assert env["NPM_CONFIG_CACHE"] == str((npm_state / "npm-cache").resolve())
     assert Path(env["NPM_CONFIG_USERCONFIG"]).read_text(encoding="utf-8") == ""
     assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).read_text(encoding="utf-8") == ""
     assert "NPM_CONFIG_PREFIX" not in env
@@ -1506,7 +1503,7 @@ def test_preflight_checks_node_then_npx_with_ten_second_timeout(
     assert [call[0][0] for call in calls] == ["node.exe", "npx.cmd"]
     assert [call[1]["timeout"] for call in calls] == [10, 10]
     expected_cwd = (
-        tmp_path / "results" / ".state" / result.output_dir.parts[-2] / "runtime-preflight"
+        tmp_path / "results" / result.output_dir.parts[-2] / ".state" / "runtime-preflight"
     ).resolve()
     assert all(Path(call[1]["cwd"]) == expected_cwd for call in calls)
     saved = json.loads((result.output_dir / "preflight-result.json").read_text(encoding="utf-8"))
@@ -1514,6 +1511,7 @@ def test_preflight_checks_node_then_npx_with_ten_second_timeout(
         "node_crypto": {"status": "passed", "exit_code": 0},
         "npx_version": {"status": "passed", "exit_code": 0},
         "scan_output_write": {"status": "passed", "exit_code": 0},
+        "scanner_runtime_scope": {"status": "passed", "exit_code": 0},
     }
     assert saved["environment_policy_version"] == gate.ENVIRONMENT_POLICY_VERSION
     assert saved["present_environment_keys"] == sorted(saved["present_environment_keys"])
@@ -1538,15 +1536,16 @@ def test_preflight_probes_exact_scan_output_directory_before_paid_launch(
 
     monkeypatch.setattr(gate.subprocess, "run", run)
     output = tmp_path / "results" / gate.require_clean_revision(repo) / "u12_gate"
-    checks, reasons, exit_code = gate._execute_preflight(
-        tmp_path / "state",
-        {"PATH": str(tmp_path), "CODEX_SECURITY_STATE_DIR": str(output.parent)},
-        output,
+    state = output.parent / ".state" / "u12_gate"
+    env = gate.build_child_environment(
+        state, {"PATH": str(tmp_path)}, codex_state_dir=output.parent
     )
+    checks, reasons, exit_code = gate._execute_preflight(state, env, output)
 
     assert reasons == []
     assert exit_code == 0
     assert checks["scan_output_write"] == {"status": "passed", "exit_code": 0}
+    assert checks["scanner_runtime_scope"] == {"status": "passed", "exit_code": 0}
     assert output.is_dir()
     assert list(output.iterdir()) == []
     assert [call[0] for call in calls] == ["node.exe", "npx.cmd"]
@@ -1569,26 +1568,54 @@ def test_preflight_rejects_unwritable_scan_output_before_paid_launch(
     output = tmp_path / "results" / gate.require_clean_revision(repo) / "u12_gate"
     output.mkdir(parents=True)
     (output / "existing-result.json").write_text("preserve", encoding="utf-8")
-
-    checks, reasons, exit_code = gate._execute_preflight(
-        tmp_path / "state",
-        {"PATH": str(tmp_path), "CODEX_SECURITY_STATE_DIR": str(output.parent)},
-        output,
+    state = output.parent / ".state" / "u12_gate"
+    env = gate.build_child_environment(
+        state, {"PATH": str(tmp_path)}, codex_state_dir=output.parent
     )
+
+    checks, reasons, exit_code = gate._execute_preflight(state, env, output)
 
     assert exit_code == 2
     assert reasons == ["scan_output_write preflight failed"]
     assert checks["scan_output_write"] == {"status": "failed", "exit_code": 2}
+    assert checks["scanner_runtime_scope"] == {"status": "passed", "exit_code": 0}
     assert (output / "existing-result.json").read_text(encoding="utf-8") == "preserve"
+
+
+def test_preflight_rejects_npm_cache_outside_codex_writable_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gate.shutil, "which", lambda name, **_kwargs: name)
+    original_run = gate.subprocess.run
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        argv = cast(list[str], args[0])
+        if argv and argv[0] == "git":
+            return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
+        return subprocess.CompletedProcess(argv, 0, "v", "")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    output = tmp_path / "results" / gate.require_clean_revision(repo) / "u12_gate"
+    state = output.parent / ".state" / "u12_gate"
+    env = gate.build_child_environment(
+        state, {"PATH": str(tmp_path)}, codex_state_dir=output.parent
+    )
+    env["NPM_CONFIG_CACHE"] = str(tmp_path / "outside-cache")
+
+    checks, reasons, exit_code = gate._execute_preflight(state, env, output)
+
+    assert exit_code == 2
+    assert reasons == ["scanner_runtime_scope preflight failed"]
+    assert checks["scanner_runtime_scope"] == {"status": "failed", "exit_code": 2}
+    assert checks["scan_output_write"] == {"status": "not_run", "exit_code": None}
 
 
 def test_preflight_keeps_legacy_pass_evidence_compatible_but_requires_new_probe() -> None:
     legacy_runner: dict[str, Any] = {
         "environment_policy_version": gate.LEGACY_ENVIRONMENT_POLICY_VERSION,
         "scanner_started": True,
-        "preflight": {
-            name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_CHECKS
-        },
+        "preflight": {name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_CHECKS},
     }
     current_runner: dict[str, Any] = {
         **legacy_runner,
@@ -1596,10 +1623,18 @@ def test_preflight_keeps_legacy_pass_evidence_compatible_but_requires_new_probe(
     }
 
     assert gate._preflight_passes(legacy_runner) is True
+    output_write_runner: dict[str, Any] = {
+        **legacy_runner,
+        "environment_policy_version": gate.OUTPUT_WRITE_ENVIRONMENT_POLICY_VERSION,
+        "preflight": {
+            name: {"status": "passed", "exit_code": 0}
+            for name in (*gate.PREFLIGHT_CHECKS, "scan_output_write")
+        },
+    }
+    assert gate._preflight_passes(output_write_runner) is True
     assert gate._preflight_passes(current_runner) is False
     current_runner["preflight"] = {
-        name: {"status": "passed", "exit_code": 0}
-        for name in gate.PREFLIGHT_EVIDENCE_CHECKS
+        name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_EVIDENCE_CHECKS
     }
     assert gate._preflight_passes(current_runner) is True
 
@@ -1651,8 +1686,8 @@ def test_run_scan_state_preparation_failure_persists_runner_evidence(
     )
     root = tmp_path / "results"
     sha = gate.require_clean_revision(repo)
-    (root / ".state").mkdir(parents=True)
-    (root / ".state" / sha).write_text("not a directory", encoding="utf-8")
+    (root / sha).mkdir(parents=True)
+    (root / sha / ".state").write_text("not a directory", encoding="utf-8")
     result = gate.run_scan(repo, root, gate.SHARD_IDS[0])
 
     assert result.exit_code == 2
@@ -2513,10 +2548,11 @@ def test_real_scan_cli_records_success_and_exact_retention(
     assert runner["passed"] is True
     assert runner["reasons"] == []
     environment = cast(dict[str, str], scanner_runtime["environment"])
-    state = root / ".state" / sha / gate.SHARD_IDS[0]
+    state = evidence.parent / ".state" / gate.SHARD_IDS[0]
     assert Path(environment["CODEX_SECURITY_STATE_DIR"]) == evidence.parent.resolve()
-    assert Path(environment["NPM_CONFIG_USERCONFIG"]) == state / "npm-userconfig"
-    assert Path(environment["NPM_CONFIG_GLOBALCONFIG"]) == state / "npm-globalconfig"
+    npm_state = state.parent.parent / ".d5-npm-state"
+    assert Path(environment["NPM_CONFIG_USERCONFIG"]) == npm_state / "npm-userconfig"
+    assert Path(environment["NPM_CONFIG_GLOBALCONFIG"]) == npm_state / "npm-globalconfig"
     assert Path(scanner_runtime["cwd"]) == state.resolve()
     finished = gate.datetime.fromisoformat(runner["finished_at"])
     retention = gate.datetime.fromisoformat(runner["retention_until"])
@@ -2546,7 +2582,9 @@ def test_finalize_rejects_too_short_retention(
     assert _finalize(repo, root, tmp_path).passed is False
 
 
-@pytest.mark.parametrize("field", ["node_crypto", "npx_version", "scan_output_write"])
+@pytest.mark.parametrize(
+    "field", ["node_crypto", "npx_version", "scan_output_write", "scanner_runtime_scope"]
+)
 def test_finalize_rejects_malformed_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
@@ -2577,7 +2615,7 @@ def test_private_state_flow_stays_outside_repo(tmp_path: Path) -> None:
     root = tmp_path / "private-results"
     sha = _git(repo, "rev-parse", "HEAD")
     output = gate.prepare_output(repo, root, sha, gate.SHARD_IDS[0])
-    state = root / ".state" / sha / gate.SHARD_IDS[0]
+    state = output.parent / ".state" / gate.SHARD_IDS[0]
     env = gate.build_child_environment(
         state,
         {
@@ -2589,8 +2627,9 @@ def test_private_state_flow_stays_outside_repo(tmp_path: Path) -> None:
     )
     assert repo.resolve() not in output.resolve().parents
     assert Path(env["CODEX_SECURITY_STATE_DIR"]) == output.parent.resolve()
-    assert Path(env["NPM_CONFIG_USERCONFIG"]).is_relative_to(state.resolve())
-    assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(state.resolve())
+    npm_state = output.parent / ".d5-npm-state"
+    assert Path(env["NPM_CONFIG_USERCONFIG"]).is_relative_to(npm_state.resolve())
+    assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(npm_state.resolve())
     assert "caller-token-config" not in json.dumps(env)
     assert "caller-prefix" not in json.dumps(env)
 

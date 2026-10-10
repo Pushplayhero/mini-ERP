@@ -485,7 +485,8 @@ _ENV_ALLOWLIST = {
 
 
 LEGACY_ENVIRONMENT_POLICY_VERSION = "windows-casefold-v2-sterile-npm-cwd"
-ENVIRONMENT_POLICY_VERSION = "windows-casefold-v3-scan-output-write-probe"
+OUTPUT_WRITE_ENVIRONMENT_POLICY_VERSION = "windows-casefold-v3-scan-output-write-probe"
+ENVIRONMENT_POLICY_VERSION = "windows-casefold-v4-scanner-runtime-scope"
 PREFLIGHT_TIMEOUT_SECONDS = 10
 
 
@@ -517,8 +518,10 @@ def build_child_environment(
     try:
         state.mkdir(parents=True, exist_ok=True)
         codex_state.mkdir(parents=True, exist_ok=True)
-        user_config = state / "npm-userconfig"
-        global_config = state / "npm-globalconfig"
+        npm_state = codex_state / ".d5-npm-state"
+        npm_state.mkdir(parents=True, exist_ok=True)
+        user_config = npm_state / "npm-userconfig"
+        global_config = npm_state / "npm-globalconfig"
         user_config.write_text("", encoding="utf-8")
         global_config.write_text("", encoding="utf-8")
     except OSError as exc:
@@ -527,7 +530,7 @@ def build_child_environment(
     env["CODEX_SECURITY_STATE_DIR"] = str(codex_state)
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
-    env["NPM_CONFIG_CACHE"] = str(state / "npm-cache")
+    env["NPM_CONFIG_CACHE"] = str(npm_state / "npm-cache")
     return env
 
 
@@ -649,9 +652,10 @@ PREFLIGHT_CHECKS = {
         ["--version"],
     ),
 }
-PREFLIGHT_EVIDENCE_CHECKS = (*PREFLIGHT_CHECKS, "scan_output_write")
+PREFLIGHT_EVIDENCE_CHECKS = (*PREFLIGHT_CHECKS, "scan_output_write", "scanner_runtime_scope")
 SUPPORTED_ENVIRONMENT_POLICY_VERSIONS = {
     LEGACY_ENVIRONMENT_POLICY_VERSION: tuple(PREFLIGHT_CHECKS),
+    OUTPUT_WRITE_ENVIRONMENT_POLICY_VERSION: (*PREFLIGHT_CHECKS, "scan_output_write"),
     ENVIRONMENT_POLICY_VERSION: PREFLIGHT_EVIDENCE_CHECKS,
 }
 
@@ -672,14 +676,10 @@ def _prepare_preflight_output(repo: Path, results_root: Path, sha: str) -> Path:
 
 
 def _empty_preflight() -> dict[str, dict[str, int | str | None]]:
-    return {
-        name: {"status": "not_run", "exit_code": None} for name in PREFLIGHT_EVIDENCE_CHECKS
-    }
+    return {name: {"status": "not_run", "exit_code": None} for name in PREFLIGHT_EVIDENCE_CHECKS}
 
 
-def _probe_scan_output_write(
-    output_dir: Path, writable_root: Path | None
-) -> tuple[str, int]:
+def _probe_scan_output_write(output_dir: Path, writable_root: Path | None) -> tuple[str, int]:
     """Verify the exact output directory can accept a temporary scanner artifact."""
     probe: Path | None = None
     try:
@@ -709,6 +709,29 @@ def _probe_scan_output_write(
     finally:
         if probe is not None:
             probe.unlink(missing_ok=True)
+
+
+def _probe_scanner_runtime_scope(cwd: Path, child_env: Mapping[str, str]) -> tuple[str, int]:
+    """Ensure executable npm state and scanner cwd are under the SDK write grant."""
+    state_value = child_env.get("CODEX_SECURITY_STATE_DIR")
+    if not state_value:
+        return "failed", 2
+    writable_root = Path(state_value)
+    paths = [cwd]
+    for key in ("NPM_CONFIG_CACHE", "NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG"):
+        value = child_env.get(key)
+        if not value:
+            return "failed", 2
+        paths.append(Path(value))
+    try:
+        root = writable_root.resolve()
+        for path in paths:
+            if not path.is_absolute():
+                return "failed", 2
+            path.resolve().relative_to(root)
+    except (OSError, ValueError):
+        return "failed", 2
+    return "passed", 0
 
 
 def _execute_preflight(
@@ -744,6 +767,10 @@ def _execute_preflight(
         }
         if completed.returncode != 0:
             return checks, [f"{name} preflight failed"], completed.returncode
+    scope_status, scope_exit = _probe_scanner_runtime_scope(cwd, child_env)
+    checks["scanner_runtime_scope"] = {"status": scope_status, "exit_code": scope_exit}
+    if scope_status != "passed":
+        return checks, ["scanner_runtime_scope preflight failed"], scope_exit
     state_value = child_env.get("CODEX_SECURITY_STATE_DIR")
     writable_root = Path(state_value) if state_value else None
     output_status, output_exit = _probe_scan_output_write(output_dir, writable_root)
@@ -804,7 +831,7 @@ def _write_preflight_evidence(
 def run_preflight(repo: Path, results_root: Path) -> ScanResult:
     sha = require_clean_revision(repo)
     output = _prepare_preflight_output(repo, results_root, sha)
-    state_dir = results_root.resolve() / ".state" / sha / "runtime-preflight"
+    state_dir = output.parent / ".state" / "runtime-preflight"
     started = datetime.now(UTC)
     try:
         child_env = build_child_environment(state_dir, codex_state_dir=output.parent)
@@ -904,7 +931,7 @@ def run_scan(
         output = execution_root.resolve() / sha / shard_id
     else:
         output = prepare_output(repo, results_root, sha, shard_id, profile=profile)
-    state_dir = results_root.resolve() / ".state" / sha / shard_id
+    state_dir = output.parent / ".state" / shard_id
     started = datetime.now(UTC)
     try:
         child_env = build_child_environment(state_dir, codex_state_dir=output.parent)
@@ -922,9 +949,7 @@ def run_scan(
             2,
             started,
         )
-    preflight, preflight_reasons, preflight_exit = _execute_preflight(
-        state_dir, child_env, output
-    )
+    preflight, preflight_reasons, preflight_exit = _execute_preflight(state_dir, child_env, output)
     if preflight_reasons:
         if profile == MICRO_PROFILE_ID:
             output = _pilot_failed_preflight_output(repo, results_root, sha, shard_id)
