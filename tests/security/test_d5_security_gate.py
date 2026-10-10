@@ -184,6 +184,10 @@ def test_active_micro_profile_authorizes_any_manifest_unit(
 def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # pytest places this fixture beneath the real checkout in the constrained
+    # workspace; the pilot validator's separate external-path guard is outside
+    # the behavior this subprocess-boundary test exercises.
+    monkeypatch.setattr(gate, "_protected_worktree_roots", lambda: [])
     repo, authorization, ledger, document = _pilot_documents(tmp_path)
     sha = gate._git(repo, "rev-parse", "HEAD")
     document.update(
@@ -199,7 +203,14 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
         "_validate_repo_manifest",
         lambda *_args: {"u14_dependencies": ["README.md"]},
     )
-    monkeypatch.setattr(gate, "build_child_environment", lambda *_args: {"PATH": str(tmp_path)})
+    monkeypatch.setattr(
+        gate,
+        "build_child_environment",
+        lambda state, *_args: {
+            "PATH": str(tmp_path),
+            "CODEX_SECURITY_STATE_DIR": str(state.resolve()),
+        },
+    )
     monkeypatch.setattr(
         gate,
         "_execute_preflight",
@@ -216,6 +227,11 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
         if argv[0] == "npx":
             assert "u14_dependencies" in " ".join(argv)
             assert "--dry-run" in argv
+            assert (
+                Path(kwargs["cwd"])
+                == (tmp_path / "results" / ".state" / sha / "u14_dependencies").resolve()
+            )
+            assert Path(argv[6]) == repo.resolve()
             return subprocess.CompletedProcess(argv, 0, "estimated cost: 0.50", "")
         return real_run(argv, **kwargs)
 
@@ -1335,7 +1351,14 @@ def test_scanner_argv_keeps_strict_approval_as_one_value() -> None:
     argv = gate.build_scanner_argv(
         Path("C:/repo"), "a_identity_runtime", Path("C:/results"), dry_run=True
     )
-    assert argv[:4] == ["npx", "--yes", "@openai/codex-security@0.1.18", "scan"]
+    assert argv[:6] == [
+        "npx",
+        "--yes",
+        "--registry=https://registry.npmjs.org/",
+        "--ignore-scripts",
+        "@openai/codex-security@0.1.18",
+        "scan",
+    ]
     assert "--codex" in argv
     assert argv[argv.index("--codex") + 1] == 'approval_policy="never"'
     assert argv[argv.index("--auth") + 1] == "chatgpt"
@@ -1355,6 +1378,7 @@ def test_child_environment_is_allowlisted_and_external_state_is_per_run(
             "OPENAI_API_KEY": "bad",
             "NPM_CONFIG_PREFIX": "C:/caller-prefix",
             "NPM_CONFIG_USERCONFIG": "C:/caller-config",
+            "NPM_CONFIG_CACHE": "C:/caller-cache",
         },
     )
     assert env["PATH"] == "safe"
@@ -1366,9 +1390,11 @@ def test_child_environment_is_allowlisted_and_external_state_is_per_run(
     assert "USERPROFILE" not in env
     assert env["NPM_CONFIG_USERCONFIG"] == str((state / "npm-userconfig").resolve())
     assert env["NPM_CONFIG_GLOBALCONFIG"] == str((state / "npm-globalconfig").resolve())
+    assert env["NPM_CONFIG_CACHE"] == str((state / "npm-cache").resolve())
     assert Path(env["NPM_CONFIG_USERCONFIG"]).read_text(encoding="utf-8") == ""
     assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).read_text(encoding="utf-8") == ""
     assert "NPM_CONFIG_PREFIX" not in env
+    assert "caller-cache" not in env["NPM_CONFIG_CACHE"]
 
 
 def test_select_allowlisted_environment_normalizes_windows_names() -> None:
@@ -1464,6 +1490,10 @@ def test_preflight_checks_node_then_npx_with_ten_second_timeout(
     assert result.passed is True
     assert [call[0][0] for call in calls] == ["node.exe", "npx.cmd"]
     assert [call[1]["timeout"] for call in calls] == [10, 10]
+    expected_cwd = (
+        tmp_path / "results" / ".state" / result.output_dir.parts[-2] / "runtime-preflight"
+    ).resolve()
+    assert all(Path(call[1]["cwd"]) == expected_cwd for call in calls)
     saved = json.loads((result.output_dir / "preflight-result.json").read_text(encoding="utf-8"))
     assert saved["preflight"] == {
         "node_crypto": {"status": "passed", "exit_code": 0},

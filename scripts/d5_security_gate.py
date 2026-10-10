@@ -391,7 +391,15 @@ def build_scanner_argv(
     shard = _profile_units(profile).get(shard_id)
     if shard is None:
         raise GateError(f"unknown shard: {shard_id}")
-    argv = ["npx", "--yes", "@openai/codex-security@0.1.18", "scan", str(repo.resolve())]
+    argv = [
+        "npx",
+        "--yes",
+        "--registry=https://registry.npmjs.org/",
+        "--ignore-scripts",
+        "@openai/codex-security@0.1.18",
+        "scan",
+        str(repo.resolve()),
+    ]
     for path in shard["paths"]:
         argv.extend(["--path", path])
     for path in COMMON_KNOWLEDGE_BASE:
@@ -437,7 +445,7 @@ def plan_unit(repo: Path, unit_id: str, *, profile: str = MICRO_PROFILE_ID) -> d
     files = sorted(assignments[unit_id])
     output_label = f"<external-results>/<sha>/{unit_id}"
     argv = build_scanner_argv(repo, unit_id, repo / "preview-output", profile=profile)
-    argv[4] = "<repo>"
+    argv[6] = "<repo>"
     argv[argv.index("--output-dir") + 1] = output_label
     return {
         "profile": profile,
@@ -476,7 +484,7 @@ _ENV_ALLOWLIST = {
 }
 
 
-ENVIRONMENT_POLICY_VERSION = "windows-casefold-v1"
+ENVIRONMENT_POLICY_VERSION = "windows-casefold-v2-sterile-npm-cwd"
 PREFLIGHT_TIMEOUT_SECONDS = 10
 
 
@@ -513,6 +521,7 @@ def build_child_environment(
     env["CODEX_SECURITY_STATE_DIR"] = str(state)
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
+    env["NPM_CONFIG_CACHE"] = str(state / "npm-cache")
     return env
 
 
@@ -656,7 +665,7 @@ def _empty_preflight() -> dict[str, dict[str, int | str | None]]:
 
 
 def _execute_preflight(
-    repo: Path, child_env: Mapping[str, str]
+    cwd: Path, child_env: Mapping[str, str]
 ) -> tuple[dict[str, dict[str, int | str | None]], list[str], int]:
     path_value = child_env.get("PATH") or child_env.get("Path")
     checks: dict[str, dict[str, int | str | None]] = {
@@ -670,7 +679,7 @@ def _execute_preflight(
         try:
             completed = subprocess.run(
                 [command, *args],
-                cwd=repo,
+                cwd=cwd,
                 env=dict(child_env),
                 executable=executable,
                 capture_output=True,
@@ -755,7 +764,7 @@ def run_preflight(repo: Path, results_root: Path) -> ScanResult:
             output, sha, _empty_preflight(), [], 2, reasons, started, finished
         )
         return ScanResult(output, 2, None, False, reasons, None)
-    preflight, reasons, exit_code = _execute_preflight(repo, child_env)
+    preflight, reasons, exit_code = _execute_preflight(state_dir, child_env)
     finished = datetime.now(UTC)
     _write_preflight_evidence(
         output, sha, preflight, sorted(child_env), exit_code, reasons, started, finished
@@ -862,7 +871,7 @@ def run_scan(
             2,
             started,
         )
-    preflight, preflight_reasons, preflight_exit = _execute_preflight(repo, child_env)
+    preflight, preflight_reasons, preflight_exit = _execute_preflight(state_dir, child_env)
     if preflight_reasons:
         if profile == MICRO_PROFILE_ID:
             output = _pilot_failed_preflight_output(repo, results_root, sha, shard_id)
@@ -903,7 +912,7 @@ def run_scan(
     try:
         completed = subprocess.run(
             argv,
-            cwd=repo,
+            cwd=Path(child_env["CODEX_SECURITY_STATE_DIR"]),
             env=child_env,
             executable=scanner_executable,
             capture_output=True,
