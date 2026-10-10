@@ -484,7 +484,8 @@ _ENV_ALLOWLIST = {
 }
 
 
-ENVIRONMENT_POLICY_VERSION = "windows-casefold-v2-sterile-npm-cwd"
+LEGACY_ENVIRONMENT_POLICY_VERSION = "windows-casefold-v2-sterile-npm-cwd"
+ENVIRONMENT_POLICY_VERSION = "windows-casefold-v3-scan-output-write-probe"
 PREFLIGHT_TIMEOUT_SECONDS = 10
 
 
@@ -648,6 +649,11 @@ PREFLIGHT_CHECKS = {
         ["--version"],
     ),
 }
+PREFLIGHT_EVIDENCE_CHECKS = (*PREFLIGHT_CHECKS, "scan_output_write")
+SUPPORTED_ENVIRONMENT_POLICY_VERSIONS = {
+    LEGACY_ENVIRONMENT_POLICY_VERSION: tuple(PREFLIGHT_CHECKS),
+    ENVIRONMENT_POLICY_VERSION: PREFLIGHT_EVIDENCE_CHECKS,
+}
 
 
 def _prepare_preflight_output(repo: Path, results_root: Path, sha: str) -> Path:
@@ -666,16 +672,50 @@ def _prepare_preflight_output(repo: Path, results_root: Path, sha: str) -> Path:
 
 
 def _empty_preflight() -> dict[str, dict[str, int | str | None]]:
-    return {name: {"status": "not_run", "exit_code": None} for name in PREFLIGHT_CHECKS}
+    return {
+        name: {"status": "not_run", "exit_code": None} for name in PREFLIGHT_EVIDENCE_CHECKS
+    }
+
+
+def _probe_scan_output_write(
+    output_dir: Path, writable_root: Path | None
+) -> tuple[str, int]:
+    """Verify the exact output directory can accept a temporary scanner artifact."""
+    probe: Path | None = None
+    try:
+        if writable_root is None:
+            return "failed", 2
+        output_dir.resolve().relative_to(writable_root.resolve())
+        if not output_dir.exists():
+            output_dir.mkdir(parents=True)
+        if not output_dir.is_dir() or any(output_dir.iterdir()):
+            return "failed", 2
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=output_dir, prefix=".d5-write-probe-", delete=False
+        ) as handle:
+            probe = Path(handle.name)
+            handle.write(b"d5 scan output write probe\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if probe.read_bytes() != b"d5 scan output write probe\n":
+            return "failed", 2
+        probe.unlink()
+        probe = None
+        return "passed", 0
+    except OSError:
+        return "failed", 2
+    except ValueError:
+        return "failed", 2
+    finally:
+        if probe is not None:
+            probe.unlink(missing_ok=True)
 
 
 def _execute_preflight(
-    cwd: Path, child_env: Mapping[str, str]
+    cwd: Path, child_env: Mapping[str, str], output_dir: Path
 ) -> tuple[dict[str, dict[str, int | str | None]], list[str], int]:
     path_value = child_env.get("PATH") or child_env.get("Path")
-    checks: dict[str, dict[str, int | str | None]] = {
-        name: {"status": "not_run", "exit_code": None} for name in PREFLIGHT_CHECKS
-    }
+    checks = _empty_preflight()
     for name, (command, args) in PREFLIGHT_CHECKS.items():
         executable = shutil.which(command, path=path_value)
         if executable is None:
@@ -704,6 +744,12 @@ def _execute_preflight(
         }
         if completed.returncode != 0:
             return checks, [f"{name} preflight failed"], completed.returncode
+    state_value = child_env.get("CODEX_SECURITY_STATE_DIR")
+    writable_root = Path(state_value) if state_value else None
+    output_status, output_exit = _probe_scan_output_write(output_dir, writable_root)
+    checks["scan_output_write"] = {"status": output_status, "exit_code": output_exit}
+    if output_status != "passed":
+        return checks, ["scan_output_write preflight failed"], output_exit
     return checks, [], 0
 
 
@@ -761,7 +807,7 @@ def run_preflight(repo: Path, results_root: Path) -> ScanResult:
     state_dir = results_root.resolve() / ".state" / sha / "runtime-preflight"
     started = datetime.now(UTC)
     try:
-        child_env = build_child_environment(state_dir)
+        child_env = build_child_environment(state_dir, codex_state_dir=output.parent)
     except GateError:
         reasons = ["environment preparation failed"]
         finished = datetime.now(UTC)
@@ -769,7 +815,7 @@ def run_preflight(repo: Path, results_root: Path) -> ScanResult:
             output, sha, _empty_preflight(), [], 2, reasons, started, finished
         )
         return ScanResult(output, 2, None, False, reasons, None)
-    preflight, reasons, exit_code = _execute_preflight(state_dir, child_env)
+    preflight, reasons, exit_code = _execute_preflight(state_dir, child_env, output)
     finished = datetime.now(UTC)
     _write_preflight_evidence(
         output, sha, preflight, sorted(child_env), exit_code, reasons, started, finished
@@ -876,7 +922,9 @@ def run_scan(
             2,
             started,
         )
-    preflight, preflight_reasons, preflight_exit = _execute_preflight(state_dir, child_env)
+    preflight, preflight_reasons, preflight_exit = _execute_preflight(
+        state_dir, child_env, output
+    )
     if preflight_reasons:
         if profile == MICRO_PROFILE_ID:
             output = _pilot_failed_preflight_output(repo, results_root, sha, shard_id)
@@ -1030,14 +1078,17 @@ def _valid_retention_boundary(runner: dict[str, Any]) -> bool:
 
 
 def _preflight_passes(runner: dict[str, Any]) -> bool:
-    if runner.get("environment_policy_version") != ENVIRONMENT_POLICY_VERSION:
+    required_checks = SUPPORTED_ENVIRONMENT_POLICY_VERSIONS.get(
+        runner.get("environment_policy_version")
+    )
+    if required_checks is None:
         return False
     if runner.get("scanner_started") is not True:
         return False
     preflight = runner.get("preflight")
     if not isinstance(preflight, dict):
         return False
-    for name in PREFLIGHT_CHECKS:
+    for name in required_checks:
         check = preflight.get(name)
         if (
             not isinstance(check, dict)
@@ -1617,7 +1668,7 @@ def _evaluate_runner_document(
         runner.get("sha") != expected_sha
         or runner.get("shard") != shard
         or runner.get("command") != _command_provenance(profile)
-        or runner.get("environment_policy_version") != ENVIRONMENT_POLICY_VERSION
+        or runner.get("environment_policy_version") not in SUPPORTED_ENVIRONMENT_POLICY_VERSIONS
     ):
         flags.add("runner_invalid")
     if profile == MICRO_PROFILE_ID:

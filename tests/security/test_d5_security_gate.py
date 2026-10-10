@@ -215,7 +215,10 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
         gate,
         "_execute_preflight",
         lambda *_args: (
-            {name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_CHECKS},
+            {
+                name: {"status": "passed", "exit_code": 0}
+                for name in gate.PREFLIGHT_EVIDENCE_CHECKS
+            },
             [],
             0,
         ),
@@ -430,7 +433,10 @@ def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
     def preflight(*_args: Any) -> tuple[dict[str, Any], list[str], int]:
         assert not (tmp_path / "claims").exists()
         return (
-            {name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_CHECKS},
+            {
+                name: {"status": "passed", "exit_code": 0}
+                for name in gate.PREFLIGHT_EVIDENCE_CHECKS
+            },
             ["node_crypto preflight failed"] if mode == "preflight" else [],
             2 if mode == "preflight" else 0,
         )
@@ -796,7 +802,8 @@ def _artifacts(
                 "environment_policy_version": gate.ENVIRONMENT_POLICY_VERSION,
                 "present_environment_keys": [],
                 "preflight": {
-                    name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_CHECKS
+                    name: {"status": "passed", "exit_code": 0}
+                    for name in gate.PREFLIGHT_EVIDENCE_CHECKS
                 },
                 "passed": True,
                 "reasons": [],
@@ -1506,11 +1513,95 @@ def test_preflight_checks_node_then_npx_with_ten_second_timeout(
     assert saved["preflight"] == {
         "node_crypto": {"status": "passed", "exit_code": 0},
         "npx_version": {"status": "passed", "exit_code": 0},
+        "scan_output_write": {"status": "passed", "exit_code": 0},
     }
     assert saved["environment_policy_version"] == gate.ENVIRONMENT_POLICY_VERSION
     assert saved["present_environment_keys"] == sorted(saved["present_environment_keys"])
     assert "PATH" in saved["present_environment_keys"]
     assert "NPM_CONFIG_USERCONFIG" in saved["present_environment_keys"]
+
+
+def test_preflight_probes_exact_scan_output_directory_before_paid_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gate.shutil, "which", lambda name, **_kwargs: name)
+    original_run = gate.subprocess.run
+    calls: list[list[str]] = []
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        argv = cast(list[str], args[0])
+        if argv and argv[0] == "git":
+            return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "v", "")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    output = tmp_path / "results" / gate.require_clean_revision(repo) / "u12_gate"
+    checks, reasons, exit_code = gate._execute_preflight(
+        tmp_path / "state",
+        {"PATH": str(tmp_path), "CODEX_SECURITY_STATE_DIR": str(output.parent)},
+        output,
+    )
+
+    assert reasons == []
+    assert exit_code == 0
+    assert checks["scan_output_write"] == {"status": "passed", "exit_code": 0}
+    assert output.is_dir()
+    assert list(output.iterdir()) == []
+    assert [call[0] for call in calls] == ["node.exe", "npx.cmd"]
+
+
+def test_preflight_rejects_unwritable_scan_output_before_paid_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gate.shutil, "which", lambda name, **_kwargs: name)
+    original_run = gate.subprocess.run
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        argv = cast(list[str], args[0])
+        if argv and argv[0] == "git":
+            return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
+        return subprocess.CompletedProcess(argv, 0, "v", "")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    output = tmp_path / "results" / gate.require_clean_revision(repo) / "u12_gate"
+    output.mkdir(parents=True)
+    (output / "existing-result.json").write_text("preserve", encoding="utf-8")
+
+    checks, reasons, exit_code = gate._execute_preflight(
+        tmp_path / "state",
+        {"PATH": str(tmp_path), "CODEX_SECURITY_STATE_DIR": str(output.parent)},
+        output,
+    )
+
+    assert exit_code == 2
+    assert reasons == ["scan_output_write preflight failed"]
+    assert checks["scan_output_write"] == {"status": "failed", "exit_code": 2}
+    assert (output / "existing-result.json").read_text(encoding="utf-8") == "preserve"
+
+
+def test_preflight_keeps_legacy_pass_evidence_compatible_but_requires_new_probe() -> None:
+    legacy_runner: dict[str, Any] = {
+        "environment_policy_version": gate.LEGACY_ENVIRONMENT_POLICY_VERSION,
+        "scanner_started": True,
+        "preflight": {
+            name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_CHECKS
+        },
+    }
+    current_runner: dict[str, Any] = {
+        **legacy_runner,
+        "environment_policy_version": gate.ENVIRONMENT_POLICY_VERSION,
+    }
+
+    assert gate._preflight_passes(legacy_runner) is True
+    assert gate._preflight_passes(current_runner) is False
+    current_runner["preflight"] = {
+        name: {"status": "passed", "exit_code": 0}
+        for name in gate.PREFLIGHT_EVIDENCE_CHECKS
+    }
+    assert gate._preflight_passes(current_runner) is True
 
 
 @pytest.mark.parametrize("mode", ["standalone", "scan"])
@@ -2455,7 +2546,7 @@ def test_finalize_rejects_too_short_retention(
     assert _finalize(repo, root, tmp_path).passed is False
 
 
-@pytest.mark.parametrize("field", ["node_crypto", "npx_version"])
+@pytest.mark.parametrize("field", ["node_crypto", "npx_version", "scan_output_write"])
 def test_finalize_rejects_malformed_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
