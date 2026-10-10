@@ -520,6 +520,7 @@ def build_child_environment(
         codex_state.mkdir(parents=True, exist_ok=True)
         npm_state = codex_state / ".d5-npm-state"
         npm_state.mkdir(parents=True, exist_ok=True)
+        npm_cache = codex_state / "npm-cache"
         user_config = npm_state / "npm-userconfig"
         global_config = npm_state / "npm-globalconfig"
         user_config.write_text("", encoding="utf-8")
@@ -530,7 +531,7 @@ def build_child_environment(
     env["CODEX_SECURITY_STATE_DIR"] = str(codex_state)
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
-    env["NPM_CONFIG_CACHE"] = str(npm_state / "npm-cache")
+    env["NPM_CONFIG_CACHE"] = str(npm_cache)
     return env
 
 
@@ -729,6 +730,21 @@ def _probe_scanner_runtime_scope(cwd: Path, child_env: Mapping[str, str]) -> tup
             if not path.is_absolute():
                 return "failed", 2
             path.resolve().relative_to(root)
+        if os.name == "nt":
+            code_mode_host = (
+                Path(child_env["NPM_CONFIG_CACHE"])
+                / "_npx"
+                / ("0" * 16)
+                / "node_modules"
+                / "@openai"
+                / "codex-win32-x64"
+                / "vendor"
+                / "x86_64-pc-windows-msvc"
+                / "bin"
+                / "codex-code-mode-host.exe"
+            )
+            if len(str(code_mode_host)) >= 260:
+                return "failed", 2
     except (OSError, ValueError):
         return "failed", 2
     return "passed", 0

@@ -1402,7 +1402,7 @@ def test_child_environment_is_allowlisted_and_external_state_is_per_run(
     npm_state = state / ".d5-npm-state"
     assert env["NPM_CONFIG_USERCONFIG"] == str((npm_state / "npm-userconfig").resolve())
     assert env["NPM_CONFIG_GLOBALCONFIG"] == str((npm_state / "npm-globalconfig").resolve())
-    assert env["NPM_CONFIG_CACHE"] == str((npm_state / "npm-cache").resolve())
+    assert env["NPM_CONFIG_CACHE"] == str((state / "npm-cache").resolve())
     assert Path(env["NPM_CONFIG_USERCONFIG"]).read_text(encoding="utf-8") == ""
     assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).read_text(encoding="utf-8") == ""
     assert "NPM_CONFIG_PREFIX" not in env
@@ -1609,6 +1609,24 @@ def test_preflight_rejects_npm_cache_outside_codex_writable_scope(
     assert reasons == ["scanner_runtime_scope preflight failed"]
     assert checks["scanner_runtime_scope"] == {"status": "failed", "exit_code": 2}
     assert checks["scan_output_write"] == {"status": "not_run", "exit_code": None}
+
+
+def test_scanner_runtime_scope_rejects_windows_host_path_over_max_path(
+    tmp_path: Path,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Codex code-mode host executable path is Windows-specific")
+    output = tmp_path / "results" / ("a" * 40) / "u12_gate"
+    state = output.parent / ".state" / "u12_gate"
+    env = gate.build_child_environment(
+        state, {"PATH": str(tmp_path)}, codex_state_dir=output.parent
+    )
+    env["NPM_CONFIG_CACHE"] = str(output.parent / ("n" * 100) / "npm-cache")
+
+    status, exit_code = gate._probe_scanner_runtime_scope(state, env)
+
+    assert status == "failed"
+    assert exit_code == 2
 
 
 def test_preflight_keeps_legacy_pass_evidence_compatible_but_requires_new_probe() -> None:
@@ -2550,9 +2568,10 @@ def test_real_scan_cli_records_success_and_exact_retention(
     environment = cast(dict[str, str], scanner_runtime["environment"])
     state = evidence.parent / ".state" / gate.SHARD_IDS[0]
     assert Path(environment["CODEX_SECURITY_STATE_DIR"]) == evidence.parent.resolve()
-    npm_state = state.parent.parent / ".d5-npm-state"
-    assert Path(environment["NPM_CONFIG_USERCONFIG"]) == npm_state / "npm-userconfig"
-    assert Path(environment["NPM_CONFIG_GLOBALCONFIG"]) == npm_state / "npm-globalconfig"
+    npm_config = state.parent.parent / ".d5-npm-state"
+    assert Path(environment["NPM_CONFIG_USERCONFIG"]) == npm_config / "npm-userconfig"
+    assert Path(environment["NPM_CONFIG_GLOBALCONFIG"]) == npm_config / "npm-globalconfig"
+    assert Path(environment["NPM_CONFIG_CACHE"]) == state.parent.parent / "npm-cache"
     assert Path(scanner_runtime["cwd"]) == state.resolve()
     finished = gate.datetime.fromisoformat(runner["finished_at"])
     retention = gate.datetime.fromisoformat(runner["retention_until"])
@@ -2627,9 +2646,10 @@ def test_private_state_flow_stays_outside_repo(tmp_path: Path) -> None:
     )
     assert repo.resolve() not in output.resolve().parents
     assert Path(env["CODEX_SECURITY_STATE_DIR"]) == output.parent.resolve()
-    npm_state = output.parent / ".d5-npm-state"
-    assert Path(env["NPM_CONFIG_USERCONFIG"]).is_relative_to(npm_state.resolve())
-    assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(npm_state.resolve())
+    npm_config = output.parent / ".d5-npm-state"
+    assert Path(env["NPM_CONFIG_USERCONFIG"]).is_relative_to(npm_config.resolve())
+    assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(npm_config.resolve())
+    assert Path(env["NPM_CONFIG_CACHE"]).is_relative_to(output.parent.resolve())
     assert "caller-token-config" not in json.dumps(env)
     assert "caller-prefix" not in json.dumps(env)
 
