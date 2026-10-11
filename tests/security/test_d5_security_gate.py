@@ -9,8 +9,11 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
+import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +23,280 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 gate: Any = importlib.import_module("d5_security_gate")
+_real_secure_windows_directory = gate._secure_windows_directory
+
+
+@pytest.fixture(autouse=True)
+def _configure_trusted_git_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    executable = shutil.which("git")
+    assert executable is not None
+    monkeypatch.setenv("D5_TRUSTED_GIT_EXECUTABLE", str(Path(executable).resolve()))
+    bounded_runner = gate._run_bounded_scanner
+    original_run = subprocess.run
+
+    def mockable_runner(
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        executable: str,
+        output_path: Path,
+        timeout_seconds: float | None = None,
+        output_limit_bytes: int | None = None,
+    ) -> tuple[int, str]:
+        timeout = gate.SCANNER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+        output_limit = (
+            gate.SCANNER_OUTPUT_LIMIT_BYTES if output_limit_bytes is None else output_limit_bytes
+        )
+        if subprocess.run is original_run:
+            return bounded_runner(
+                argv,
+                cwd=cwd,
+                env=env,
+                executable=executable,
+                output_path=output_path,
+                timeout_seconds=timeout,
+                output_limit_bytes=output_limit,
+            )
+        completed = subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            executable=executable,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        console = f"{completed.stdout or ''}{completed.stderr or ''}"
+        if len(console.encode("utf-8")) > output_limit:
+            raise gate.GateError("scanner_output_limit_exceeded")
+        output_path.write_text(console, encoding="utf-8")
+        return completed.returncode, console
+
+    monkeypatch.setattr(gate, "_run_bounded_scanner", mockable_runner)
+    if sys.platform == "win32":
+        # The managed sandbox denies WRITE_DAC on pytest's temp root. The
+        # production path fails closed on that error; test path handling here
+        # and cover the required ACL targets separately below.
+        monkeypatch.setattr(gate, "_secure_windows_directory", lambda _path: None)
+
+
+def test_windows_child_environment_secures_results_root_and_exact_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    sha_directory = results_root / ("a" * 40)
+    sha_directory.mkdir()
+    state = sha_directory / ".state" / "u12_gate"
+    secured: list[Path] = []
+    monkeypatch.setattr(gate.os, "name", "nt")
+    monkeypatch.setattr(gate, "_secure_windows_directory", secured.append)
+
+    env = gate.build_child_environment(state, codex_state_dir=sha_directory)
+
+    assert secured == [results_root, sha_directory, state.parent, state]
+    assert sha_directory.is_dir()
+    assert (sha_directory / ".state").is_dir()
+    assert state.is_dir()
+    gate.cleanup_child_environment(env)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory identity uses Win32 handles")
+def test_windows_directory_identity_uses_volume_and_file_index(tmp_path: Path) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    original = tmp_path / "results"
+    moved = tmp_path / "results-moved"
+    original.mkdir()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_directory = kernel32.CreateFileW
+    open_directory.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    open_directory.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def open_handle(path: Path) -> int:
+        handle = open_directory(str(path), 0x00000080, 0x00000007, None, 3, 0x02000000, None)
+        value = gate._native_handle_value(handle)
+        if value is None or value == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_last_error(), "unable to open test directory")
+        return value
+
+    first = open_handle(original)
+    second = open_handle(original)
+    try:
+        identity = gate._windows_file_identity(first)
+        assert gate._windows_file_identity(second) == identity
+
+        original.rename(moved)
+        original.mkdir()
+        replacement = open_handle(original)
+        try:
+            assert gate._windows_file_identity(replacement) != identity
+        finally:
+            kernel32.CloseHandle(wintypes.HANDLE(replacement))
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(second))
+        kernel32.CloseHandle(wintypes.HANDLE(first))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename uses Win32 sharing rules")
+def test_windows_open_directory_handle_blocks_replacement_until_closed(tmp_path: Path) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    original = tmp_path / "results"
+    moved = tmp_path / "results-moved"
+    original.mkdir()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_directory = kernel32.CreateFileW
+    open_directory.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    open_directory.restype = wintypes.HANDLE
+    kernel32.MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+    kernel32.MoveFileExW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    # Match the production handle: READ_CONTROL | WRITE_DAC | DELETE without FILE_SHARE_DELETE.
+    handle = open_directory(str(original), 0x00070000, 0x00000003, None, 3, 0x02200000, None)
+    assert gate._native_handle_value(handle) != ctypes.c_void_p(-1).value
+    verified = open_directory(str(original), 0x00040000, 0x00000003, None, 3, 0x02200000, None)
+    assert gate._native_handle_value(verified) != ctypes.c_void_p(-1).value
+    kernel32.CloseHandle(wintypes.HANDLE(gate._native_handle_value(verified)))
+    try:
+        assert not kernel32.MoveFileExW(str(original), str(moved), 0x00000008)
+        assert ctypes.get_last_error() == 32  # ERROR_SHARING_VIOLATION
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(gate._native_handle_value(handle)))
+
+    assert kernel32.MoveFileExW(str(original), str(moved), 0x00000008)
+
+
+def _windows_directory_acl_details(handle: int) -> tuple[bool, str, str]:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    owner = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    get_security = advapi32.GetSecurityInfo
+    get_security.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    get_security.restype = wintypes.DWORD
+    assert (
+        get_security(
+            wintypes.HANDLE(handle),
+            1,
+            0x00000005,
+            ctypes.byref(owner),
+            None,
+            None,
+            None,
+            ctypes.byref(descriptor),
+        )
+        == 0
+    )
+    owner_sid = ctypes.c_wchar_p()
+    sddl = ctypes.c_wchar_p()
+    try:
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        get_control = advapi32.GetSecurityDescriptorControl
+        get_control.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_control.restype = wintypes.BOOL
+        assert get_control(descriptor, ctypes.byref(control), ctypes.byref(revision))
+
+        convert_sid = advapi32.ConvertSidToStringSidW
+        convert_sid.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+        convert_sid.restype = wintypes.BOOL
+        assert convert_sid(owner, ctypes.byref(owner_sid))
+
+        sddl_length = wintypes.DWORD()
+        convert_descriptor = advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW
+        convert_descriptor.argtypes = [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_wchar_p),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        convert_descriptor.restype = wintypes.BOOL
+        assert convert_descriptor(
+            descriptor, 1, 0x00000004, ctypes.byref(sddl), ctypes.byref(sddl_length)
+        )
+        assert owner_sid.value is not None and sddl.value is not None
+        return bool(control.value & 0x1000), sddl.value, owner_sid.value
+    finally:
+        if sddl:
+            kernel32.LocalFree(ctypes.cast(sddl, ctypes.c_void_p))
+        if owner_sid:
+            kernel32.LocalFree(ctypes.cast(owner_sid, ctypes.c_void_p))
+        kernel32.LocalFree(descriptor)
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or not os.environ.get("D5_WINDOWS_ACL_TEST_ROOT"),
+    reason="set D5_WINDOWS_ACL_TEST_ROOT to run the real Windows DACL integration test",
+)
+def test_windows_secure_directory_applies_real_acl() -> None:
+    import shutil
+
+    scratch_parent = Path(os.environ["D5_WINDOWS_ACL_TEST_ROOT"])
+    scratch = Path(tempfile.mkdtemp(prefix="d5-acl-integration-", dir=scratch_parent))
+    results = scratch / "results"
+    results.mkdir()
+    held_handle: int | None = None
+    try:
+        held_handle = _real_secure_windows_directory(results)
+        assert isinstance(held_handle, int)
+        protected, sddl, owner_sid = _windows_directory_acl_details(held_handle)
+        assert protected
+        assert "D:P" in sddl
+        assert set(re.findall(r"\(([^()]*)\)", sddl)) == {
+            f"A;OICI;FA;;;{owner_sid}",
+            "A;OICI;FA;;;SY",
+            "A;OICI;FA;;;BA",
+        }
+    finally:
+        if held_handle is not None:
+            gate._close_windows_directory_handles([held_handle])
+        shutil.rmtree(scratch)
 
 
 def test_pilot_authorization_requires_external_documents(tmp_path: Path) -> None:
@@ -104,6 +381,20 @@ def test_pilot_authorization_reads_bound_historical_costs(tmp_path: Path) -> Non
     evidence = _validate_pilot(repo, authorization, ledger)
     assert evidence["historical_cost_usd"] == "35.438936"
     assert not (tmp_path / "results").exists()
+
+
+def test_pilot_authorization_rejects_oversized_external_documents(tmp_path: Path) -> None:
+    repo, authorization, ledger, _value = _pilot_documents(tmp_path)
+    authorization.write_bytes(b" " * (gate.MAX_JSON_ARTIFACT_BYTES + 1))
+    with pytest.raises(gate.GateError, match="authorization_invalid"):
+        _validate_pilot(repo, authorization, ledger)
+
+    ledger_case = tmp_path / "ledger-case"
+    ledger_case.mkdir()
+    repo, authorization, ledger, _value = _pilot_documents(ledger_case)
+    ledger.write_bytes(b" " * (gate.MAX_JSON_ARTIFACT_BYTES + 1))
+    with pytest.raises(gate.GateError, match="authorization_invalid"):
+        _validate_pilot(repo, authorization, ledger)
 
 
 def test_u02_pilot_authorization_allows_uncapped_cumulative_spend(
@@ -233,12 +524,15 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
                     tmp_path / "results" / "dry-runs" / sha / ".state" / "u14_dependencies"
                 ).resolve()
             )
-            assert Path(argv[6]) == repo.resolve()
+            snapshot = Path(argv[6])
+            assert snapshot != repo.resolve()
+            assert gate._git(snapshot, "rev-parse", "HEAD") == sha
             return subprocess.CompletedProcess(argv, 0, "estimated cost: 0.50", "")
         return real_run(argv, **kwargs)
 
     monkeypatch.setattr(gate.subprocess, "run", run)
 
+    assert gate._git(repo, "status", "--porcelain", "--untracked-files=all") == ""
     result = gate.run_scan(
         repo,
         tmp_path / "results",
@@ -294,6 +588,7 @@ def test_active_micro_finalize_is_not_blocked_as_unactivated(
         lambda _repo, **_kwargs: {unit: [] for unit in gate.MICRO_UNIT_IDS},
     )
 
+    assert gate._git(repo, "status", "--porcelain", "--untracked-files=all") == ""
     result = gate.finalize(repo, results, tmp_path / "dispositions", profile="micro-v2")
 
     assert "policy_not_activated" not in result.reasons
@@ -400,7 +695,9 @@ def test_pilot_claim_is_exclusive_and_survives_output_loss(tmp_path: Path) -> No
     assert claim.read_bytes() == before
 
 
-@pytest.mark.parametrize("mode", ["dry", "failed", "preflight", "nonpilot", "success"])
+@pytest.mark.parametrize(
+    "mode", ["dry", "failed", "preflight", "preflight_output_error", "nonpilot", "success"]
+)
 # Keep the preflight/claim/scanner sequence visible in one integration scenario.
 def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
     tmp_path: Path,
@@ -433,8 +730,10 @@ def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
         assert not (tmp_path / "claims").exists()
         return (
             {name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_EVIDENCE_CHECKS},
-            ["node_crypto preflight failed"] if mode == "preflight" else [],
-            2 if mode == "preflight" else 0,
+            ["node_crypto preflight failed"]
+            if mode in {"preflight", "preflight_output_error"}
+            else [],
+            2 if mode in {"preflight", "preflight_output_error"} else 0,
         )
 
     monkeypatch.setattr(gate, "_execute_preflight", preflight)
@@ -448,7 +747,11 @@ def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
         assert (tmp_path / "claims").exists() is (mode != "dry")
         if mode == "success":
             _artifacts(
-                tmp_path / "results", "u03_events_hooks", document["sha"], profile="micro-v2"
+                tmp_path / "results",
+                "u03_events_hooks",
+                document["sha"],
+                profile="micro-v2",
+                assigned_paths=["README.md"],
             )
         return subprocess.CompletedProcess(
             argv, 0 if mode in {"dry", "success"} else 2, "estimated cost: 1.25", ""
@@ -457,6 +760,24 @@ def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
     monkeypatch.setattr(gate.subprocess, "run", run)
     root = tmp_path / "results"
     args = {"profile": "micro-v2", "authorization": authorization, "budget_ledger": ledger}
+    cleanup_calls: list[bool] = []
+    cleanup = gate.cleanup_child_environment
+
+    def record_cleanup(env: Any, *, release_directory_locks: bool = True) -> None:
+        cleanup_calls.append(release_directory_locks)
+        cleanup(env, release_directory_locks=release_directory_locks)
+
+    monkeypatch.setattr(gate, "cleanup_child_environment", record_cleanup)
+    if mode == "preflight_output_error":
+        monkeypatch.setattr(
+            gate,
+            "_pilot_failed_preflight_output",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("diagnostic output failed")),
+        )
+        with pytest.raises(RuntimeError, match="diagnostic output failed"):
+            gate.run_scan(repo, root, "u03_events_hooks", **args)
+        assert cleanup_calls[-1] is True
+        return
     if mode == "nonpilot":
         with pytest.raises(gate.GateError, match="pilot_unit_required"):
             gate.run_scan(repo, root, "u14_dependencies", **args)
@@ -496,13 +817,28 @@ def test_pilot_scan_orders_claim_and_preserves_failed_attempt(  # noqa: PLR0915
 
 
 @pytest.mark.parametrize("field", ["authorization_sha256", "budget_ledger_sha256", "claim_sha256"])
-def test_pilot_receipt_requires_attempt_bindings(tmp_path: Path, field: str) -> None:
-    output = _artifacts(tmp_path, "u03_events_hooks", "a" * 40, profile="micro-v2")
+def test_pilot_receipt_requires_attempt_bindings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    (tmp_path / "repo-root").mkdir()
+    repo = _repo(tmp_path / "repo-root")
+    sha = gate.require_clean_revision(repo)
+    assignments = {unit: [] for unit in gate.MICRO_UNIT_IDS}
+    assignments["u03_events_hooks"] = ["README.md"]
+    monkeypatch.setattr(gate, "_validate_repo_manifest", lambda *_args: assignments)
+    output = _artifacts(
+        tmp_path / "results",
+        "u03_events_hooks",
+        sha,
+        profile="micro-v2",
+        assigned_paths=["README.md"],
+        inventory_digest=gate._inventory_digest(["README.md"]),
+    )
     path = output / "runner-result.json"
     value = json.loads(path.read_text(encoding="utf-8"))
     value.pop(field, None)
     path.write_text(json.dumps(value), encoding="utf-8")
-    result = gate.inspect_artifacts(output, "a" * 40, "u03_events_hooks", profile="micro-v2")
+    result = gate.inspect_artifacts(output, sha, "u03_events_hooks", profile="micro-v2", repo=repo)
     assert "runner_invalid" in result["reason_codes"]
 
 
@@ -547,13 +883,28 @@ def test_pilot_results_cannot_contain_claims(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("field", ["authorization_sha256", "budget_ledger_sha256", "claim_sha256"])
-def test_pilot_receipt_rejects_well_formed_but_unbound_digest(tmp_path: Path, field: str) -> None:
-    output = _artifacts(tmp_path, "u03_events_hooks", "a" * 40, profile="micro-v2")
+def test_pilot_receipt_rejects_well_formed_but_unbound_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    (tmp_path / "repo-root").mkdir()
+    repo = _repo(tmp_path / "repo-root")
+    sha = gate.require_clean_revision(repo)
+    assignments = {unit: [] for unit in gate.MICRO_UNIT_IDS}
+    assignments["u03_events_hooks"] = ["README.md"]
+    monkeypatch.setattr(gate, "_validate_repo_manifest", lambda *_args: assignments)
+    output = _artifacts(
+        tmp_path / "results",
+        "u03_events_hooks",
+        sha,
+        profile="micro-v2",
+        assigned_paths=["README.md"],
+        inventory_digest=gate._inventory_digest(["README.md"]),
+    )
     path = output / "runner-result.json"
     value = json.loads(path.read_text(encoding="utf-8"))
     value[field] = "f" * 64
     path.write_text(json.dumps(value), encoding="utf-8")
-    result = gate.inspect_artifacts(output, "a" * 40, "u03_events_hooks", profile="micro-v2")
+    result = gate.inspect_artifacts(output, sha, "u03_events_hooks", profile="micro-v2", repo=repo)
     assert "runner_invalid" in result["reason_codes"]
 
 
@@ -617,15 +968,31 @@ def test_pilot_concurrent_claims_have_exactly_one_winner(tmp_path: Path) -> None
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return gate._git(repo, *args)
 
 
 def _repo(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    for name, content in (files or {"README.md": "ok\n"}).items():
+    fixture_files = files or {"README.md": "ok\n"}
+    if files is None:
+        required = set(gate.COMMON_KNOWLEDGE_BASE)
+        directories: set[str] = set()
+        for profile in (gate.LEGACY_PROFILE_ID, gate.MICRO_PROFILE_ID):
+            for unit in gate._profile_units(profile).values():
+                for path in unit["paths"]:
+                    (directories if path.endswith("/") else required).add(path.rstrip("/"))
+        directories.update(
+            name for name in required if any(other.startswith(name + "/") for other in required)
+        )
+        required.difference_update(directories)
+        for name in sorted(directories):
+            (repo / name).mkdir(parents=True, exist_ok=True)
+        fixture_files = {**{name: "# fixture\n" for name in required}, **fixture_files}
+        fixture_files["docs/security/d5-shards.json"] = gate.MANIFEST_PATH.read_text(
+            encoding="utf-8"
+        )
+    for name, content in fixture_files.items():
         path = repo / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -713,11 +1080,23 @@ def _artifacts(
     complete: bool = True,
     cost_usd: float = 1.0,
     profile: str = "legacy-v1",
+    assigned_paths: list[str] | None = None,
+    inventory_digest: str | None = None,
 ) -> Path:
     output = root / sha / shard
     output.mkdir(parents=True, exist_ok=True)
     scan_id = f"scan-{shard}"
     include_paths = gate._profile_units(profile)[shard]["paths"]
+    receipt_paths = assigned_paths or [] if profile == "micro-v2" else [""]
+    receipt_refs: list[str] = []
+    for index, _assigned_path in enumerate(receipt_paths or [None]):
+        relative_receipt = (
+            f"artifacts/review-{index}.txt" if profile == "micro-v2" else "artifacts/review.txt"
+        )
+        receipt_path = output / relative_receipt
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text("Reviewed scoped files.\n", encoding="utf-8")
+        receipt_refs.append(relative_receipt)
     coverage = {
         "documentType": "codex-security.coverage",
         "schemaVersion": "1.0",
@@ -727,7 +1106,18 @@ def _artifacts(
         "inventoryStrategy": "scoped_path",
         "includePaths": include_paths,
         "excludePaths": [],
-        "surfaces": [],
+        "coveredPaths": sorted(assigned_paths or []) if profile == "micro-v2" else [],
+        "surfaces": [
+            {
+                "id": f"surface-test-{index}",
+                "label": f"fixture review {index}",
+                "disposition": "no_issue_found",
+                "notes": "The scoped test artifact was reviewed.",
+                "receiptRefs": [receipt_refs[index]],
+                "paths": [assigned_path] if profile == "micro-v2" else [],
+            }
+            for index, assigned_path in enumerate(assigned_paths or [None])
+        ],
         "explicitExclusions": [],
         "deferred": [] if complete else [{"id": "deferred", "reason": "test"}],
     }
@@ -762,9 +1152,13 @@ def _artifacts(
                 {
                     "path": name,
                     "sha256": hashlib.sha256((output / name).read_bytes()).hexdigest(),
-                    "mediaType": "application/json",
+                    "mediaType": "application/json" if name.endswith(".json") else "text/plain",
                 }
-                for name in ("coverage.json", "findings.json")
+                for name in (
+                    "coverage.json",
+                    "findings.json",
+                    *receipt_refs,
+                )
             ],
         },
     }
@@ -781,8 +1175,9 @@ def _artifacts(
                         "unit": shard,
                         "scan_id": scan_id,
                         "profile_digest": gate.profile_digest(profile),
-                        "inventory_digest": gate._inventory_digest([]),
-                        "assigned_paths": [],
+                        "inventory_digest": inventory_digest
+                        or gate._inventory_digest(assigned_paths or []),
+                        "assigned_paths": sorted(assigned_paths or []),
                         "session_capacity": 3,
                         "max_cost_usd": gate.MAX_COST_USD,
                         "authorization_sha256": "1" * 64,
@@ -944,6 +1339,68 @@ def test_micro_profile_assigns_all_175_current_files_once() -> None:
     assert {"docs/security/d5-shards.json"}.issubset(assignments["u13_governance"])
 
 
+def test_scope_and_profile_digest_are_bound_to_exact_repo_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = Path(__file__).resolve().parents[2]
+    checked_in_manifest = gate.load_manifest()
+    manifest_blob = json.dumps(checked_in_manifest).encode("utf-8")
+
+    def read_git_blob(_repo: Path, revision: str, path: str) -> bytes:
+        assert revision == "a" * 40
+        assert path == "docs/security/d5-shards.json"
+        return manifest_blob
+
+    monkeypatch.setattr(gate, "_git_blob", read_git_blob)
+    exact_manifest = gate._load_repo_manifest(repo, "a" * 40)
+    poisoned_global = tmp_path / "other-manifest.json"
+    poisoned_global.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "candidate_profiles": {
+                    "micro-v2": {
+                        "schema_version": "2.0",
+                        "activation": "active",
+                        "units": {"untrusted_unit": {"paths": ["README.md"]}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "MANIFEST_PATH", poisoned_global)
+    monkeypatch.setattr(
+        gate, "load_manifest", lambda _path=poisoned_global: json.loads(poisoned_global.read_text())
+    )
+    monkeypatch.setattr(
+        gate,
+        "_validated_repo_input",
+        lambda repo_root, relative, **_kwargs: Path(repo_root) / relative,
+    )
+
+    exact_units = gate._profile_units("micro-v2", exact_manifest)
+    assert "u12_gate" in exact_units
+    assert "untrusted_unit" not in exact_units
+    assert gate.profile_digest("micro-v2", exact_manifest) != gate.profile_digest("micro-v2")
+    argv = gate.build_scanner_argv(
+        repo, "u12_gate", tmp_path / "results", profile="micro-v2", manifest=exact_manifest
+    )
+    assert "scripts/d5_security_gate.py" in argv
+    monkeypatch.setattr(gate, "require_clean_revision", lambda _repo: "a" * 40)
+    validated: dict[str, Any] = {}
+    monkeypatch.setattr(
+        gate,
+        "_validate_repo_manifest",
+        lambda _repo, profile, manifest: validated.update(
+            {"profile": profile, "manifest": manifest}
+        )
+        or {},
+    )
+    assert gate.main(["validate", "--repo", str(repo), "--profile", "micro-v2"]) == 0
+    assert validated == {"profile": "micro-v2", "manifest": exact_manifest}
+
+
 def test_micro_profile_digest_is_stable_and_distinct() -> None:
     assert gate.profile_digest("micro-v2") == gate.profile_digest("micro-v2")
     assert gate.profile_digest("micro-v2") != gate.profile_digest("legacy-v1")
@@ -951,7 +1408,11 @@ def test_micro_profile_digest_is_stable_and_distinct() -> None:
 
 def test_micro_plan_unit_is_offline_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = Path(__file__).resolve().parents[2]
-    monkeypatch.setattr(gate, "require_clean_revision", lambda _repo: "a" * 40)
+    monkeypatch.setattr(
+        gate,
+        "require_clean_revision",
+        lambda source_repo: gate._git(source_repo, "rev-parse", "HEAD"),
+    )
     preview = gate.plan_unit(repo, "u03_events_hooks", profile="micro-v2")
     assert preview["profile"] == "micro-v2"
     assert preview["unit"] == "u03_events_hooks"
@@ -966,7 +1427,11 @@ def test_micro_preview_includes_scope_budget_and_destination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = Path(__file__).resolve().parents[2]
-    monkeypatch.setattr(gate, "require_clean_revision", lambda _repo: "a" * 40)
+    monkeypatch.setattr(
+        gate,
+        "require_clean_revision",
+        lambda source_repo: gate._git(source_repo, "rev-parse", "HEAD"),
+    )
     preview = gate.plan_unit(repo, "u03_events_hooks", profile="micro-v2")
     argv = preview["scanner_argv"]
     assert argv[argv.index("--max-cost") + 1] == "15.0"
@@ -979,7 +1444,12 @@ def test_micro_preview_includes_scope_budget_and_destination(
     assert (repo / "docs/security/scan-policy.md").resolve() in knowledge_bases
 
 
-def test_micro_scanner_argv_preserves_capacity_and_never_changes_approval() -> None:
+def test_micro_scanner_argv_preserves_capacity_and_never_changes_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gate, "_validated_repo_input", lambda repo, path, **_kwargs: Path(repo) / path
+    )
     repo = Path("C:/repo")
     argv = gate.build_scanner_argv(
         repo,
@@ -1033,10 +1503,10 @@ def test_active_micro_union_passes_with_all_units_and_bound_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = _repo(tmp_path)
-    monkeypatch.setattr(
-        gate,
-        "validate_manifest",
-        lambda _repo, **_kwargs: {unit: [] for unit in gate.MICRO_UNIT_IDS},
+    assignments = {unit: ["README.md"] for unit in gate.MICRO_UNIT_IDS}
+    monkeypatch.setattr(gate, "_validate_repo_manifest", lambda *_args: assignments)
+    inventory_digest = gate._inventory_digest(
+        sorted(path for paths in assignments.values() for path in paths)
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "micro-results"
@@ -1050,14 +1520,21 @@ def test_active_micro_union_passes_with_all_units_and_bound_artifacts(
                 "created_at": "2026-09-26T00:00:00+00:00",
                 "profile": "micro-v2",
                 "profile_digest": gate.profile_digest("micro-v2"),
-                "inventory_digest": gate._inventory_digest([]),
+                "inventory_digest": inventory_digest,
             }
         ),
         encoding="utf-8",
     )
     dispositions = tmp_path / "micro-dispositions"
     for unit in gate.MICRO_UNIT_IDS:
-        _artifacts(root, unit, sha, profile="micro-v2")
+        _artifacts(
+            root,
+            unit,
+            sha,
+            profile="micro-v2",
+            assigned_paths=sorted(assignments[unit]),
+            inventory_digest=inventory_digest,
+        )
         _write_sidecar(dispositions, sha, unit, root / sha / unit / "findings.json", [])
     ledger = _micro_budget_ledger(root, sha, gate.MICRO_UNIT_IDS, tmp_path)
     result = gate.finalize(repo, root, dispositions, profile="micro-v2", budget_ledger=ledger)
@@ -1300,6 +1777,20 @@ def test_duplicate_receipt_cost_is_rejected(tmp_path: Path) -> None:
     assert gate._read_receipt_cost(receipt) is None
 
 
+def test_external_receipt_and_ledger_size_limits_apply_before_hashing(
+    tmp_path: Path,
+) -> None:
+    receipt = tmp_path / "large-receipt.json"
+    receipt.write_bytes(b" " * (gate.MAX_JSON_ARTIFACT_BYTES + 1))
+    assert gate._read_receipt_cost(receipt) is None
+    with pytest.raises(OSError, match="size limit"):
+        gate._sha256(receipt)
+
+    ledger = tmp_path / "large-ledger.json"
+    ledger.write_bytes(b" " * (gate.MAX_JSON_ARTIFACT_BYTES + 1))
+    assert gate._validate_budget_ledger(ledger, tmp_path, 0) == ["budget_ledger_invalid"]
+
+
 def test_duplicate_ledger_receipts_are_rejected(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.json"
     ledger.write_text('{"receipts":[{"invalid":true}],"receipts":[]}', encoding="utf-8")
@@ -1358,7 +1849,310 @@ def test_results_root_must_be_external_and_empty(tmp_path: Path) -> None:
         gate.prepare_output(repo, outside, "sha", "a_identity_runtime")
 
 
-def test_scanner_argv_keeps_strict_approval_as_one_value() -> None:
+def test_results_descendant_link_escape_is_rejected(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    root = tmp_path / "results"
+    root.mkdir()
+    target = tmp_path / "outside"
+    target.mkdir()
+    try:
+        (root / "authorized-sha").symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    with pytest.raises(gate.GateError, match="links or reparse points"):
+        gate.prepare_output(repo, root, "authorized-sha", gate.SHARD_IDS[0])
+    assert list(target.iterdir()) == []
+
+
+def test_scan_snapshot_is_detached_from_mutable_checkout(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    sha = gate.require_clean_revision(repo)
+    original = (repo / "README.md").read_text(encoding="utf-8")
+    snapshot_root, snapshot = gate._materialize_scan_snapshot(repo, sha, tmp_path)
+    try:
+        assert snapshot_root.parent == tmp_path.parent
+        assert snapshot_root.parent != tmp_path
+        assert gate.require_clean_revision(snapshot) == sha
+        (repo / "README.md").write_text("changed after snapshot\n", encoding="utf-8")
+        assert (snapshot / "README.md").read_text(encoding="utf-8") == original
+    finally:
+        import shutil
+
+        shutil.rmtree(snapshot_root)
+
+
+def test_json_artifact_size_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "large.json"
+    path.write_text('{"value":"123456789"}', encoding="utf-8")
+    monkeypatch.setattr(gate, "MAX_JSON_ARTIFACT_BYTES", 8)
+    with pytest.raises(OSError, match="size limit"):
+        gate._strict_json_bytes(path, max_bytes=8)
+
+
+def test_json_artifact_nesting_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 1500 + "0" + "]" * 1500, encoding="utf-8")
+    with pytest.raises(ValueError, match="nesting"):
+        gate._strict_json_bytes(path)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b" " * (gate.MAX_JSON_ARTIFACT_BYTES + 1),
+        b"{" + b'"nested":' * 130 + b"0" + b"}" * 130,
+        b'{"sha":"' + b"a" * 40 + b'","sha":"' + b"b" * 40 + b'"}',
+    ],
+    ids=["oversized", "excessive-nesting", "duplicate-key"],
+)
+def test_shared_baseline_is_bounded_and_strict_json(tmp_path: Path, payload: bytes) -> None:
+    root = tmp_path / "results"
+    root.mkdir()
+    (root / gate.BASELINE_FILENAME).write_bytes(payload)
+    with pytest.raises(gate.GateError, match="missing or malformed shared baseline"):
+        gate._read_baseline(root)
+
+
+def test_manifest_size_limit_fails_closed(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_bytes(b" " * (gate.MAX_JSON_ARTIFACT_BYTES + 1))
+    with pytest.raises(gate.GateError, match="cannot read manifest"):
+        gate.load_manifest(manifest)
+
+
+def test_findings_artifact_nesting_fails_closed(tmp_path: Path) -> None:
+    sha = "c" * 40
+    output = _artifacts(tmp_path, gate.SHARD_IDS[0], sha)
+    findings_path = output / "findings.json"
+    findings_path.write_text("[" * 1500 + "0" + "]" * 1500, encoding="utf-8")
+    _update_artifact_digest(output, "findings.json")
+
+    result = gate.evaluate_artifacts(
+        output,
+        shard=gate.SHARD_IDS[0],
+        expected_sha=sha,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=False,
+    )
+
+    assert "malformed_json" in result["reason_codes"]
+    assert result["gate_pass"] is False
+
+
+def test_findings_artifact_decimal_overflow_fails_closed(tmp_path: Path) -> None:
+    sha = "9" * 40
+    output = _artifacts(tmp_path, gate.SHARD_IDS[0], sha)
+    findings_path = output / "findings.json"
+    findings_path.write_text('{"unused":1e9999999999999999999}', encoding="utf-8")
+    _update_artifact_digest(output, "findings.json")
+
+    result = gate.evaluate_artifacts(
+        output,
+        shard=gate.SHARD_IDS[0],
+        expected_sha=sha,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=False,
+    )
+
+    assert "malformed_json" in result["reason_codes"]
+    assert result["gate_pass"] is False
+
+
+def test_scanner_output_limit_terminates_and_bounds_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "SCANNER_OUTPUT_LIMIT_BYTES", 64)
+    output = tmp_path / "runner-output.log"
+    with pytest.raises(gate.GateError, match="scanner_output_limit_exceeded") as error:
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", "import sys; sys.stdout.write('x' * 1000000)"],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+    assert output.stat().st_size <= 64
+    assert isinstance(error.value, gate.BoundedScannerError)
+    assert len(error.value.output.encode("utf-8")) <= 64
+
+
+def test_scanner_runtime_limit_terminates_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "SCANNER_TIMEOUT_SECONDS", 0.2)
+    output = tmp_path / "runner-output.log"
+    with pytest.raises(gate.GateError, match="scanner_runtime_limit_exceeded"):
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+
+
+def test_scanner_root_exit_terminates_descendant_holding_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "SCANNER_TIMEOUT_SECONDS", 0.2)
+    output = tmp_path / "runner-output.log"
+    code = (
+        "import subprocess,sys; "
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'])"
+    )
+    started = gate.time.monotonic()
+    with pytest.raises(gate.GateError, match="scanner_descendants_remaining"):
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", code],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+    assert gate.time.monotonic() - started < 6
+
+
+def test_scanner_output_write_failure_terminates_process_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "runner-output.log"
+    scanner_marker = tmp_path / "scanner-survived.txt"
+    root_pid_path = tmp_path / "scanner-pid.txt"
+    original_fdopen = gate.os.fdopen
+
+    class FailingWriter:
+        def __init__(self, wrapped: Any) -> None:
+            self.wrapped = wrapped
+
+        def write(self, _data: bytes) -> int:
+            raise OSError("simulated output disk failure")
+
+        def flush(self) -> None:
+            self.wrapped.flush()
+
+        def close(self) -> None:
+            self.wrapped.close()
+
+    monkeypatch.setattr(
+        gate.os,
+        "fdopen",
+        lambda fd, mode: FailingWriter(original_fdopen(fd, mode)),
+    )
+    scanner_code = (
+        "import pathlib,time,os,sys; "
+        f"pathlib.Path({str(root_pid_path)!r}).write_text(str(__import__('os').getpid())); "
+        "sys.stdout.write('x' * 131072); sys.stdout.flush(); "
+        f"time.sleep(0.8); pathlib.Path({str(scanner_marker)!r}).write_text('survived'); "
+        "time.sleep(30)"
+    )
+
+    with pytest.raises(OSError, match="simulated output disk failure"):
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", scanner_code],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+
+    try:
+        gate.time.sleep(1.0)
+        assert not scanner_marker.exists(), "scanner continued after the output failure"
+    finally:
+        if root_pid_path.exists():
+            root_pid = int(root_pid_path.read_text(encoding="utf-8"))
+            if gate.os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(root_pid), "/T", "/F"],
+                    capture_output=True,
+                    check=False,
+                )
+            else:
+                with gate.contextlib.suppress(ProcessLookupError):
+                    gate.os.killpg(root_pid, gate.signal.SIGKILL)
+
+
+def test_scanner_success_terminates_remaining_process_group(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "runner-output.log"
+    code = (
+        "import subprocess,sys; "
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']); "
+        "print(child.pid, flush=True)"
+    )
+    started = gate.time.monotonic()
+
+    with pytest.raises(gate.GateError, match="scanner_descendants_remaining"):
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", code],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+
+    assert output.is_file()
+    assert gate.time.monotonic() - started < 6
+    if sys.platform != "win32":
+        assert not gate._scanner_process_group_exists(int(output.read_text(encoding="utf-8")))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper behavior")
+def test_scanner_timeout_terminates_session_escaping_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "SCANNER_TIMEOUT_SECONDS", 0.2)
+    output = tmp_path / "runner-output.log"
+    code = (
+        "import subprocess,sys; "
+        "child=subprocess.Popen([sys.executable,'-c',"
+        "\"import ctypes,time;ctypes.CDLL(None).prctl(15,b'caf\\xc3\\xa9',0,0,0);time.sleep(30)\"],"
+        "start_new_session=True); "
+        "print(child.pid, flush=True)"
+    )
+    started = gate.time.monotonic()
+
+    with pytest.raises(gate.GateError, match="scanner_descendants_remaining"):
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", code],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+
+    assert gate.time.monotonic() - started < 6
+    child_pid = int(output.read_text(encoding="utf-8"))
+    assert child_pid not in gate._linux_descendant_pids(gate.os.getpid())
+
+
+def test_runner_output_link_is_rejected_before_process_start(tmp_path: Path) -> None:
+    output = tmp_path / "runner-output.log"
+    outside = tmp_path / "outside.log"
+    outside.write_text("preserve me", encoding="utf-8")
+    try:
+        output.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlink unavailable: {exc}")
+    with pytest.raises(gate.GateError, match="links or reparse points|created exclusively"):
+        gate._run_bounded_scanner(
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            env={},
+            executable=sys.executable,
+            output_path=output,
+        )
+    assert outside.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_scanner_argv_keeps_strict_approval_as_one_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gate, "_validated_repo_input", lambda repo, path, **_kwargs: Path(repo) / path
+    )
     argv = gate.build_scanner_argv(
         Path("C:/repo"), "a_identity_runtime", Path("C:/results"), dry_run=True
     )
@@ -1399,14 +2193,75 @@ def test_child_environment_is_allowlisted_and_external_state_is_per_run(
     assert "OPENAI_API_KEY" not in env
     assert "DATABASE_URL" not in env
     assert "USERPROFILE" not in env
-    npm_state = state / ".d5-npm-state"
-    assert env["NPM_CONFIG_USERCONFIG"] == str((npm_state / "npm-userconfig").resolve())
-    assert env["NPM_CONFIG_GLOBALCONFIG"] == str((npm_state / "npm-globalconfig").resolve())
-    assert env["NPM_CONFIG_CACHE"] == str((state / "npm-cache").resolve())
+    npm_state = Path(env["NPM_CONFIG_USERCONFIG"]).parent
+    assert npm_state.parent == state.resolve()
+    if gate.os.name == "nt":
+        assert len(npm_state.name) == 4
+    assert env["NPM_CONFIG_GLOBALCONFIG"] == str(npm_state / "npm-globalconfig")
+    assert env["NPM_CONFIG_CACHE"] == str(npm_state.resolve())
     assert Path(env["NPM_CONFIG_USERCONFIG"]).read_text(encoding="utf-8") == ""
     assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).read_text(encoding="utf-8") == ""
     assert "NPM_CONFIG_PREFIX" not in env
     assert "caller-cache" not in env["NPM_CONFIG_CACHE"]
+    gate.cleanup_child_environment(env)
+    assert not npm_state.exists()
+
+
+def test_child_environment_refuses_precreated_npm_config_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state" / "sha" / "shard"
+    outside = tmp_path / "outside-npmrc"
+    outside.write_text("registry=https://attacker.invalid/\n", encoding="utf-8")
+    original_create = gate._create_exclusive_empty_file
+
+    def plant_link(path: Path) -> None:
+        if path.name == "npm-userconfig":
+            try:
+                path.symlink_to(outside)
+            except OSError as exc:
+                pytest.skip(f"file symlink unavailable: {exc}")
+            original_create(path)
+        else:
+            original_create(path)
+
+    monkeypatch.setattr(gate, "_create_exclusive_empty_file", plant_link)
+    monkeypatch.setattr(gate.secrets, "token_urlsafe", lambda _size: "abcd")
+    with pytest.raises(gate.GateError, match="unable to create isolated scanner state"):
+        gate.build_child_environment(state)
+    assert outside.read_text(encoding="utf-8") == "registry=https://attacker.invalid/\n"
+
+
+def test_windows_scanner_cache_path_stays_below_max_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Keep the constructed path representative of a short Windows results root;
+    # pytest's temporary path may itself exceed the legacy MAX_PATH budget.
+    results = Path("C:/temp/d5-results") / ("a" * 40)
+    cwd = results / ".state" / "u12_gate"
+    private_state = results / "abcd"
+    env = {
+        "CODEX_SECURITY_STATE_DIR": str(results),
+        "NPM_CONFIG_CACHE": str(private_state),
+        "NPM_CONFIG_USERCONFIG": str(private_state / "npm-userconfig"),
+        "NPM_CONFIG_GLOBALCONFIG": str(private_state / "npm-globalconfig"),
+    }
+    monkeypatch.setattr(gate.os, "name", "nt")
+
+    code_mode_host = (
+        private_state
+        / "_npx"
+        / ("0" * 16)
+        / "node_modules"
+        / "@openai"
+        / "codex-win32-x64"
+        / "vendor"
+        / "x86_64-pc-windows-msvc"
+        / "bin"
+        / "codex-code-mode-host.exe"
+    )
+    assert len(str(code_mode_host)) < 260
+    assert gate._probe_scanner_runtime_scope(cwd, env) == ("passed", 0)
 
 
 def test_select_allowlisted_environment_normalizes_windows_names() -> None:
@@ -1582,6 +2437,36 @@ def test_preflight_rejects_unwritable_scan_output_before_paid_launch(
     assert (output / "existing-result.json").read_text(encoding="utf-8") == "preserve"
 
 
+def test_preflight_bounds_child_output_before_paid_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gate.shutil, "which", lambda name, **_kwargs: name)
+    original_run = subprocess.run
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        argv = cast(list[str], args[0])
+        if argv and argv[0] == "git":
+            return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
+        return subprocess.CompletedProcess(
+            argv, 0, "x" * (gate.PREFLIGHT_OUTPUT_LIMIT_BYTES + 1), ""
+        )
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    output = tmp_path / "results" / gate.require_clean_revision(repo) / "u12_gate"
+    state = output.parent / ".state" / "u12_gate"
+    env = gate.build_child_environment(
+        state, {"PATH": str(tmp_path)}, codex_state_dir=output.parent
+    )
+
+    checks, reasons, exit_code = gate._execute_preflight(state, env, output)
+
+    assert exit_code == 2
+    assert reasons == ["node_crypto preflight output limit exceeded"]
+    assert checks["node_crypto"] == {"status": "failed", "exit_code": 2}
+    assert not output.exists()
+
+
 def test_preflight_rejects_npm_cache_outside_codex_writable_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1649,7 +2534,15 @@ def test_preflight_keeps_legacy_pass_evidence_compatible_but_requires_new_probe(
             for name in (*gate.PREFLIGHT_CHECKS, "scan_output_write")
         },
     }
+    prior_runtime_runner: dict[str, Any] = {
+        **legacy_runner,
+        "environment_policy_version": gate.SCANNER_RUNTIME_ENVIRONMENT_POLICY_VERSION,
+        "preflight": {
+            name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_EVIDENCE_CHECKS
+        },
+    }
     assert gate._preflight_passes(output_write_runner) is True
+    assert gate._preflight_passes(prior_runtime_runner) is True
     assert gate._preflight_passes(current_runner) is False
     current_runner["preflight"] = {
         name: {"status": "passed", "exit_code": 0} for name in gate.PREFLIGHT_EVIDENCE_CHECKS
@@ -1663,7 +2556,7 @@ def test_environment_preparation_failure_persists_fail_closed_evidence(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     monkeypatch.setattr(
         gate,
@@ -1700,7 +2593,7 @@ def test_run_scan_state_preparation_failure_persists_runner_evidence(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     root = tmp_path / "results"
     sha = gate.require_clean_revision(repo)
@@ -1724,7 +2617,7 @@ def test_run_scan_preflight_failure_never_invokes_scanner(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     monkeypatch.setattr(gate.shutil, "which", lambda name, **_kwargs: name)
     calls: list[list[str]] = []
@@ -1758,7 +2651,7 @@ def test_scan_captures_cost_without_embedding_findings(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     result_root = tmp_path / "results"
     completed = subprocess.CompletedProcess(
@@ -1793,7 +2686,7 @@ def test_nonzero_scanner_exit_is_no_pass(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     completed = subprocess.CompletedProcess(args=[], returncode=exit_code, stdout="", stderr="")
     original_run = gate.subprocess.run
@@ -1822,7 +2715,7 @@ def test_finalize_requires_sealed_complete_artifacts_and_dispositions(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -1882,7 +2775,7 @@ def test_finalize_rejects_revision_path_coverage_and_missing_seal(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -1919,6 +2812,9 @@ def test_manifest_rejects_wrong_cost_and_duplicate_shard_ids(tmp_path: Path) -> 
 def _scan_artifacts_for_run(output: Path, shard: str, sha: str) -> None:
     scan_id = f"scan-{shard}"
     include_paths = gate.SHARDS[shard]["paths"]
+    receipt_path = output / "artifacts" / "review.txt"
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text("Reviewed scoped files.\n", encoding="utf-8")
     coverage = {
         "documentType": "codex-security.coverage",
         "schemaVersion": "1.0",
@@ -1928,7 +2824,15 @@ def _scan_artifacts_for_run(output: Path, shard: str, sha: str) -> None:
         "inventoryStrategy": "scoped_path",
         "includePaths": include_paths,
         "excludePaths": [],
-        "surfaces": [],
+        "surfaces": [
+            {
+                "id": "surface-test",
+                "label": "fixture review",
+                "disposition": "no_issue_found",
+                "notes": "The scoped test artifact was reviewed.",
+                "receiptRefs": ["artifacts/review.txt"],
+            }
+        ],
         "explicitExclusions": [],
         "deferred": [],
     }
@@ -1963,9 +2867,9 @@ def _scan_artifacts_for_run(output: Path, shard: str, sha: str) -> None:
                 {
                     "path": name,
                     "sha256": hashlib.sha256((output / name).read_bytes()).hexdigest(),
-                    "mediaType": "application/json",
+                    "mediaType": "application/json" if name.endswith(".json") else "text/plain",
                 }
-                for name in ("coverage.json", "findings.json")
+                for name in ("coverage.json", "findings.json", "artifacts/review.txt")
             ],
         },
     }
@@ -1985,7 +2889,7 @@ def test_real_scan_requires_numeric_cost_and_rejects_cap(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     original_run = gate.subprocess.run
     completed = subprocess.CompletedProcess(
@@ -2015,7 +2919,7 @@ def test_real_scan_validates_sealed_artifacts_immediately(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     original_run = gate.subprocess.run
 
@@ -2047,7 +2951,7 @@ def test_shared_baseline_rejects_different_revision(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     root = tmp_path / "results"
     root.mkdir()
@@ -2063,7 +2967,7 @@ def test_finalize_aggregates_cost_and_rejects_total_cap(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2083,7 +2987,7 @@ def test_finalize_requires_provenance_and_finding_controls(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2310,7 +3214,7 @@ def test_medium_metadata_must_be_nonempty_text(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2343,7 +3247,7 @@ def test_low_backlog_reference_must_be_nonempty_text(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2364,7 +3268,7 @@ def test_runner_artifact_paths_list_all_evidence_files(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     completed = subprocess.CompletedProcess(
         args=[], returncode=0, stdout="estimated cost: $1.00\n", stderr=""
@@ -2412,7 +3316,7 @@ def test_dry_run_failure_persists_sanitized_evidence_and_rerun_refuses(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     root = tmp_path / "dry-runs"
     monkeypatch.setattr(gate, "DRY_RUN_ROOT", root)
@@ -2445,7 +3349,7 @@ def test_dry_run_success_reports_retained_evidence_path(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     root = tmp_path / "dry-runs"
     monkeypatch.setattr(gate, "DRY_RUN_ROOT", root)
@@ -2470,7 +3374,7 @@ def test_dry_run_root_inside_repo_is_rejected(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     monkeypatch.setattr(gate, "DRY_RUN_ROOT", repo / "dry-runs")
     rc = gate.main(["dry-run", "--repo", str(repo), "--shard", gate.SHARD_IDS[0]])
@@ -2484,7 +3388,7 @@ def test_real_scan_cli_records_effective_failure_and_sanitized_reason(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     root = tmp_path / "real-results"
     scanner = _mock_scanner(
@@ -2524,7 +3428,7 @@ def test_real_scan_cli_records_success_and_exact_retention(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     root = tmp_path / "real-results"
     original_run = gate.subprocess.run
@@ -2568,10 +3472,11 @@ def test_real_scan_cli_records_success_and_exact_retention(
     environment = cast(dict[str, str], scanner_runtime["environment"])
     state = evidence.parent / ".state" / gate.SHARD_IDS[0]
     assert Path(environment["CODEX_SECURITY_STATE_DIR"]) == evidence.parent.resolve()
-    npm_config = state.parent.parent / ".d5-npm-state"
-    assert Path(environment["NPM_CONFIG_USERCONFIG"]) == npm_config / "npm-userconfig"
+    npm_config = Path(environment["NPM_CONFIG_USERCONFIG"]).parent
+    assert npm_config.parent == evidence.parent.resolve()
     assert Path(environment["NPM_CONFIG_GLOBALCONFIG"]) == npm_config / "npm-globalconfig"
-    assert Path(environment["NPM_CONFIG_CACHE"]) == state.parent.parent / "npm-cache"
+    assert Path(environment["NPM_CONFIG_CACHE"]) == npm_config
+    assert not npm_config.exists()
     assert Path(scanner_runtime["cwd"]) == state.resolve()
     finished = gate.datetime.fromisoformat(runner["finished_at"])
     retention = gate.datetime.fromisoformat(runner["retention_until"])
@@ -2584,7 +3489,7 @@ def test_finalize_rejects_too_short_retention(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2609,7 +3514,7 @@ def test_finalize_rejects_malformed_preflight(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2646,10 +3551,10 @@ def test_private_state_flow_stays_outside_repo(tmp_path: Path) -> None:
     )
     assert repo.resolve() not in output.resolve().parents
     assert Path(env["CODEX_SECURITY_STATE_DIR"]) == output.parent.resolve()
-    npm_config = output.parent / ".d5-npm-state"
-    assert Path(env["NPM_CONFIG_USERCONFIG"]).is_relative_to(npm_config.resolve())
-    assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(npm_config.resolve())
-    assert Path(env["NPM_CONFIG_CACHE"]).is_relative_to(output.parent.resolve())
+    npm_config = Path(env["NPM_CONFIG_USERCONFIG"]).parent
+    assert npm_config.is_relative_to(output.parent.resolve())
+    assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).is_relative_to(npm_config)
+    assert Path(env["NPM_CONFIG_CACHE"]).is_relative_to(npm_config)
     assert "caller-token-config" not in json.dumps(env)
     assert "caller-prefix" not in json.dumps(env)
 
@@ -2660,7 +3565,7 @@ def test_finalize_rejects_boolean_exit_codes(
 ) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setattr(
-        gate, "validate_manifest", lambda _repo: {key: [] for key in gate.SHARD_IDS}
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
     )
     sha = _git(repo, "rev-parse", "HEAD")
     root = tmp_path / "results"
@@ -2846,7 +3751,7 @@ def test_round2_requires_scan_identity_rule_identity_and_open_questions_shape(
     assert "coverage_invalid" in result["reason_codes"]
 
 
-def test_scanner_coverage_shape_accepts_exclusion_notes_and_empty_receipt_refs(
+def test_scanner_coverage_rejects_empty_receipt_refs_even_with_review_notes(
     tmp_path: Path,
 ) -> None:
     sha = "d" * 40
@@ -2864,6 +3769,7 @@ def test_scanner_coverage_shape_accepts_exclusion_notes_and_empty_receipt_refs(
             "id": "surface-test",
             "label": "test",
             "disposition": "no_issue_found",
+            "notes": "Reviewed the included source scope.",
             "receiptRefs": "",
         }
     ]
@@ -2884,7 +3790,7 @@ def test_scanner_coverage_shape_accepts_exclusion_notes_and_empty_receipt_refs(
         validate_runner_outcome=False,
     )
 
-    assert "coverage_invalid" not in result["reason_codes"]
+    assert "coverage_invalid" in result["reason_codes"]
 
 
 def test_round2_parser_requires_inspect_scan_dir_and_python_finalize_root() -> None:
@@ -3137,7 +4043,7 @@ def test_malformed_zero_finding_sidecar_blocks_governance(tmp_path: Path) -> Non
     )
 
     assert result["governance_pass"] is False
-    assert result["reason_codes"] == ["disposition_invalid"]
+    assert "disposition_invalid" in result["reason_codes"]
 
 
 def _filesystem_git_layout(
@@ -3248,14 +4154,14 @@ def test_unreadable_zero_finding_sidecar_blocks_governance(
     output = _artifacts(tmp_path / "evidence", gate.SHARD_IDS[0], sha)
     sidecar = tmp_path / "sidecar.json"
     sidecar.write_text(json.dumps({"schema_version": "1.0", "findings": []}), encoding="utf-8")
-    original = Path.read_bytes
+    original = gate._open_regular_file_no_follow
 
-    def guarded_read_bytes(path: Path) -> bytes:
+    def guarded_open(path: Path) -> int:
         if path.resolve() == sidecar.resolve():
             raise PermissionError("denied")
         return original(path)
 
-    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    monkeypatch.setattr(gate, "_open_regular_file_no_follow", guarded_open)
     result = gate.evaluate_artifacts(
         output,
         shard=gate.SHARD_IDS[0],
@@ -3265,7 +4171,7 @@ def test_unreadable_zero_finding_sidecar_blocks_governance(
         validate_runner_outcome=False,
     )
     assert result["governance_pass"] is False
-    assert result["reason_codes"] == ["disposition_invalid"]
+    assert "disposition_invalid" in result["reason_codes"]
 
 
 def test_reason_codes_use_global_precedence_for_multiple_domains(tmp_path: Path) -> None:
@@ -3466,6 +4372,68 @@ def test_fixed_artifact_link_escape_is_rejected(tmp_path: Path, name: str) -> No
     assert result["gate_pass"] is False
 
 
+def test_findings_read_rejects_link_swapped_after_path_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sha = "a" * 40
+    output = _artifacts(tmp_path / "results", gate.SHARD_IDS[0], sha)
+    outside = tmp_path / "outside-findings.json"
+    outside.write_text("{}", encoding="utf-8")
+    findings = output / "findings.json"
+    findings.unlink()
+    try:
+        findings.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlink unavailable: {exc}")
+    original = gate._descendant_file
+    monkeypatch.setattr(
+        gate,
+        "_descendant_file",
+        lambda root, name: findings if name == "findings.json" else original(root, name),
+    )
+
+    result = gate.evaluate_artifacts(
+        output,
+        shard=gate.SHARD_IDS[0],
+        expected_sha=sha,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=False,
+    )
+
+    assert "malformed_json" in result["reason_codes"]
+    assert result["gate_pass"] is False
+
+
+@pytest.mark.skipif(gate.os.name == "nt", reason="Windows has no POSIX FIFO files")
+def test_findings_read_rejects_fifo_swapped_after_path_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sha = "b" * 40
+    output = _artifacts(tmp_path / "results", gate.SHARD_IDS[0], sha)
+    findings = output / "findings.json"
+    findings.unlink()
+    os.mkfifo(findings)
+    original = gate._descendant_file
+    monkeypatch.setattr(
+        gate,
+        "_descendant_file",
+        lambda root, name: findings if name == "findings.json" else original(root, name),
+    )
+
+    result = gate.evaluate_artifacts(
+        output,
+        shard=gate.SHARD_IDS[0],
+        expected_sha=sha,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=False,
+    )
+
+    assert "malformed_json" in result["reason_codes"]
+    assert result["gate_pass"] is False
+
+
 def test_missing_artifact_preserves_independent_runner_failure_reasons(tmp_path: Path) -> None:
     sha = "d" * 40
     output = _artifacts(tmp_path, gate.SHARD_IDS[0], sha, cost_usd=11.75)
@@ -3537,3 +4505,231 @@ def test_malformed_findings_never_reads_governance_sidecar(
     assert "finding_invalid" in result["reason_codes"]
     assert not any(code.startswith("disposition_") for code in result["reason_codes"])
     assert result["governance_pass"] is False
+
+
+def test_git_invocations_pin_operator_configured_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    trusted_git = tmp_path / "trusted-git.exe"
+    trusted_git.write_bytes(b"test executable placeholder")
+    monkeypatch.setenv("D5_TRUSTED_GIT_EXECUTABLE", str(trusted_git))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "attacker.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "attacker-worktree"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.replaceRefs")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="expected-sha\n", stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    assert gate._git(repo, "rev-parse", "HEAD") == "expected-sha"
+    assert calls[0][0][0] == "git"
+    assert calls[0][0][1:] == ["--no-replace-objects", "rev-parse", "HEAD"]
+    assert calls[0][1]["executable"] == str(trusted_git.resolve())
+    assert "GIT_DIR" not in calls[0][1]["env"]
+    assert "GIT_WORK_TREE" not in calls[0][1]["env"]
+    assert calls[0][1]["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_scanner_rejects_linked_knowledge_base_outside_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    outside = tmp_path / "private.md"
+    outside.write_text("private host data\n", encoding="utf-8")
+    (repo / "SECURITY.md").symlink_to(outside)
+    (repo / "docs" / "security").mkdir(parents=True)
+    (repo / "docs" / "security" / "threat-model.md").write_text("model\n", encoding="utf-8")
+    (repo / "docs" / "security" / "scan-policy.md").write_text("policy\n", encoding="utf-8")
+    monkeypatch.setattr(
+        gate, "_profile_units", lambda _profile, _manifest=None: {"test-unit": {"paths": ["app"]}}
+    )
+
+    with pytest.raises(gate.GateError, match="links or reparse points"):
+        gate.build_scanner_argv(repo, "test-unit", tmp_path / "results")
+
+
+@pytest.mark.parametrize(
+    "surfaces",
+    [
+        [],
+        [
+            {
+                "id": "surface-test",
+                "label": "test",
+                "disposition": "no_issue_found",
+                "receiptRefs": [],
+            }
+        ],
+    ],
+)
+def test_complete_coverage_requires_reviewed_surface_notes(
+    tmp_path: Path, surfaces: list[dict[str, Any]]
+) -> None:
+    sha = "e" * 40
+    output = _artifacts(tmp_path, gate.SHARD_IDS[0], sha)
+    coverage_path = output / "coverage.json"
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage["surfaces"] = surfaces
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    _update_artifact_digest(output, "coverage.json")
+
+    result = gate.evaluate_artifacts(
+        output,
+        shard=gate.SHARD_IDS[0],
+        expected_sha=sha,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=False,
+    )
+
+    assert "coverage_invalid" in result["reason_codes"]
+
+
+def test_complete_coverage_must_map_each_assigned_file_to_its_own_receipt(
+    tmp_path: Path,
+) -> None:
+    sha = "c" * 40
+    shard = "u12_gate"
+    output = _artifacts(tmp_path, shard, sha, profile="micro-v2")
+    coverage_path = output / "coverage.json"
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage["coveredPaths"] = ["README.md", "scripts/d5_security_gate.py"]
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    _update_artifact_digest(output, "coverage.json")
+
+    result = gate.evaluate_artifacts(
+        output,
+        shard=shard,
+        expected_sha=sha,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=False,
+        profile="micro-v2",
+        expected_assigned_paths=["README.md", "scripts/d5_security_gate.py"],
+    )
+
+    assert "coverage_invalid" in result["reason_codes"]
+
+
+def test_micro_inspect_requires_exact_repo_assignments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "repo-root").mkdir()
+    repo = _repo(tmp_path / "repo-root")
+    sha = gate.require_clean_revision(repo)
+    shard = "u03_events_hooks"
+    output = _artifacts(tmp_path / "results", shard, sha, profile="micro-v2")
+    assignments = {unit: ["README.md"] for unit in gate.MICRO_UNIT_IDS}
+    monkeypatch.setattr(gate, "_validate_repo_manifest", lambda *_args: assignments)
+    assigned = sorted(assignments[shard])
+    assert assigned
+    coverage_path = output / "coverage.json"
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage["coveredPaths"] = assigned
+    coverage["surfaces"] = coverage["surfaces"][:1]
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    _update_artifact_digest(output, "coverage.json")
+
+    result = gate.inspect_artifacts(output, sha, shard, profile="micro-v2", repo=repo)
+
+    assert result["gate_pass"] is False
+    assert "coverage_invalid" in result["reason_codes"]
+    missing_repo_result = gate.inspect_artifacts(output, sha, shard, profile="micro-v2")
+    assert missing_repo_result["gate_pass"] is False
+    assert missing_repo_result["reason_codes"] == ["invalid_arguments"]
+
+
+def test_not_reproduced_disposition_requires_reviewer_and_hashed_evidence(
+    tmp_path: Path,
+) -> None:
+    sha = "f" * 40
+    shard = gate.SHARD_IDS[0]
+    output = _artifacts(tmp_path / "results", shard, sha)
+    occurrence = "occ_" + "2" * 24
+    finding = _canonical_finding("low")
+    _write_findings(
+        output / "findings.json",
+        {
+            "documentType": "codex-security.findings",
+            "schemaVersion": "1.0",
+            "scanId": f"scan-{shard}",
+            "findings": [finding],
+        },
+        update_digest=True,
+    )
+    evidence = tmp_path / "dispositions" / sha / "evidence" / "review.txt"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("Reproduction steps and observed result.\n", encoding="utf-8")
+    entry = {
+        "occurrenceId": occurrence,
+        "classification": "not_reproduced",
+        "rationale": "The reported path did not reproduce.",
+        "remediation_acceptance": "No remediation is needed.",
+        "backlog_reference": "SEC-123",
+    }
+    sidecar = _write_sidecar(
+        tmp_path / "dispositions", sha, shard, output / "findings.json", [entry]
+    )
+    result = gate.evaluate_artifacts(
+        output,
+        shard=shard,
+        expected_sha=sha,
+        dispositions=sidecar,
+        require_dispositions=True,
+        validate_runner_outcome=False,
+    )
+    assert "disposition_incomplete" in result["reason_codes"]
+
+    entry.update(
+        {
+            "reviewer": "security-reviewer@example.invalid",
+            "evidenceRefs": [
+                {
+                    "path": "evidence/review.txt",
+                    "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                }
+            ],
+        }
+    )
+    sidecar = _write_sidecar(
+        tmp_path / "dispositions", sha, shard, output / "findings.json", [entry]
+    )
+    result = gate.evaluate_artifacts(
+        output,
+        shard=shard,
+        expected_sha=sha,
+        dispositions=sidecar,
+        require_dispositions=True,
+        validate_runner_outcome=False,
+    )
+    assert result["gate_pass"] is False
+    assert "disposition_reviewer_untrusted" in result["reason_codes"]
+
+    evidence.write_text("", encoding="utf-8")
+    entry["evidenceRefs"] = [
+        {
+            "path": "evidence/review.txt",
+            "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+        }
+    ]
+    sidecar = _write_sidecar(
+        tmp_path / "dispositions", sha, shard, output / "findings.json", [entry]
+    )
+    result = gate.evaluate_artifacts(
+        output,
+        shard=shard,
+        expected_sha=sha,
+        dispositions=sidecar,
+        require_dispositions=True,
+        validate_runner_outcome=False,
+    )
+    assert result["gate_pass"] is False
+    assert "disposition_incomplete" in result["reason_codes"]
+    assert "disposition_reviewer_untrusted" in result["reason_codes"]

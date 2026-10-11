@@ -60,9 +60,13 @@ artifacts and per-unit cost outside the repository and all worktrees for 30 days
 ## Tool and target
 
 - Use the standalone pinned CLI `@openai/codex-security@0.1.18`; do not add it to the Python project or install a commit hook.
+- Before invoking the D.5 gate, set `D5_TRUSTED_GIT_EXECUTABLE` to the operator-approved absolute Git executable path. Do not derive it from repository files or a repository-controlled `PATH`; the gate rejects missing, relative, linked, and repository-contained paths.
 - Use local ChatGPT authentication with explicit `--auth chatgpt`.
 - Formal baseline targets a clean exact commit in a temporary detached worktree. A dirty working-tree scan is diagnostic only.
+- Before invoking the scanner, materialize that commit into a private detached snapshot and re-check the exact SHA; the live checkout is never the scanner's source. Remove the snapshot after execution.
 - Keep Codex Security state and results outside the repository and enclosing worktree, in private local directories. Retain artifacts for 30 days.
+- Reject symlink/reparse-point traversal in results, scanner state, and artifact paths. Protect the results root and exact-SHA directory with a Windows owner-only protected DACL (including inheritance); put npm configuration and cache files in a short per-run directory with an owner-only POSIX mode or a Windows protected DACL, and create each config file exclusively. Read the manifest from the exact commit's bounded Git blob, then bind assignments, authorization, scanner arguments, runner, and artifact evaluation to that same manifest object. Open untrusted files without following links and without blocking on FIFOs or other non-regular files. Keep the scan snapshot outside scanner-writable state and verify it remains clean at the authorized SHA after scanning. Bound scanner execution to one hour and captured output to 8 MiB; preflight output is limited to 64 KiB. Terminate remaining scanner process descendants when the root process exits, including when post-launch output or cleanup raises. JSON artifacts, authorization, claim, ledger, receipt, baseline, and manifest files are limited to 8 MiB and 128 nesting levels; the manifest is limited to 128 artifacts, findings to 10,000, and coverage to 256 surfaces. For micro-v2, `inspect-artifacts` requires `--repo` at the exact clean SHA so the gate can reconstruct the trusted assigned-file inventory. Complete coverage must list the exact assigned file set; each file must have its own terminal surface and distinct sealed receipt reference. Every complete coverage surface must cite at least one sealed artifact receipt. Disposition sidecars allow at most 1,024 entries, eight evidence references per entry, 1 MiB per non-empty evidence file, and 8 MiB total unique evidence. Exceeding a bound fails closed.
+- Bounded process-tree containment is supported on Windows (Job Objects) and Linux (child subreaper plus process groups); other operating systems fail closed before scanner launch.
 - Before scanning, allow only required environment variables; remove database, cloud, GitHub, and unrelated API credentials.
 
 ## D.5 sequence
@@ -78,7 +82,7 @@ artifacts and per-unit cost outside the repository and all worktrees for 30 days
 - Exit 1, exit 2, exit 130, exit 143, cost-cap termination, missing artifacts, or incomplete coverage is no-pass.
 - Confirmed reachable Critical or High findings block the next Slice and release; fixes require a separate reviewed task and fresh verification.
 - Medium findings require an owner, disposition, due date, and compensating control or risk acceptance; Low findings enter the backlog.
-- False positives require an occurrence ID, evidence, and reviewer. Do not publish raw findings, source excerpts, credentials, or PoCs.
+- A `not_reproduced` disposition requires an authenticated reviewer trust mechanism. The current gate has no configured trust root, so it rejects every `not_reproduced` entry even when the sidecar supplies a reviewer name and hashed evidence; those fields alone do not authenticate approval. Do not publish raw findings, source excerpts, credentials, or PoCs.
 
 ## Cadence and scope boundaries
 
