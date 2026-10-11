@@ -2368,13 +2368,14 @@ def run_scan(
         )
         if scanner_executable is None:
             raise GateError("npx executable is unavailable")
+        runner_output_path = state_dir / "runner-output.log"
         try:
             scanner_exit_code, console = _run_bounded_scanner(
                 argv,
                 cwd=state_dir.resolve(),
                 env=child_env,
                 executable=scanner_executable,
-                output_path=output / "runner-output.log",
+                output_path=runner_output_path,
             )
         except GateError as exc:
             if str(exc) not in {
@@ -2387,6 +2388,9 @@ def run_scan(
             scanner_exit_code = 2
             scanner_limit_failure = str(exc)
             console = exc.output if isinstance(exc, BoundedScannerError) else ""
+        finally:
+            if runner_output_path.is_file():
+                os.replace(runner_output_path, output / "runner-output.log")
     except BaseException:
         cleanup_child_environment(child_env)
         raise

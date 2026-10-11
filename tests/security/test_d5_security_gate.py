@@ -494,14 +494,15 @@ def test_active_micro_dry_run_accepts_nonpilot_manifest_unit(
         "_validate_repo_manifest",
         lambda *_args: {"u14_dependencies": ["README.md"]},
     )
-    monkeypatch.setattr(
-        gate,
-        "build_child_environment",
-        lambda state, *_args, **_kwargs: {
+
+    def build_child_environment(state: Path, *_args: object, **_kwargs: object) -> dict[str, str]:
+        state.mkdir(parents=True, exist_ok=True)
+        return {
             "PATH": str(tmp_path),
             "CODEX_SECURITY_STATE_DIR": str(state.resolve()),
-        },
-    )
+        }
+
+    monkeypatch.setattr(gate, "build_child_environment", build_child_environment)
     monkeypatch.setattr(
         gate,
         "_execute_preflight",
@@ -3290,6 +3291,45 @@ def test_runner_artifact_paths_list_all_evidence_files(
         "report": "report.md",
         "runner_output": "runner-output.log",
     }
+
+
+def test_scan_captures_output_outside_scanner_output_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(
+        gate, "validate_manifest", lambda _repo, **_kwargs: {key: [] for key in gate.SHARD_IDS}
+    )
+    scanner_invocations: list[tuple[Path, Path]] = []
+
+    def run_scanner(
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        executable: str,
+        output_path: Path,
+        timeout_seconds: float | None = None,
+        output_limit_bytes: int | None = None,
+    ) -> tuple[int, str]:
+        del cwd, env, executable, timeout_seconds, output_limit_bytes
+        if "@openai/codex-security@0.1.18" in argv:
+            scan_output = Path(argv[argv.index("--output-dir") + 1])
+            scanner_invocations.append((output_path, scan_output))
+            output_path.write_text("dry-run complete\n", encoding="utf-8")
+            return 0, "dry-run complete\n"
+        return 0, "preflight complete\n"
+
+    monkeypatch.setattr(gate, "_run_bounded_scanner", run_scanner)
+    result = gate.run_scan(repo, tmp_path / "results", "a_identity_runtime", dry_run=True)
+
+    assert result.exit_code == 0
+    assert len(scanner_invocations) == 1
+    log_path, scanner_output = scanner_invocations[0]
+    assert log_path.parent != scanner_output
+    assert (result.output_dir / "runner-output.log").read_text(encoding="utf-8") == (
+        "dry-run complete\n"
+    )
 
 
 def _mock_scanner(
