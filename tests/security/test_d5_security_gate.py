@@ -1870,10 +1870,12 @@ def test_scan_snapshot_is_detached_from_mutable_checkout(tmp_path: Path) -> None
     repo = _repo(tmp_path)
     sha = gate.require_clean_revision(repo)
     original = (repo / "README.md").read_text(encoding="utf-8")
-    snapshot_root, snapshot = gate._materialize_scan_snapshot(repo, sha, tmp_path)
+    scanner_output = tmp_path / "external-results" / sha / "u12_gate"
+    scanner_output.mkdir(parents=True)
+    snapshot_root, snapshot = gate._materialize_scan_snapshot(repo, sha, scanner_output.parent)
     try:
-        assert snapshot_root.parent == tmp_path.parent
-        assert snapshot_root.parent != tmp_path
+        assert snapshot_root.parent == repo.parent.resolve()
+        assert snapshot_root.parent != scanner_output.parent.resolve()
         assert gate.require_clean_revision(snapshot) == sha
         (repo / "README.md").write_text("changed after snapshot\n", encoding="utf-8")
         assert (snapshot / "README.md").read_text(encoding="utf-8") == original
@@ -1881,6 +1883,14 @@ def test_scan_snapshot_is_detached_from_mutable_checkout(tmp_path: Path) -> None
         import shutil
 
         shutil.rmtree(snapshot_root)
+
+
+def test_scan_snapshot_rejects_scanner_writable_workspace_parent(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    sha = gate.require_clean_revision(repo)
+
+    with pytest.raises(gate.GateError, match="outside scanner state"):
+        gate._materialize_scan_snapshot(repo, sha, repo.parent)
 
 
 def test_json_artifact_size_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

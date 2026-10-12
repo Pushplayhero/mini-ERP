@@ -601,17 +601,37 @@ def _safe_create_descendant(root: Path, relative: Path) -> Path:
 
 
 def _materialize_scan_snapshot(repo: Path, sha: str, parent: Path) -> tuple[Path, Path]:
-    """Create a detached private snapshot so the scanner never reads a mutable checkout."""
-    snapshot_parent = Path(os.path.abspath(parent)).parent
+    """Create a private detached snapshot inside the authorized workspace."""
+    repo = repo.resolve(strict=True)
+    snapshot_parent = repo.parent
+    scanner_state = parent.resolve(strict=True)
     if (
         _path_has_reparse_component(snapshot_parent)
-        or parent.resolve() == snapshot_parent.resolve()
+        or snapshot_parent.resolve(strict=True) == repo
+        or scanner_state == snapshot_parent
+        or scanner_state in snapshot_parent.parents
     ):
-        raise GateError("scan snapshot must be outside scanner writable state")
-    root = Path(tempfile.mkdtemp(prefix="d5-scan-snapshot-", dir=snapshot_parent))
+        raise GateError("scan snapshot must be in the trusted workspace outside scanner state")
+
+    root: Path | None = None
+    for _ in range(10):
+        candidate = snapshot_parent / f"d5-scan-snapshot-{secrets.token_hex(8)}"
+        try:
+            if os.name == "nt":
+                _create_private_windows_directory(candidate)
+            else:
+                candidate.mkdir(mode=0o700)
+            root = candidate
+            break
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise GateError("cannot create private scan snapshot in trusted workspace") from exc
+    if root is None:
+        raise GateError("cannot allocate private scan snapshot directory")
     snapshot = root / "repo"
     try:
-        _git(repo, "clone", "--no-hardlinks", "--no-checkout", str(repo.resolve()), str(snapshot))
+        _git(repo, "clone", "--no-hardlinks", "--no-checkout", str(repo), str(snapshot))
         _git(snapshot, "checkout", "--detach", sha)
         if require_clean_revision(snapshot) != sha:
             raise GateError("scan snapshot does not match the authorized exact SHA")
