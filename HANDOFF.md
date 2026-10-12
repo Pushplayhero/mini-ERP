@@ -2,18 +2,46 @@
 
 Updated 2026-10-12. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
 
-## Current status — D.5 gate hardening
+## Product and repository status — 2026-10-12
 
-- The work was based on exact parent commit `b56c164e6e9a7c589e9253e42db96048af197b82` in the detached worktree `C:\Program Files\mini-ERP\mini-erp\.worktrees\d5-u12-verify-3b5d4d7`.
-- This checkpoint hardens Git subprocess isolation in `scripts/d5_security_gate.py`, accepts the narrowly sealed receipt-free coverage form emitted by `codex-security-plugin@0.1.22`, adds regression tests, and documents the gate contract in `docs/security/scan-policy.md`.
-- Verification on this exact worktree: `tests/security/test_d5_security_gate.py` — **278 passed, 3 skipped in 484.03s**; Ruff check and format check passed; mypy strict passed using `python -m mypy` (the uv trampoline could not canonicalize its script path); import-linter reported **9 kept, 0 broken**; `git diff --check` passed.
-- The changes are committed locally in the current checkpoint; use `git log -1` for its commit SHA. The worktree remains detached and is not pushed or merged.
-- No paid security scan was launched for this checkpoint, and no prior scan artifact, paid claim, or authorization was altered. This change does not establish a new scan result or claim that the overall D.5 gate passes. Before any later scan, verify that its authorization names the exact commit SHA and unit being scanned.
-- The current checkpoint concerns the D.5 runner's Windows and Git isolation plus u12 artifact compatibility. It does not change the previously reported u12 application findings or their remediation status.
+### Product
 
-## Recommended next action
+mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. The implemented Phase 1 order-to-cash flow covers master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting. It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries. ADR-009 platform authentication and permissions are implemented.
 
-Review the local checkpoint and handoff, then decide whether to run a new exact-SHA static verification or security scan. Do not reuse a grant bound to a different SHA or unit; a paid scan requires authorization for the exact checkpoint SHA.
+Phase 1 is described as complete in both READMEs. The product is still an API kernel: there is no frontend, dynamic plugin loader or sandbox, workflow/approval engine, admin custom-field UI, or Taiwan tax/e-invoice integration. The in-process credit-limit plugin is trusted code and must not be treated as sandboxed. Long-term Platform → Suites → Taiwan localization plans are in `docs/open-erp-master-plan.md`.
+
+### Repository checkpoint and GitHub publication
+
+- The D.5 work was based on parent SHA `b56c164e6e9a7c589e9253e42db96048af197b82` in `C:\Program Files\mini-ERP\mini-erp\.worktrees\d5-u12-verify-3b5d4d7`.
+- After the handoff update commit, publish this checkpoint as topic branch `codex/d5-u12-gate-hardening-20261012`; do not update `main`.
+- After the handoff update commit, this branch will contain 13 commits after local `main`. Local `main` is itself 11 commits ahead of `origin/main`, so publishing this topic branch makes those 24 commits reachable on GitHub. The branch does not change `main`.
+- The D.5 gate-hardening commit is `95c53820a9889c659c34d39c3d1460ec0b66b6d6`; this product-state update is a separate handoff commit on top.
+
+### Security scan status
+
+The owner confirmed that completed u01–u11 scans remain acceptable pass evidence even when their exact SHAs differ. Preserve that evidence; do not restart the sequence at u01. The policy text in `docs/security/scan-policy.md` still contains older wording that says different-SHA reports do not cover the new baseline; reconcile that text and artifact aggregation behavior with the owner's explicit decision before making an aggregate gate claim.
+
+| Unit | Evidence and current disposition |
+| --- | --- |
+| u01–u11 | Completed scan evidence is accepted by the owner. Local retained runner receipts were found for u01, u02, and u03; u04–u11 evidence must be read from the retained records already maintained for those units. |
+| u12_gate | Scan at `b56c164e6e9a7c589e9253e42db96048af197b82`, cost **US$9.145969**, returned one validated High finding and exit 1; runner disposition was no-pass (`coverage_invalid`, `finding_invalid`, `scanner_nonzero_exit`). The source finding was repository-controlled fsmonitor execution before Git isolation. This checkpoint adds sterile/bounded Git execution and exact `codex-security-plugin@0.1.22` receipt-free coverage compatibility tests, but it has not been rescanned; no new scan pass is established. |
+| u13_governance | Scan at `454b2e7d90f1751f29a79da40b332b405567f712`, cost **US$11.838334**, hit the cost cap with partial coverage and exit 2. Four validated findings: one Medium for predictable bootstrap credentials and three Low findings for mutable CI actions with repository-write authority, coverage execution under repository-write credentials, and password examples exposing substituted secrets through shell history/curl arguments. These remain the next remediation work; no complete scan or pass evidence exists for the remediation. |
+| u14_dependencies | No retained scan result was found in the local security-results inventory. It remains unverified. The prior sequence stops at u13 because that scan was incomplete and reported findings. |
+
+The overall D.5 gate is **not passed**. The D.5 manifest is `docs/security/d5-shards.json`; the runner and artifact contract are in `scripts/d5_security_gate.py`; policy is in `docs/security/scan-policy.md`. Private scan receipts and reports live under `C:\Users\COSH\.codex\security-results` and must remain private. The configured per-unit maximum is US$15 with cumulative ceiling fields unset; report actual spend per unit. Never reuse authorization, claim, or budget records across a different SHA or unit. Any new paid scan needs authorization bound to the exact commit SHA, unit, inventory, and profile.
+
+### Latest implementation and verification
+
+This checkpoint hardens Git subprocess isolation in `scripts/d5_security_gate.py`, supports only the narrowly sealed receipt-free coverage form emitted by `codex-security-plugin@0.1.22`, adds regression tests, and documents the gate contract in `docs/security/scan-policy.md`.
+
+On the code checkpoint, `tests/security/test_d5_security_gate.py` reported **278 passed, 3 skipped in 484.03s**. Ruff check and format check passed; mypy strict passed using `python -m mypy` (the uv trampoline could not canonicalize its script path); import-linter reported **9 kept, 0 broken**; `git diff --check` passed. No paid scan was launched for this checkpoint, and no prior scan artifact, paid claim, or authorization was altered.
+
+### Next work for Claude Code
+
+1. Fix and verify the four u13 governance findings above. Keep credentials out of command history and curl arguments, replace predictable quick-start secrets with a safe first-run flow, pin CI actions to reviewed immutable references, and prevent untrusted project/dependency code from running with repository-write credentials.
+2. Review the u12 gate-hardening commit and run non-paid static/regression verification on the final handoff commit. Treat the old u12 scan as no-pass; do not claim that the code tests substitute for a new security scan.
+3. After u13 remediation and its required review, resume the manifest sequence at the appropriate unresolved unit. u14 remains unverified. Do not skip the stop-on-finding rule or start a paid scan without exact-SHA authorization.
+4. Keep the overall D.5 result as no-pass until the required unit evidence and governance dispositions are complete.
 
 ---
 
