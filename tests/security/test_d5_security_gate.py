@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -4560,6 +4562,9 @@ def test_malformed_findings_never_reads_governance_sidecar(
 def test_git_invocations_pin_operator_configured_executable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
     repo = _repo(tmp_path)
     trusted_git = tmp_path / "trusted-git.exe"
     trusted_git.write_bytes(b"test executable placeholder")
@@ -4571,18 +4576,319 @@ def test_git_invocations_pin_operator_configured_executable(
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
     calls: list[tuple[list[str], dict[str, Any]]] = []
 
-    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout="expected-sha\n", stderr="")
+    class FakeProcess:
+        pid = 123
+        returncode = 0
+        stdout: io.BytesIO
 
-    monkeypatch.setattr(gate.subprocess, "run", run)
+        def __init__(self, stdout: bytes) -> None:
+            self.stdout = io.BytesIO(stdout)
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is None or timeout > 0
+            return 0
+
+    def popen(argv: list[str], **kwargs: Any) -> FakeProcess:
+        calls.append((argv, kwargs))
+        return FakeProcess(b"expected-sha\n" if argv[-2:] == ["rev-parse", "HEAD"] else b"")
+
+    monkeypatch.setattr(gate.subprocess, "Popen", popen)
+    monkeypatch.setattr(gate, "_create_windows_job", lambda: 456)
+    monkeypatch.setattr(gate, "_assign_and_resume_windows_job", lambda _process, _job: None)
+    monkeypatch.setattr(gate, "_windows_job_has_active_processes", lambda _job: False)
+    monkeypatch.setattr(gate, "_close_windows_job", lambda _job: None)
     assert gate._git(repo, "rev-parse", "HEAD") == "expected-sha"
-    assert calls[0][0][0] == "git"
-    assert calls[0][0][1:] == ["--no-replace-objects", "rev-parse", "HEAD"]
-    assert calls[0][1]["executable"] == str(trusted_git.resolve())
-    assert "GIT_DIR" not in calls[0][1]["env"]
-    assert "GIT_WORK_TREE" not in calls[0][1]["env"]
-    assert calls[0][1]["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+    argv, kwargs = calls[-1]
+    assert argv[0] == "git"
+    assert argv[1:3] == ["--no-replace-objects", "-c"]
+    assert argv[-2:] == ["rev-parse", "HEAD"]
+    assert kwargs["executable"] == str(trusted_git.resolve())
+    assert "GIT_DIR" not in kwargs["env"]
+    assert "GIT_WORK_TREE" not in kwargs["env"]
+    assert kwargs["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert kwargs["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
+
+
+def test_git_invocations_use_sterile_config_and_bounded_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
+    repo = _repo(tmp_path)
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    class FakeProcess:
+        pid = 123
+        returncode = 0
+        stdout: io.BytesIO
+
+        def __init__(self, stdout: bytes) -> None:
+            self.stdout = io.BytesIO(stdout)
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is None or timeout > 0
+            return 0
+
+    def popen(argv: list[str], **kwargs: Any) -> FakeProcess:
+        calls.append((argv, kwargs))
+        return FakeProcess(b"expected-sha\n" if argv[-2:] == ["rev-parse", "HEAD"] else b"")
+
+    monkeypatch.setattr(gate.subprocess, "Popen", popen)
+    monkeypatch.setattr(gate, "_create_windows_job", lambda: 456)
+    monkeypatch.setattr(gate, "_assign_and_resume_windows_job", lambda _process, _job: None)
+    monkeypatch.setattr(gate, "_windows_job_has_active_processes", lambda _job: False)
+    monkeypatch.setattr(gate, "_close_windows_job", lambda _job: None)
+    assert gate._git(repo, "rev-parse", "HEAD") == "expected-sha"
+    argv, kwargs = calls[-1]
+    assert "-c" in argv and "core.fsmonitor=false" in argv
+    assert "core.hooksPath" in " ".join(argv)
+    assert kwargs["creationflags"] & 0x00000004  # CREATE_SUSPENDED
+    env = kwargs["env"]
+    assert "GIT_DIR" not in env
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert "PATH" in env
+
+
+def test_git_invocations_disable_repository_filter_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
+    repo = _repo(tmp_path)
+    _git(repo, "config", "filter.untrusted.clean", "payload --clean")
+    _git(repo, "config", "filter.untrusted.smudge", "payload --smudge")
+    config = subprocess.run(
+        ["git", "config", "--local", "--no-includes", "--null", "--list"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    class FakeProcess:
+        pid = 123
+        returncode = 0
+
+        def __init__(self, stdout: bytes) -> None:
+            self.stdout = io.BytesIO(stdout)
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is None or timeout > 0
+            return 0
+
+    commands: list[list[str]] = []
+
+    def popen(argv: list[str], **_kwargs: Any) -> FakeProcess:
+        commands.append(argv)
+        output = b"revision\n" if argv[-2:] == ["rev-parse", "HEAD"] else config
+        return FakeProcess(output)
+
+    monkeypatch.setattr(gate.subprocess, "Popen", popen)
+    monkeypatch.setattr(gate, "_create_windows_job", lambda: 456)
+    monkeypatch.setattr(gate, "_assign_and_resume_windows_job", lambda _process, _job: None)
+    monkeypatch.setattr(gate, "_windows_job_has_active_processes", lambda _job: False)
+    monkeypatch.setattr(gate, "_close_windows_job", lambda _job: None)
+    assert gate._git(repo, "rev-parse", "HEAD") == "revision"
+    command = " ".join(commands[-1])
+    assert "filter.untrusted.clean=" in command
+    assert "filter.untrusted.smudge=" in command
+    assert "filter.untrusted.process=" in command
+    assert "filter.untrusted.required=false" in command
+
+
+def test_git_invocations_reject_repository_config_includes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
+    repo = _repo(tmp_path)
+    _git(repo, "config", "include.path", str(tmp_path / "external-git-config"))
+
+    with pytest.raises(gate.GateError, match="configuration includes are not allowed"):
+        gate._git(repo, "status", "--porcelain")
+
+
+def test_windows_git_assignment_failure_terminates_suspended_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows Job Object behavior")
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
+    repo = _repo(tmp_path)
+
+    class FakeProcess:
+        pid = 123
+        returncode = None
+        stdout = io.BytesIO()
+        killed = False
+        waited = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is None or timeout > 0
+            self.waited = True
+            self.returncode = 1
+            return 1
+
+    process = FakeProcess()
+    monkeypatch.setattr(gate.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(gate, "_create_windows_job", lambda: 456)
+    monkeypatch.setattr(
+        gate,
+        "_assign_and_resume_windows_job",
+        lambda _process, _job: (_ for _ in ()).throw(OSError("assignment failed")),
+    )
+    monkeypatch.setattr(gate, "_close_windows_job", lambda _job: None)
+
+    with pytest.raises(gate.GateError, match="git command failed"):
+        gate._git(repo, "status")
+    assert process.killed is True
+    assert process.waited is True
+
+
+def test_repository_fsmonitor_helper_is_not_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
+    repo = _repo(tmp_path)
+    marker = tmp_path / "fsmonitor-invoked"
+    if os.name == "nt":
+        helper = tmp_path / "fsmonitor.cmd"
+        helper.write_text(f'@echo off\r\necho invoked>"{marker}"\r\n', encoding="utf-8")
+    else:
+        helper = tmp_path / "fsmonitor.sh"
+        helper.write_text(f"#!/bin/sh\nprintf invoked > '{marker}'\n", encoding="utf-8")
+        helper.chmod(0o700)
+    _git(repo, "config", "core.fsmonitor", str(helper))
+
+    assert gate.require_clean_revision(repo) == _git(repo, "rev-parse", "HEAD")
+    assert not marker.exists()
+
+
+def test_repository_filter_helper_is_not_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        gate, "_trusted_git_executable", lambda _repo: Path(os.environ["D5_TRUSTED_GIT_EXECUTABLE"])
+    )
+    repo = _repo(tmp_path)
+    attributes = repo / ".gitattributes"
+    attributes.write_text("README.md filter=tripwire\n", encoding="utf-8")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-qm", "add filter attribute")
+    marker = tmp_path / "filter-invoked"
+    if os.name == "nt":
+        command = f'cmd.exe /c "echo invoked>{marker}"'
+    else:
+        helper = tmp_path / "filter.sh"
+        helper.write_text(
+            f"#!/bin/sh\ncat >/dev/null\nprintf invoked > '{marker}'\n", encoding="utf-8"
+        )
+        helper.chmod(0o700)
+        command = str(helper)
+    _git(repo, "config", "filter.tripwire.clean", command)
+    (repo / "README.md").write_text("modified after filter setup\n", encoding="utf-8")
+
+    with pytest.raises(gate.GateError, match="clean worktree"):
+        gate.require_clean_revision(repo)
+    assert not marker.exists()
+
+
+def test_manifest_sealed_cli_coverage_can_omit_receipt_files(tmp_path: Path) -> None:
+    shard = gate.MICRO_UNIT_IDS[0]
+    assigned_paths = gate._profile_units(gate.MICRO_PROFILE_ID)[shard]["paths"]
+    output = _artifacts(
+        tmp_path,
+        shard,
+        "f" * 40,
+        profile=gate.MICRO_PROFILE_ID,
+        assigned_paths=assigned_paths,
+    )
+    coverage_path = output / "coverage.json"
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    for surface in coverage["surfaces"]:
+        surface["receiptRefs"] = []
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    manifest_path = output / "scan-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    scan = manifest["scan"]
+    scan["scope"]["artifactsReviewed"] = sorted(assigned_paths)
+    scan["artifacts"] = [
+        artifact
+        for artifact in scan["artifacts"]
+        if artifact["path"].startswith(("findings", "coverage"))
+    ]
+    next(artifact for artifact in scan["artifacts"] if artifact["path"] == "coverage.json")[
+        "sha256"
+    ] = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    result = gate.evaluate_artifacts(
+        output,
+        shard=shard,
+        expected_sha="f" * 40,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=True,
+        profile=gate.MICRO_PROFILE_ID,
+        expected_assigned_paths=assigned_paths,
+    )
+    assert "coverage_invalid" not in result["reason_codes"]
+
+
+def test_canonical_finding_accepts_finite_decimal_severity() -> None:
+    finding = _canonical_finding("high")
+    finding["severity"]["score"] = Decimal("8.1")
+    assert gate._canonical_finding(finding)[0] is True
+
+
+def test_manifest_sealed_coverage_omission_requires_exact_reviewed_paths(tmp_path: Path) -> None:
+    shard = gate.MICRO_UNIT_IDS[0]
+    assigned_paths = gate._profile_units(gate.MICRO_PROFILE_ID)[shard]["paths"]
+    output = _artifacts(
+        tmp_path,
+        shard,
+        "a" * 40,
+        profile=gate.MICRO_PROFILE_ID,
+        assigned_paths=assigned_paths,
+    )
+    coverage_path = output / "coverage.json"
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    for surface in coverage["surfaces"]:
+        surface["receiptRefs"] = []
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    manifest_path = output / "scan-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    scan = manifest["scan"]
+    scan["artifacts"] = [
+        artifact
+        for artifact in scan["artifacts"]
+        if artifact["path"] in {"findings.json", "coverage.json"}
+    ]
+    next(artifact for artifact in scan["artifacts"] if artifact["path"] == "coverage.json")[
+        "sha256"
+    ] = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    result = gate.evaluate_artifacts(
+        output,
+        shard=shard,
+        expected_sha="a" * 40,
+        dispositions=None,
+        require_dispositions=False,
+        validate_runner_outcome=True,
+        profile=gate.MICRO_PROFILE_ID,
+        expected_assigned_paths=assigned_paths,
+    )
+    assert "coverage_invalid" in result["reason_codes"]
 
 
 def test_scanner_rejects_linked_knowledge_base_outside_repository(

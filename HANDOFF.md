@@ -1,6 +1,25 @@
-# HANDOFF — mini-erp (WEEK9 Slice D authenticated lifecycle correction retry — 2026-08-24)
+# HANDOFF — mini-erp (D.5 u12 scanner gate hardening — 2026-10-12)
 
-Updated 2026-08-25. Slice D and the initial D.5 baseline are checkpointed at `1db8ed9`; strict-scan policy and wording corrections are checkpointed at `fd9a5d6`; no push has been made. This handoff records the subsequent owner-approved scan-cap outcomes.
+Updated 2026-10-12. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
+
+## Current status — D.5 gate hardening
+
+- The work was based on exact parent commit `b56c164e6e9a7c589e9253e42db96048af197b82` in the detached worktree `C:\Program Files\mini-ERP\mini-erp\.worktrees\d5-u12-verify-3b5d4d7`.
+- This checkpoint hardens Git subprocess isolation in `scripts/d5_security_gate.py`, accepts the narrowly sealed receipt-free coverage form emitted by `codex-security-plugin@0.1.22`, adds regression tests, and documents the gate contract in `docs/security/scan-policy.md`.
+- Verification on this exact worktree: `tests/security/test_d5_security_gate.py` — **278 passed, 3 skipped in 484.03s**; Ruff check and format check passed; mypy strict passed using `python -m mypy` (the uv trampoline could not canonicalize its script path); import-linter reported **9 kept, 0 broken**; `git diff --check` passed.
+- The changes are committed locally in the current checkpoint; use `git log -1` for its commit SHA. The worktree remains detached and is not pushed or merged.
+- No paid security scan was launched for this checkpoint, and no prior scan artifact, paid claim, or authorization was altered. This change does not establish a new scan result or claim that the overall D.5 gate passes. Before any later scan, verify that its authorization names the exact commit SHA and unit being scanned.
+- The current checkpoint concerns the D.5 runner's Windows and Git isolation plus u12 artifact compatibility. It does not change the previously reported u12 application findings or their remediation status.
+
+## Recommended next action
+
+Review the local checkpoint and handoff, then decide whether to run a new exact-SHA static verification or security scan. Do not reuse a grant bound to a different SHA or unit; a paid scan requires authorization for the exact checkpoint SHA.
+
+---
+
+## Historical handoff — Slice D and initial D.5 baseline (updated 2026-08-25)
+
+Slice D and the initial D.5 baseline were checkpointed at `1db8ed9`; strict-scan policy and wording corrections were checkpointed at `fd9a5d6`. The remainder of this historical section records the owner-approved scan-cap outcomes and WEEK9 work as they stood in August 2026.
 
 ## Slice D.5 Security Baseline — implementation status
 
@@ -34,7 +53,7 @@ ownership; switch still validates target entitlement and logout still deletes th
 session. Migration 0009 and the `session.manage` catalog/admin grants are unchanged.
 Earlier binary and `session.manage` lifecycle statements in the historical recap are
 superseded by this dated correction.
-## Current state
+## Historical repository state (2026-08-25; superseded by the status above)
 
 **HEAD: `ade0769`** — "Rewrite HANDOFF.md for WEEK9 Slice A/B/C completion, Slice D next". Local `main` is **4 commits ahead of `origin/main`** (`ade0769`, `1507084` Slice A, `49be26a` Slice B, `1c35d85` Slice C) — **none pushed**. Working tree contains the complete, uncommitted Slice D changes across application routers, services, middleware, CLI tools, migration 0010, and tests.
 
@@ -137,7 +156,7 @@ All review feedback from `codex.cmd exec -m gpt-5.6-luna` was rigorously address
   BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_password make demo
   ```
 
-## Next steps
+## Historical next steps (2026-08-25)
 
 1. Obtain scope owner's approval to create Git Commit for Slice D.
 2. Proceed to WEEK9 Slice E (reference-data and company endpoint removal/restructuring).
