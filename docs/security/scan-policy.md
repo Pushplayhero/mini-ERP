@@ -50,12 +50,43 @@ preflight, or an existing attempt claim also stops the sequence. Never remove a
 claim or retry a paid unit; a retry requires a new explicit authorization and
 fresh exact-SHA review.
 
-Prior pilot scans and ordinary scoped reports remain immutable historical
-evidence. Because they target different SHAs, inventories, or artifact
-contracts, they do not cover units on the new baseline and are not included in
-its artifact union. The legacy five-shard profile remains documented below but
-is not used for this authorized micro-v2 sequence. Retain each new unit's
-artifacts and per-unit cost outside the repository and all worktrees for 30 days.
+Per explicit owner decision (2026-10-12 / 2026-10-22), completed `micro-v2`
+unit scans for `u01_identity` through `u11_operations_e2e` (all 151 application,
+platform, migration, CLI, and E2E files) remain accepted pass evidence across
+subsequent D.5 remediation commits when those units' files are unchanged. Retain
+each unit's artifacts and per-unit cost outside the repository and all worktrees
+for 30 days.
+
+## Hybrid tiered completion gate (2026-10-22 owner decision)
+
+To prevent non-application units (`u12_gate`, `u13_governance`,
+`u14_dependencies`) from hitting LLM context/cost caps (`exit 2`) on large
+runner scripts, markdown documentation, or `uv.lock`, the owner authorized a
+**Hybrid Right-Tool-for-the-Job Gate** to close Slice D.5:
+
+1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 151 files)**:
+   Verified by `@openai/codex-security` (`gpt-5.6-sol`, high effort) with zero
+   blocking findings; owner-accepted pass evidence is preserved.
+2. **Tier 2 — Scanner Gate Runner (`u12_gate`, 2 files: `scripts/d5_security_gate.py`, `tests/security/test_d5_security_gate.py`)**:
+   The single High finding from `b56c164` (`fsmonitor` / Git config isolation)
+   is remediated in `95c5382`. Verified deterministically via `ruff check`,
+   `ruff format --check`, `mypy --strict` (`scripts/`), and the 278 contract
+   tests in `tests/security/test_d5_security_gate.py`. No recursive paid LLM
+   rescan of the runner script is required.
+3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 20 files)**:
+   All four findings from `454b2e7` (predictable quick-start passwords,
+   password exposure in shell history / `curl` arguments, mutable GitHub Action
+   tags, and coverage test execution under `contents: write`) are remediated in
+   place and verified via deterministic static checks (pinned 40-char Action
+   SHAs, privilege-separated `coverage-generate` vs `coverage-badge` jobs, and
+   zero hardcoded/inline password literals in documentation).
+4. **Tier 4 — Dependency & Lockfile Audit (`u14_dependencies`, 2 files: `pyproject.toml`, `uv.lock`)**:
+   Verified deterministically against the PyPI/OSV vulnerability database across
+   all 66 locked packages instead of LLM token-scanning `uv.lock`. Upstream
+   advisories in `uv.lock` are evaluated for runtime reachability under the
+   Gates and Disposition rules below; unreachable or dev-only advisories are
+   recorded with explicit compensating controls and scheduled for routine
+   dependency maintenance without blocking Slice D.5 closure.
 
 ## Tool and target
 

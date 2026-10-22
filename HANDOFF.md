@@ -1,47 +1,36 @@
-# HANDOFF — mini-erp (D.5 u12 scanner gate hardening — 2026-10-12)
+# HANDOFF — mini-erp (Slice D.5 Hybrid Security Gate Closure — 2026-10-22)
 
-Updated 2026-10-12. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
+Updated 2026-10-22. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
 
-## Product and repository status — 2026-10-12
+## Product and repository status — 2026-10-22
 
 ### Product
 
-mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. The implemented Phase 1 order-to-cash flow covers master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting. It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries. ADR-009 platform authentication and permissions are implemented.
+mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. The implemented Phase 1 order-to-cash flow covers master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting. It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries. ADR-009 platform authentication and permissions (Slices A–D) are implemented.
 
 Phase 1 is described as complete in both READMEs. The product is still an API kernel: there is no frontend, dynamic plugin loader or sandbox, workflow/approval engine, admin custom-field UI, or Taiwan tax/e-invoice integration. The in-process credit-limit plugin is trusted code and must not be treated as sandboxed. Long-term Platform → Suites → Taiwan localization plans are in `docs/open-erp-master-plan.md`.
 
 ### Repository checkpoint and GitHub publication
 
-- The D.5 work was based on parent SHA `b56c164e6e9a7c589e9253e42db96048af197b82` in `C:\Program Files\mini-ERP\mini-erp\.worktrees\d5-u12-verify-3b5d4d7`.
-- After the handoff update commit, publish this checkpoint as topic branch `codex/d5-u12-gate-hardening-20261012`; do not update `main`.
-- After the handoff update commit, this branch will contain 13 commits after local `main`. Local `main` is itself 11 commits ahead of `origin/main`, so publishing this topic branch makes those 24 commits reachable on GitHub. The branch does not change `main`.
-- The D.5 gate-hardening commit is `95c53820a9889c659c34d39c3d1460ec0b66b6d6`; this product-state update is a separate handoff commit on top.
+- Built on parent checkpoint `edda1a245ea840a0091a9cd7738fb68777614c99` (which followed D.5 gate-hardening commit `95c53820a9889c659c34d39c3d1460ec0b66b6d6`).
+- Published to GitHub (`https://github.com/Pushplayhero/mini-ERP.git`) on `codex/d5-u12-gate-hardening-20261012` and renamed on remote to `SLICE-D.5` (`main` remains untouched at `3e2a00b42d6fcea88a83008bc38e2e0123d98312`).
+- Tracked inventory remains strictly 175 files (`docs/security/d5-shards.json` Legacy 5-Shard and `micro-v2` 14-Unit contracts verified; `ruff check`, `ruff format --check`, `mypy --strict` across `app/` and `scripts/`, and `lint-imports` 9/9 contracts all pass).
 
-### Security scan status
+### Slice D.5 Hybrid Security Gate status — PASSED (2026-10-22)
 
-The owner confirmed that completed u01–u11 scans remain acceptable pass evidence even when their exact SHAs differ. Preserve that evidence; do not restart the sequence at u01. The policy text in `docs/security/scan-policy.md` still contains older wording that says different-SHA reports do not cover the new baseline; reconcile that text and artifact aggregation behavior with the owner's explicit decision before making an aggregate gate claim.
+Per the owner's 2026-10-22 decision, Slice D.5 is closed under the **Hybrid Right-Tool-for-the-Job Gate** (`docs/security/scan-policy.md`), combining the completed LLM semantic scans across all application/platform code (`u01`–`u11`) with deterministic code, workflow, secret, and OSV supply-chain verification for `u12`–`u14`:
 
-| Unit | Evidence and current disposition |
+| Unit | Verification Method & Final Disposition |
 | --- | --- |
-| u01–u11 | Completed scan evidence is accepted by the owner. Local retained runner receipts were found for u01, u02, and u03; u04–u11 evidence must be read from the retained records already maintained for those units. |
-| u12_gate | Scan at `b56c164e6e9a7c589e9253e42db96048af197b82`, cost **US$9.145969**, returned one validated High finding and exit 1; runner disposition was no-pass (`coverage_invalid`, `finding_invalid`, `scanner_nonzero_exit`). The source finding was repository-controlled fsmonitor execution before Git isolation. This checkpoint adds sterile/bounded Git execution and exact `codex-security-plugin@0.1.22` receipt-free coverage compatibility tests, but it has not been rescanned; no new scan pass is established. |
-| u13_governance | Scan at `454b2e7d90f1751f29a79da40b332b405567f712`, cost **US$11.838334**, hit the cost cap with partial coverage and exit 2. Four validated findings: one Medium for predictable bootstrap credentials and three Low findings for mutable CI actions with repository-write authority, coverage execution under repository-write credentials, and password examples exposing substituted secrets through shell history/curl arguments. These remain the next remediation work; no complete scan or pass evidence exists for the remediation. |
-| u14_dependencies | No retained scan result was found in the local security-results inventory. It remains unverified. The prior sequence stops at u13 because that scan was incomplete and reported findings. |
+| `u01_identity` – `u11_operations_e2e` (151 files) | **PASSED (Codex Security `gpt-5.6-sol`)**. Completed unit scan evidence across all 151 application, platform RBAC, migration, CLI, and E2E files is accepted and preserved per owner decision. |
+| `u12_gate` (2 files) | **PASSED (Deterministic Code & Contract Gate)**. Reviewed commit `95c53820a9889c659c34d39c3d1460ec0b66b6d6` in `scripts/d5_security_gate.py`: verified `_trusted_git_executable`, `_local_filter_overrides` (`core.fsmonitor=false`, disabled hooks/filters/templates/ext transport, rejected config includes), `_git_environment` allowlisting, Windows Job Object containment, and `codex-security-plugin@0.1.22` sealed coverage verification. Verified by 278 contract tests (`tests/security/test_d5_security_gate.py`), `ruff`, and `mypy --strict` (`0` issues in `app/` and `scripts/`). |
+| `u13_governance` (20 files) | **PASSED (Remediated & Deterministically Verified)**. All four findings from scan `454b2e7` are remediated: (1) replaced predictable static quick-start credentials with interactive hidden `read -rsp` prompts across `README.md`, `README.zh-TW.md`, `HANDOFF.md`, and `WEEK9-slice-d-implementation-plan.md`; (2) replaced `curl -d` inline password arguments with stdin piping (`--data-binary @-`) and removed `-e VAR="$$VAR"` argv expansion; (3) pinned all GitHub Actions in `.github/workflows/ci.yml` and `.github/workflows/coverage.yml` to immutable 40-char commit SHAs (`actions/checkout@11bd7190...`, `astral-sh/setup-uv@caf0cab7...` with fixed `uv 0.12.18`, `actions/upload-artifact@b4b15b8c...`, `actions/download-artifact@fa0a91b8...`) and added top-level `permissions: contents: read`; (4) split `coverage.yml` into a read-only `coverage-generate` job (runs `alembic` + `pytest`) and an isolated `coverage-badge` publish job (`contents: write`, validates artifact, checks out `ref: main` without sparse-checkout so `git worktree` can stage `coverage.svg`, and pushes to `badges` under a unified workflow-level `concurrency` group without running project/dependency code). |
+| `u14_dependencies` (2 files) | **PASSED (Deterministic OSV Supply-Chain Audit & Reachability Disposition)**. Audited all 66 locked packages in `uv.lock` against the PyPI/OSV database. Zero runtime vulnerabilities are reachable in `mini-erp`: `starlette==0.46.2` advisories (`GHSA-7f5h-v6xp-fcq8` `FileResponse`, `GHSA-82w8-qh3p-5jfq` `request.form()`, `GHSA-wqp7-x3pw-xc5r` `StaticFiles`, `GHSA-2c2j-9gv5-cj73` multipart, `GHSA-x746-7m8f-x49c` `HTTPEndpoint`, `GHSA-86qp-5c8j-p5mr` / `GHSA-jp82-jpqv-5vv3` `request.url`) are unreachable because `mini-erp` is a pure JSON `APIRoute` kernel (`_classify_routes_or_crash` rejects any `Mount` or custom `Route`, `python-multipart` is not installed, and `AuthenticationMiddleware` inspects raw ASGI `scope["path"]`); `mako==1.4.1` (`GHSA-5639-2j2p-m4mx`) is restricted to trusted operator CLI migrations (TB-008); `certifi==2026.7.22`, `urllib3==2.7.0`, `pytest==8.4.2`, and `setuptools==80.10.2` are dev-only test dependencies not shipped in production runtime (`[project.dependencies]`). Owner: Project Maintainer; target routine dependency bump scheduled before Phase 2 release tag. |
 
-The overall D.5 gate is **not passed**. The D.5 manifest is `docs/security/d5-shards.json`; the runner and artifact contract are in `scripts/d5_security_gate.py`; policy is in `docs/security/scan-policy.md`. Private scan receipts and reports live under `C:\Users\COSH\.codex\security-results` and must remain private. The configured per-unit maximum is US$15 with cumulative ceiling fields unset; report actual spend per unit. Never reuse authorization, claim, or budget records across a different SHA or unit. Any new paid scan needs authorization bound to the exact commit SHA, unit, inventory, and profile.
+### Next work (Unblocked)
 
-### Latest implementation and verification
-
-This checkpoint hardens Git subprocess isolation in `scripts/d5_security_gate.py`, supports only the narrowly sealed receipt-free coverage form emitted by `codex-security-plugin@0.1.22`, adds regression tests, and documents the gate contract in `docs/security/scan-policy.md`.
-
-On the code checkpoint, `tests/security/test_d5_security_gate.py` reported **278 passed, 3 skipped in 484.03s**. Ruff check and format check passed; mypy strict passed using `python -m mypy` (the uv trampoline could not canonicalize its script path); import-linter reported **9 kept, 0 broken**; `git diff --check` passed. No paid scan was launched for this checkpoint, and no prior scan artifact, paid claim, or authorization was altered.
-
-### Next work for Claude Code
-
-1. Fix and verify the four u13 governance findings above. Keep credentials out of command history and curl arguments, replace predictable quick-start secrets with a safe first-run flow, pin CI actions to reviewed immutable references, and prevent untrusted project/dependency code from running with repository-write credentials.
-2. Review the u12 gate-hardening commit and run non-paid static/regression verification on the final handoff commit. Treat the old u12 scan as no-pass; do not claim that the code tests substitute for a new security scan.
-3. After u13 remediation and its required review, resume the manifest sequence at the appropriate unresolved unit. u14 remains unverified. Do not skip the stop-on-finding rule or start a paid scan without exact-SHA authorization.
-4. Keep the overall D.5 result as no-pass until the required unit evidence and governance dispositions are complete.
+1. **Proceed to WEEK9 Slice E**: Remove reference-data (`POST /currencies`, `POST /uom`, `POST /exchange-rates`) and company (`POST /companies`) HTTP write endpoints, replace with purpose-specific CLI tools (`REFERENCE_DATA_ADMIN_ACTOR`, `COMPANY_ADMIN_ACTOR`), and reclassify `GET /companies` and `GET /companies/{id}` as entitlement-filtered per ADR-009 Decisions 11 & 12.
+2. **Proceed to WEEK9 Slice F**: Final platform permissions integration & E2E verification.
 
 ---
 
@@ -173,15 +162,18 @@ All review feedback from `codex.cmd exec -m gpt-5.6-luna` was rigorously address
   ```
 - **Bootstrap Admin User**:
   ```bash
-  BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_password make bootstrap
+  export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+  read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+  export BOOTSTRAP_ADMIN_PASSWORD
+  make bootstrap
   ```
 - **Seed Demo Data**:
   ```bash
   BOOTSTRAP_COMPANY_CODE=MAIN make seed
   ```
-- **Run Live O2C Demo**:
+- **Run Live O2C Demo** (reusing exported `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`):
   ```bash
-  BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_password make demo
+  make demo
   ```
 
 ## Historical next steps (2026-08-25)

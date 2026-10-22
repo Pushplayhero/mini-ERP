@@ -73,7 +73,8 @@ uv sync --all-extras
 cp .env.example .env
 
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='change-this-password'
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -102,7 +103,8 @@ is the reference workflow for end-to-end testing.
 cp .env.example .env
 
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='change-this-password'
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -149,7 +151,8 @@ cp .env.example .env
 export DATABASE_URL='postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp'
 export APP_ENVIRONMENT=development
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='change-this-password'
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -237,7 +240,8 @@ First, ensure the app is up and bootstrapped:
 make up
 
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='change-this-password'
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -252,8 +256,10 @@ BASE=http://localhost:8000
 API=$BASE/api/v1
 
 # 1. Login to obtain a bearer session token (ADR-009 Authentication).
-TOKEN=$(curl -s -X POST $BASE/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"admin@example.com","password":"change-this-password"}' \
+# Pipe credentials from environment variables via stdin so secrets never appear
+# in shell history or curl process arguments.
+TOKEN=$(python3 -c 'import json, os; print(json.dumps({"email": os.environ["BOOTSTRAP_ADMIN_EMAIL"], "password": os.environ["BOOTSTRAP_ADMIN_PASSWORD"]}))' \
+  | curl -s -X POST "$BASE/auth/login" -H 'Content-Type: application/json' --data-binary @- \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
 
 # Every authenticated request uses Authorization: Bearer <token> (tenancy is

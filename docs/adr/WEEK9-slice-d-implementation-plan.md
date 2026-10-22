@@ -146,18 +146,18 @@ place a script needs to say so out loud). `demo_o2c.py`:
   bootstrap:
      @test -n "$$BOOTSTRAP_ADMIN_EMAIL" || (echo "ERROR: BOOTSTRAP_ADMIN_EMAIL environment variable must be set." && exit 1)
      @test -n "$$BOOTSTRAP_ADMIN_PASSWORD" || (echo "ERROR: BOOTSTRAP_ADMIN_PASSWORD environment variable must be set." && exit 1)
-     docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL="$$BOOTSTRAP_ADMIN_EMAIL" -e BOOTSTRAP_ADMIN_PASSWORD="$$BOOTSTRAP_ADMIN_PASSWORD" app python -m app.cli.bootstrap_admin
+     docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD app python -m app.cli.bootstrap_admin
 
   .PHONY: demo
   demo:
      @test -n "$$BOOTSTRAP_ADMIN_EMAIL" || (echo "ERROR: BOOTSTRAP_ADMIN_EMAIL environment variable must be set." && exit 1)
      @test -n "$$BOOTSTRAP_ADMIN_PASSWORD" || (echo "ERROR: BOOTSTRAP_ADMIN_PASSWORD environment variable must be set." && exit 1)
-     DEMO_BASE_URL=http://localhost:$(APP_PORT) DEMO_ADMIN_EMAIL="$$BOOTSTRAP_ADMIN_EMAIL" DEMO_ADMIN_PASSWORD="$$BOOTSTRAP_ADMIN_PASSWORD" uv run python -m app.cli.demo_o2c
+     DEMO_BASE_URL=http://localhost:$(APP_PORT) uv run python -m app.cli.demo_o2c
   ```
-- The Quick Start sequence is strictly ordered:
+- The Quick Start sequence is strictly ordered (with `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` exported via `read -rsp` in the shell environment):
   1. `make up` (starts Docker containers, runs Alembic migrations, waits for readiness)
-  2. `BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_password make bootstrap` (provisions initial admin user & `MAIN` company)
-  3. `BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_password make demo` (executes live-API O2C flow) or `make seed` (seeds masterdata/demo records)
+  2. `make bootstrap` (provisions initial admin user & `MAIN` company)
+  3. `make demo` (executes live-API O2C flow) or `make seed` (seeds masterdata/demo records)
 - `bootstrap_admin.py` reads `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` from environment variables, and is idempotent-refusing on second run (exits 1 with clear message if users exist).
 
 ### Finding 4 — `DEMO_SEED_ACTOR`'s enumerated permission set, concretely
@@ -745,27 +745,27 @@ from this plan's draft; confirmed as a real gap, not a re-litigation of Decision
 **Full startup rollout (round 13 finding 3, round 14 finding 2, round 16 findings 1 & 2, round 19 finding 1)**:
 1. **Explicit bootstrap command and credentials (round 17 finding 1, round 19 finding 1)**:
    - Both email and password are strictly mandatory with no code defaults (ADR-009 Decision 6):
-     `BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_secure_password make bootstrap` or
-     `docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL="admin@example.com" -e BOOTSTRAP_ADMIN_PASSWORD="your_secure_password" app python -m app.cli.bootstrap_admin`.
+     export `BOOTSTRAP_ADMIN_EMAIL` and prompt for `BOOTSTRAP_ADMIN_PASSWORD` via `read -rsp`, then run `make bootstrap` or
+     `docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD app python -m app.cli.bootstrap_admin`.
    - Update `.env.example` to document `BOOTSTRAP_ADMIN_EMAIL=` and `BOOTSTRAP_ADMIN_PASSWORD=` (with no default values).
 2. **Execution Ordering**:
    - Mandatory sequence: (1) `make up` (spawns containers & runs migrations), (2) `make bootstrap` (provisions initial admin user), (3) `make demo` / `make seed`.
    - `bootstrap_admin` must run before `make seed` and before `make demo`.
 3. **Quick Start in `README.md` and `README.zh-TW.md`**:
-   - Update Quick Start sections (e.g. `README.md:47`, `README.zh-TW.md:43`) with the exact 3-step sequence:
+   - Update Quick Start sections (e.g. `README.md:47`, `README.zh-TW.md:43`) with the exact 3-step sequence after exporting credentials via `read -rsp`:
      1. Start & Migrate: `make up` (starts Docker containers, runs `alembic upgrade head`, waits for health)
-     2. Bootstrap Admin: `BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_secure_password make bootstrap`
-     3. Demo / Seed: `BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_secure_password make demo` (or `make seed`)
+     2. Bootstrap Admin: `make bootstrap`
+     3. Demo / Seed: `make demo` (or `make seed`)
 4. **`Makefile` and Docker Compose execution (round 15 finding 1, round 16 findings 1 & 2, round 17 finding 1, round 18 finding 1, round 19 finding 1)**:
    - `docker-compose.yml` retains existing infrastructure fallback defaults (`POSTGRES_*`, `APP_PORT`, `DATABASE_URL`, `APP_ENVIRONMENT` with `:-`) to ensure `make up` remains functional out-of-the-box.
-   - **Administrative credentials** (`BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`) have STRICTLY ZERO code defaults and are NOT declared with `:-` fallbacks in `docker-compose.yml`. Instead, they are passed into the container process at execution time strictly via `docker compose exec -T -e ...`.
+   - **Administrative credentials** (`BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`) have STRICTLY ZERO code defaults and are NOT declared with `:-` fallbacks in `docker-compose.yml`. Instead, they are passed into the container process at execution time strictly via `docker compose exec -T -e VAR` (without `=value` expansion on the command line).
    - Process arguments (`--password` / `--email`) are deliberately omitted from the `Makefile` command to avoid exposing secrets in `/proc/<pid>/cmdline`; `bootstrap_admin.py` reads them directly from `os.environ`:
      ```makefile
      .PHONY: bootstrap
      bootstrap:
         @test -n "$$BOOTSTRAP_ADMIN_EMAIL" || (echo "ERROR: BOOTSTRAP_ADMIN_EMAIL must be set in the environment." && exit 1)
         @test -n "$$BOOTSTRAP_ADMIN_PASSWORD" || (echo "ERROR: BOOTSTRAP_ADMIN_PASSWORD must be set in the environment." && exit 1)
-        docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL="$$BOOTSTRAP_ADMIN_EMAIL" -e BOOTSTRAP_ADMIN_PASSWORD="$$BOOTSTRAP_ADMIN_PASSWORD" app python -m app.cli.bootstrap_admin
+        docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD app python -m app.cli.bootstrap_admin
 
      seed:
         docker compose exec -T app python -m app.cli.seed_demo
@@ -773,7 +773,7 @@ from this plan's draft; confirmed as a real gap, not a re-litigation of Decision
      demo:
         @test -n "$$BOOTSTRAP_ADMIN_EMAIL" || (echo "ERROR: BOOTSTRAP_ADMIN_EMAIL must be set in the environment." && exit 1)
         @test -n "$$BOOTSTRAP_ADMIN_PASSWORD" || (echo "ERROR: BOOTSTRAP_ADMIN_PASSWORD must be set in the environment." && exit 1)
-        DEMO_BASE_URL=http://localhost:$(APP_PORT) DEMO_ADMIN_EMAIL="$$BOOTSTRAP_ADMIN_EMAIL" DEMO_ADMIN_PASSWORD="$$BOOTSTRAP_ADMIN_PASSWORD" uv run python -m app.cli.demo_o2c
+        DEMO_BASE_URL=http://localhost:$(APP_PORT) uv run python -m app.cli.demo_o2c
      ```
 5. **"Try it" walkthrough in both READMEs (round 12 finding 4)**:
    - Step 1 calls `POST /auth/login` with email/password, capturing `$TOKEN` and noting the
@@ -1784,9 +1784,9 @@ and fixed in place across §§7, 8, 9, and 10:
      terminated within 5s.
 
 2. **Explicit bootstrap credentials & full rollout across README/Makefile/Compose**:
-   - Canonical bootstrap command uses explicit environment variables:
-     `BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=your_password uv run python -m app.cli.bootstrap_admin`
-     (or via `docker compose exec -T -e ...`).
+   - Canonical bootstrap command uses pre-exported environment variables (`read -rsp` for `BOOTSTRAP_ADMIN_PASSWORD`):
+     `uv run python -m app.cli.bootstrap_admin`
+     (or via `docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD ...`).
    - `.env.example` includes example admin credential placeholders.
    - Mandatory ordering enforced: `bootstrap_admin` must run before `make seed` and `make demo`.
    - Updated Quick Start in `README.md`, `README.zh-TW.md`, `Makefile`, and `docker-compose.yml`.
@@ -1920,7 +1920,7 @@ Round 19 returned **REJECTED** with 3 findings. Consulting Codex Luna (`gpt-5.6-
 
 1. **Docker / Compose Credential Isolation & Infrastructure Fallback Clarification**:
    - Scope clarification: `docker-compose.yml` retains standard infrastructure variable fallbacks (`POSTGRES_*`, `PORT`, etc. using `:-`) to keep `make up` out-of-the-box functional. Administrative bootstrap credentials carry strictly zero defaults and are omitted from static compose environment blocks.
-   - Transport security: `Makefile` uses pure `docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL="..." -e BOOTSTRAP_ADMIN_PASSWORD="..." app python -m app.cli.bootstrap_admin` without passing `--email` or `--password` in process commandline arguments, preventing secret leakage via `/proc/<pid>/cmdline`. `bootstrap_admin.py` reads directly from `os.environ`.
+   - Transport security: `Makefile` uses pure `docker compose exec -T -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD app python -m app.cli.bootstrap_admin` without `=value` expansion or `--email`/`--password` in process commandline arguments, preventing secret leakage via `/proc/<pid>/cmdline`. `bootstrap_admin.py` reads directly from `os.environ`.
 
 2. **Unified 3-Tier Test Helper Naming & Explicit ORM Password Hash**:
    - Fixed naming conflict: `grant_company_entitlement` is completely eliminated in favor of canonical `grant_test_role(session, user_id, company_id, role_code) -> None`.

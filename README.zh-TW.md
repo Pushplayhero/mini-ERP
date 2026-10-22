@@ -46,7 +46,8 @@ uv sync --all-extras
 cp .env.example .env
 
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='請替換成實際密碼'
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -71,7 +72,8 @@ Docker-compose 流程（`make up` + `make bootstrap` + `make seed` + `make demo`
 cp .env.example .env
 
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='請替換成實際密碼'
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -117,7 +119,8 @@ cp .env.example .env
 export DATABASE_URL='postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp'
 export APP_ENVIRONMENT=development
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='請替換成實際密碼'
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -202,7 +205,8 @@ COGS/Inventory、扣庫存）→ `receivables` 開發票（過 AR/Revenue）→
 make up
 
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-export BOOTSTRAP_ADMIN_PASSWORD='請替換成實際密碼'
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
 export BOOTSTRAP_COMPANY_CODE=MAIN
 export BOOTSTRAP_COMPANY_NAME='Main Company'
 
@@ -216,8 +220,9 @@ BASE=http://localhost:8000
 API=$BASE/api/v1
 
 # 1. 登入取得 Bearer Session Token（ADR-009 權限認證）
-TOKEN=$(curl -s -X POST $BASE/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"admin@example.com","password":"change-this-password"}' \
+# 透過 stdin 傳遞環境變數憑證，避免密碼留存於 Shell History 或 curl 程序參數。
+TOKEN=$(python3 -c 'import json, os; print(json.dumps({"email": os.environ["BOOTSTRAP_ADMIN_EMAIL"], "password": os.environ["BOOTSTRAP_ADMIN_PASSWORD"]}))' \
+  | curl -s -X POST "$BASE/auth/login" -H 'Content-Type: application/json' --data-binary @- \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
 
 # 每個經過認證的請求均使用 Authorization: Bearer <token>（租戶資訊自動從 Session Context 解析）
