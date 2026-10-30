@@ -1,4 +1,4 @@
-# HANDOFF — mini-erp (WEEK9 Slices A–D & Slice D.5 Merged to main — 2026-10-30)
+# HANDOFF — mini-erp (WEEK9 Slices A–F Complete — 2026-10-30)
 
 Updated 2026-10-30. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
 
@@ -6,15 +6,16 @@ Updated 2026-10-30. This is the current handoff status; the dated sections below
 
 ### Product
 
-mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. The implemented Phase 1 order-to-cash flow covers master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting. It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries. ADR-009 platform authentication and permissions (Slices A–D) and the Slice D.5 Hybrid Security Gate are implemented and merged to `main`.
+mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. The implemented Phase 1 order-to-cash flow covers master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting. It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries. ADR-009 platform authentication and permissions (Slices A–F, including the Slice D.5 Hybrid Security Gate and Slice E CLI-only reference-data/company provisioning) are fully implemented and verified.
 
 Phase 1 is described as complete in both READMEs. The product is still an API kernel: there is no frontend, dynamic plugin loader or sandbox, workflow/approval engine, admin custom-field UI, or Taiwan tax/e-invoice integration. The in-process credit-limit plugin is trusted code and must not be treated as sandboxed. Long-term Platform → Suites → Taiwan localization plans are in `docs/open-erp-master-plan.md`.
 
 ### Repository checkpoint and GitHub publication
 
-- Merged to `main` via PR #2 at commit `c077cc0de9145e2d9a78576fde9a1e48231d263b` (`https://github.com/Pushplayhero/mini-ERP.git`), incorporating `SLICE-D.5` head `9011cef9f929775e4f57c25278f38f95da90030d` (cross-platform D.5 gate test fixes), `42ce85eff4c42e3582de3c1f26dc8a54d7782e6e` (Slice D.5 hybrid gate & `u13_governance` remediation), and `95c53820a9889c659c34d39c3d1460ec0b66b6d6` (D.5 scanner gate hardening).
-- All GitHub Actions CI & Coverage checks passed on `ubuntu-latest` + real PostgreSQL 16: `pytest` (`578 passed, 5 skipped`), `mypy --strict` (`0` issues), `import-linter` (`9/9` contracts kept), `ruff check` & `ruff format --check` (all passed), and the privilege-separated `coverage-badge` workflow published the updated badge to `origin/badges` (`4f00126`).
-- Tracked inventory remains strictly 175 files (`docs/security/d5-shards.json` Legacy 5-Shard and `micro-v2` 14-Unit contracts verified).
+- **Slice D & Slice D.5**: Merged to `main` via PR #2 at commit `c077cc0de9145e2d9a78576fde9a1e48231d263b`.
+- **Slice E**: Merged to `main` via PR #3 at commit `9f01b70` (`feat(masterdata): complete WEEK9 Slice E CLI-only reference data and company provisioning (#3)`), removing the 5 unauthenticated/HTTP reference-data and company POST routes (`POST /api/v1/companies`, `POST /api/v1/currencies`, `POST /api/v1/uom`, `POST /api/v1/uom-conversions`, `POST /api/v1/exchange-rates`), adding `app/cli/manage_reference_data.py` (`REFERENCE_DATA_ADMIN_ACTOR`) and `app/cli/manage_companies.py` (`COMPANY_ADMIN_ACTOR`), and updating `docs/security/d5-shards.json`, `docs/security/scan-policy.md`, and `docs/security/threat-model.md` for the 177-file inventory (`53` application `APIRoute`s = `4 Public` / `2 Authenticated` / `47 RequiresPermission`).
+- **Slice F**: Completed end-to-end live-server verification of the README "Try it" O2C walkthrough alongside Slice E CLI provisioning and HTTP 405 enforcement (`tests/e2e/test_demo_o2c_live.py`), hardened `tests/conftest.py` Docker probe timeout/retry and Linux `pgserver` Unix socket URI resolution, and verified 100% completion of ADR-009 Action Items 1–11 (`docs/adr/ADR-009-platform-permissions.md`).
+- All quality gates pass: `pytest` (`585 passed, 5 skipped`), `mypy --strict` (`0` issues), `import-linter` (`9/9` contracts kept), `ruff check` & `ruff format --check` (all passed).
 
 ### Slice D.5 Hybrid Security Gate status — PASSED & MERGED (2026-10-30)
 
@@ -27,10 +28,10 @@ Per the owner's 2026-10-22 decision, Slice D.5 is closed under the **Hybrid Righ
 | `u13_governance` (20 files) | **PASSED (Remediated & Deterministically Verified)**. All four findings from scan `454b2e7` are remediated: (1) replaced predictable static quick-start credentials with interactive hidden `read -rsp` prompts across `README.md`, `README.zh-TW.md`, `HANDOFF.md`, and `WEEK9-slice-d-implementation-plan.md`; (2) replaced `curl -d` inline password arguments with stdin piping (`--data-binary @-`) and removed `-e VAR="$$VAR"` argv expansion; (3) pinned all GitHub Actions in `.github/workflows/ci.yml` and `.github/workflows/coverage.yml` to immutable 40-char commit SHAs (`actions/checkout@11bd7190...`, `astral-sh/setup-uv@caf0cab7...` with fixed `uv 0.12.18`, `actions/upload-artifact@b4b15b8c...`, `actions/download-artifact@fa0a91b8...`) and added top-level `permissions: contents: read`; (4) split `coverage.yml` into a read-only `coverage-generate` job (runs `alembic` + `pytest`) and an isolated `coverage-badge` publish job (`contents: write`, validates artifact, checks out `ref: main` without sparse-checkout so `git worktree` can stage `coverage.svg`, and pushes to `badges` under a unified workflow-level `concurrency` group without running project/dependency code). |
 | `u14_dependencies` (2 files) | **PASSED (Deterministic OSV Supply-Chain Audit & Reachability Disposition)**. Audited all 66 locked packages in `uv.lock` against the PyPI/OSV database. Zero runtime vulnerabilities are reachable in `mini-erp`: `starlette==0.46.2` advisories (`GHSA-7f5h-v6xp-fcq8` `FileResponse`, `GHSA-82w8-qh3p-5jfq` `request.form()`, `GHSA-wqp7-x3pw-xc5r` `StaticFiles`, `GHSA-2c2j-9gv5-cj73` multipart, `GHSA-x746-7m8f-x49c` `HTTPEndpoint`, `GHSA-86qp-5c8j-p5mr` / `GHSA-jp82-jpqv-5vv3` `request.url`) are unreachable because `mini-erp` is a pure JSON `APIRoute` kernel (`_classify_routes_or_crash` rejects any `Mount` or custom `Route`, `python-multipart` is not installed, and `AuthenticationMiddleware` inspects raw ASGI `scope["path"]`); `mako==1.4.1` (`GHSA-5639-2j2p-m4mx`) is restricted to trusted operator CLI migrations (TB-008); `certifi==2026.7.22`, `urllib3==2.7.0`, `pytest==8.4.2`, and `setuptools==80.10.2` are dev-only test dependencies not shipped in production runtime (`[project.dependencies]`). Owner: Project Maintainer; target routine dependency bump scheduled before Phase 2 release tag. |
 
-### Next work (Unblocked)
+### Next work (Phase 2 — Week 10+)
 
-1. **Proceed to WEEK9 Slice E**: Remove reference-data (`POST /currencies`, `POST /uom`, `POST /exchange-rates`) and company (`POST /companies`) HTTP write endpoints, replace with purpose-specific CLI tools (`REFERENCE_DATA_ADMIN_ACTOR`, `COMPANY_ADMIN_ACTOR`), and reclassify `GET /companies` and `GET /companies/{id}` as entitlement-filtered per ADR-009 Decisions 11 & 12.
-2. **Proceed to WEEK9 Slice F**: Final platform permissions integration & E2E verification.
+1. **WEEK9 (`platform.permissions` / ADR-009) is 100% complete** across Slices A–F.
+2. **Next Phase 2 Platform Modules** (per `docs/adr/PHASE2-platform-architecture-overview.md` and `docs/open-erp-master-plan.md`): Proceed to subsequent Phase 2 platform capabilities (e.g., `platform.audit`, workflow/approvals, or custom fields metadata).
 
 ---
 
@@ -147,8 +148,8 @@ All review feedback from `codex.cmd exec -m gpt-5.6-luna` was rigorously address
 | `platform.permissions` — Slice D plan | **ACCEPTED** (20 rounds, 76 findings resolved) | `docs/adr/WEEK9-slice-d-implementation-plan.md` |
 | `platform.permissions` — Slice D code (`AuthenticationMiddleware` cutover) | **DONE & MERGED**, 14 rounds Codex Luna reviewed | commit `1db8ed9` (merged in `c077cc0`) |
 | `platform.permissions` — Slice D.5 (Hybrid Security Gate & CI hardening) | **DONE & MERGED**, 4-tier hybrid gate & Linux CI green (578 passed) | commits `95c5382` / `42ce85e` / `9011cef` (merged in `c077cc0`) |
-| `platform.permissions` — Slice E (reference data & company endpoint cleanup) | next up | — |
-| `platform.permissions` — Slice F (final integration & E2E verification) | pending | — |
+| `platform.permissions` — Slice E (reference data & company endpoint cleanup) | **DONE & MERGED** (PR #3) | commit `9f01b70` |
+| `platform.permissions` — Slice F (final integration & E2E verification) | **DONE** (live O2C & Action Items 1–11 verified) | `docs/adr/ADR-009-platform-permissions.md` |
 
 ## Running things
 

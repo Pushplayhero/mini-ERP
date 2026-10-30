@@ -271,7 +271,8 @@ H=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 UOM_ID=$(curl -s $API/uom "${H[@]}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')
 
-curl -s -X POST $API/periods "${H[@]}" -d '{"year":2026,"month":8}' > /dev/null
+curl -s -X POST $API/periods "${H[@]}" \
+  -d "$(python3 -c 'from datetime import datetime, timezone; d = datetime.now(timezone.utc).date(); print(f"{{\"year\":{d.year},\"month\":{d.month}}}")')" > /dev/null
 for row in 1000:Cash:asset 1100:"Accounts Receivable":asset 1300:Inventory:asset \
            4000:Revenue:revenue 5000:COGS:expense; do
   IFS=: read -r code name type <<< "$row"
@@ -488,9 +489,11 @@ app/
 │   ├── sales/        # orders: draft → confirmed → shipped, hook registry consumer
 │   ├── inventory/    # stock_moves (append-only) + stock_summary, goods_shipped subscriber
 │   └── receivables/  # invoices, payments, allocations, AR aging
+├── platform/
+│   └── permissions/ # ADR-009 RBAC models, auth/session service, /auth router
 ├── plugins/          # credit_limit.py — the one hard-wired demonstration plugin
-├── cli/              # seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
-└── main.py           # FastAPI app, tenancy middleware, exception handlers, router mounting
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+└── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/
 ├── adr/               # architecture decision records, incl. WEEK7-phase1-hardening-brief.md
