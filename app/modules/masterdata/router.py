@@ -6,6 +6,11 @@ resources: it is always resolved server-side from the tenancy context set by
 resolve to 404 because the row is invisible to the requester's company
 context (enforced by `app.core.db`'s ORM filter) — see
 `tests/masterdata/test_cross_company_isolation.py`.
+
+WEEK9 Slice E (ADR-009 Decision 11 & 12): Global reference data writes
+(UoM, UoM conversions, currencies, exchange rates) and tenant root creation
+(companies) have moved to CLI tools (`app.cli.manage_reference_data` and
+`app.cli.manage_companies`). Only read endpoints remain on HTTP.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import Public, RequiresPermission
@@ -23,21 +28,16 @@ from app.modules.masterdata.schemas import (
     AccountCreate,
     AccountRead,
     AccountUpdate,
-    CompanyCreate,
     CompanyRead,
-    CurrencyCreate,
     CurrencyRead,
     CustomerCreate,
     CustomerRead,
     CustomerUpdate,
-    ExchangeRateCreate,
     ExchangeRateRead,
     ProductCreate,
     ProductRead,
     ProductUpdate,
-    UomConversionCreate,
     UomConversionRead,
-    UomCreate,
     UomRead,
 )
 
@@ -48,17 +48,6 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 # ---------------------------------------------------------------------------
 # Companies (tenant root — bootstrap endpoints, not tenant-filtered)
 # ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/companies",
-    response_model=CompanyRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequiresPermission("masterdata.company.create"))],
-)
-async def create_company(payload: CompanyCreate, session: DbSession) -> CompanyRead:
-    company = await service.create_company(session, payload)
-    return CompanyRead.model_validate(company)
 
 
 @router.get(
@@ -89,7 +78,7 @@ async def get_company(company_id: uuid.UUID, session: DbSession) -> CompanyRead:
 @router.post(
     "/customers",
     response_model=CustomerRead,
-    status_code=status.HTTP_201_CREATED,
+    status_code=201,
     dependencies=[Depends(RequiresPermission("masterdata.customer.create"))],
 )
 async def create_customer(payload: CustomerCreate, session: DbSession) -> CustomerRead:
@@ -131,7 +120,7 @@ async def update_customer(
 
 @router.delete(
     "/customers/{customer_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=204,
     response_model=None,
     dependencies=[Depends(RequiresPermission("masterdata.customer.delete"))],
 )
@@ -147,7 +136,7 @@ async def delete_customer(customer_id: uuid.UUID, session: DbSession) -> None:
 @router.post(
     "/products",
     response_model=ProductRead,
-    status_code=status.HTTP_201_CREATED,
+    status_code=201,
     dependencies=[Depends(RequiresPermission("masterdata.product.create"))],
 )
 async def create_product(payload: ProductCreate, session: DbSession) -> ProductRead:
@@ -189,7 +178,7 @@ async def update_product(
 
 @router.delete(
     "/products/{product_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=204,
     response_model=None,
     dependencies=[Depends(RequiresPermission("masterdata.product.delete"))],
 )
@@ -205,7 +194,7 @@ async def delete_product(product_id: uuid.UUID, session: DbSession) -> None:
 @router.post(
     "/accounts",
     response_model=AccountRead,
-    status_code=status.HTTP_201_CREATED,
+    status_code=201,
     dependencies=[Depends(RequiresPermission("masterdata.account.create"))],
 )
 async def create_account(payload: AccountCreate, session: DbSession) -> AccountRead:
@@ -247,7 +236,7 @@ async def update_account(
 
 @router.delete(
     "/accounts/{account_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=204,
     response_model=None,
     dependencies=[Depends(RequiresPermission("masterdata.account.delete"))],
 )
@@ -256,19 +245,8 @@ async def delete_account(account_id: uuid.UUID, session: DbSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# UoM / UoM conversion (global reference data)
+# UoM / UoM conversion (global reference data - read only via HTTP)
 # ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/uom",
-    response_model=UomRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequiresPermission("masterdata.uom.create"))],
-)
-async def create_uom(payload: UomCreate, session: DbSession) -> UomRead:
-    uom = await service.create_uom(session, payload)
-    return UomRead.model_validate(uom)
 
 
 @router.get(
@@ -279,19 +257,6 @@ async def create_uom(payload: UomCreate, session: DbSession) -> UomRead:
 async def list_uoms(session: DbSession) -> list[UomRead]:
     uoms = await service.list_uoms(session)
     return [UomRead.model_validate(u) for u in uoms]
-
-
-@router.post(
-    "/uom-conversions",
-    response_model=UomConversionRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequiresPermission("masterdata.uom_conversion.create"))],
-)
-async def create_uom_conversion(
-    payload: UomConversionCreate, session: DbSession
-) -> UomConversionRead:
-    conversion = await service.create_uom_conversion(session, payload)
-    return UomConversionRead.model_validate(conversion)
 
 
 @router.get(
@@ -305,19 +270,8 @@ async def list_uom_conversions(session: DbSession) -> list[UomConversionRead]:
 
 
 # ---------------------------------------------------------------------------
-# Currencies / exchange rates (global reference data)
+# Currencies / exchange rates (global reference data - read only via HTTP)
 # ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/currencies",
-    response_model=CurrencyRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequiresPermission("masterdata.currency.create"))],
-)
-async def create_currency(payload: CurrencyCreate, session: DbSession) -> CurrencyRead:
-    currency = await service.create_currency(session, payload)
-    return CurrencyRead.model_validate(currency)
 
 
 @router.get(
@@ -328,17 +282,6 @@ async def create_currency(payload: CurrencyCreate, session: DbSession) -> Curren
 async def list_currencies(session: DbSession) -> list[CurrencyRead]:
     currencies = await service.list_currencies(session)
     return [CurrencyRead.model_validate(c) for c in currencies]
-
-
-@router.post(
-    "/exchange-rates",
-    response_model=ExchangeRateRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequiresPermission("masterdata.exchange_rate.create"))],
-)
-async def create_exchange_rate(payload: ExchangeRateCreate, session: DbSession) -> ExchangeRateRead:
-    rate = await service.create_exchange_rate(session, payload)
-    return ExchangeRateRead.model_validate(rate)
 
 
 @router.get(
