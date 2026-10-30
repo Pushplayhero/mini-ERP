@@ -1089,14 +1089,14 @@ call before it was applied.
 ## Action Items
 
 1. [x] `/CODEX REVIEW ARCHITECTURE` — APPROVED, round 8 (2026-08-16).
-2. [ ] Migration 0009: `users`, `roles`, `permissions`, `role_permissions`,
+2. [x] Migration 0009: `users`, `roles`, `permissions`, `role_permissions`,
    `user_company_roles`, `sessions` + seed data for the initial role/
-   permission catalog.
-3. [ ] `app/core/authorization.py`: `ActorContext`, `ContextVar`, bind/reset
+   permission catalog (plus Migration 0010 for the full 44-endpoint catalog).
+3. [x] `app/core/authorization.py`: `ActorContext`, `ContextVar`, bind/reset
    functions, `require_permission()`, `ActionDeniedError`. No shared
    `SYSTEM_ACTOR` constant (Decision 4/10) — purpose-specific actors only,
    defined where they're used.
-4. [ ] `app/platform/permissions/`: `service.py` (login incl. multi-company
+4. [x] `app/platform/permissions/`: `service.py` (login incl. multi-company
    selection, token resolution + per-request entitlement re-resolution,
    switch-company), `models.py`, `schemas.py`, `router.py` (`/auth/login`,
    `/auth/switch-company`, `/auth/logout`).
@@ -1113,24 +1113,24 @@ call before it was applied.
    by attempting to sequence implementation — not a re-litigation of any
    Decision above, all of which stand unchanged. See the Week 9 brief for
    the full mechanism.
-5. [ ] `app/cli/bootstrap_admin.py`: the full fresh-install CLI sequence
+5. [x] `app/cli/bootstrap_admin.py`: the full fresh-install CLI sequence
    (Decision 6) — exempt per Rule 10b, no actor binding needed, but must
    itself refuse to create a second user once any `users` row exists
    (Rule 10b's first-run-only boundary, enforced in code, not just prose).
-6. [ ] `app/main.py`: `AuthenticationMiddleware` replacing
+6. [x] `app/main.py`: `AuthenticationMiddleware` replacing
    `tenancy_middleware`'s header-reading code (reusing `company_context`);
    startup route-classification check (Decision 7), including an explicit
    mechanism for the framework-generated `/docs`/`/redoc`/`/openapi.json`/
    `/docs/oauth2-redirect` routes.
-7. [ ] `app/cli/seed_demo.py`: bind a new `DEMO_SEED_ACTOR` (Decision 4)
+7. [x] `app/cli/seed_demo.py`: bind a new `DEMO_SEED_ACTOR` (Decision 4)
    with its own enumerated permission set, and refuse to run unless an
    explicit override is set (Decision 10). `rebuild_ar_balances.py`/
    `rebuild_stock_summary.py`/`replay_outbox.py`: **no change** — exempt
    per Rule 10a. `bootstrap_admin.py`: exempt per Rule 10b, but must gain
    the second-run refusal guard (Decision 6/10b). `demo_o2c.py`: add a
    login step + bearer token, not an authorization-actor change.
-8. [ ] Three new import-linter contracts (Decision 9).
-9. [ ] Remove `POST /uom`, `POST /uom-conversions`, `POST /currencies`,
+8. [x] Three new import-linter contracts (Decision 9).
+9. [x] Remove `POST /uom`, `POST /uom-conversions`, `POST /currencies`,
    `POST /exchange-rates` from `app/modules/masterdata/router.py`
    (Decision 11); `app/cli/manage_reference_data.py` binding
    `REFERENCE_DATA_ADMIN_ACTOR`, calling the existing `masterdata.service`
@@ -1143,10 +1143,10 @@ call before it was applied.
    real; `list_companies`/`get_company` filtered to the caller's
    `user_company_roles` entitlements, reusing Decision 8's login-flow
    resolution.
-10. [ ] A dedicated migration/implementation brief for the breaking-change
+10. [x] A dedicated migration/implementation brief for the breaking-change
     rollout across README/tests/demo scripts (flagged in Consequences, not
     scoped here).
-11. [ ] Tests: login success/failure (incl. multi-company selection),
+11. [x] Tests: login success/failure (incl. multi-company selection),
     token expiry/revocation, disabled-user immediate lockout, wrong-company
     entitlement (403), unclassified-route startup crash (Decision 7),
     cross-company entitlement isolation (mirroring the existing

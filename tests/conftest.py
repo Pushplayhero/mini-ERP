@@ -52,11 +52,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def _docker_available() -> bool:
     if not shutil.which("docker"):
         return False
-    try:
-        subprocess.run(["docker", "info"], capture_output=True, timeout=5, check=True)
-    except Exception:
-        return False
-    return True
+    for _ in range(2):
+        try:
+            subprocess.run(["docker", "info"], capture_output=True, timeout=15, check=True)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _start_testcontainers_postgres() -> tuple[str, object]:
@@ -77,11 +79,12 @@ def _start_pgserver_postgres() -> tuple[str, object]:
     pgdata = Path(tempfile.mkdtemp(prefix="mini_erp_pgtest_"))
     server = pgserver.get_server(pgdata, cleanup_mode="delete")  # type: ignore[attr-defined]
     info = server.get_postmaster_info()
+    connect_host = info.hostname if info.hostname is not None else str(info.socket_dir)
 
     async def _init_db() -> None:
         conn = await asyncpg.connect(
             user="postgres",
-            host=info.hostname,
+            host=connect_host,
             port=info.port,
             database="postgres",
         )
@@ -91,7 +94,10 @@ def _start_pgserver_postgres() -> tuple[str, object]:
             await conn.close()
 
     asyncio.run(_init_db())
-    dsn = f"postgresql+asyncpg://postgres:@{info.hostname}:{info.port}/mini_erp_test"
+    if info.hostname is not None:
+        dsn = f"postgresql+asyncpg://postgres:@{info.hostname}:{info.port}/mini_erp_test"
+    else:
+        dsn = f"postgresql+asyncpg://postgres:@:{info.port}/mini_erp_test?host={info.socket_dir}"
     return dsn, server
 
 

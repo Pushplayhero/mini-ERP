@@ -233,7 +233,8 @@ H=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 UOM_ID=$(curl -s $API/uom "${H[@]}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')
 
-curl -s -X POST $API/periods "${H[@]}" -d '{"year":2026,"month":8}' > /dev/null
+curl -s -X POST $API/periods "${H[@]}" \
+  -d "$(python3 -c 'from datetime import datetime, timezone; d = datetime.now(timezone.utc).date(); print(f"{{\"year\":{d.year},\"month\":{d.month}}}")')" > /dev/null
 for row in 1000:Cash:asset 1100:"Accounts Receivable":asset 1300:Inventory:asset \
            4000:Revenue:revenue 5000:COGS:expense; do
   IFS=: read -r code name type <<< "$row"
@@ -437,9 +438,11 @@ app/
 │   ├── sales/        # 訂單：draft → confirmed → shipped，hook registry 的使用者
 │   ├── inventory/    # stock_moves（append-only）+ stock_summary，goods_shipped 的訂閱者
 │   └── receivables/  # 發票、收款、沖款、帳齡
+├── platform/
+│   └── permissions/ # ADR-009 RBAC 模型、認證/session 服務、/auth router
 ├── plugins/          # credit_limit.py ——唯一一個寫死安裝的示範 plugin
-├── cli/              # seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
-└── main.py           # FastAPI app、租戶 middleware、例外處理、router 掛載
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
+└── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
 docs/
 ├── adr/               # 架構決策紀錄，含 WEEK7-phase1-hardening-brief.md
