@@ -11,7 +11,7 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **177 tracked files**, assigned exactly once across:
+The current inventory is **178 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
@@ -27,7 +27,7 @@ The current inventory is **177 tracked files**, assigned exactly once across:
 | `u10_migrations` | 15 |
 | `u11_operations_e2e` | 13 |
 | `u12_gate` | 2 |
-| `u13_governance` | 20 |
+| `u13_governance` | 21 |
 | `u14_dependencies` | 2 |
 
 Every real unit scan still requires an external owner authorization and an
@@ -73,7 +73,7 @@ runner scripts, markdown documentation, or `uv.lock`, the owner authorized a
    `ruff format --check`, `mypy --strict` (`scripts/`), and the 278 contract
    tests in `tests/security/test_d5_security_gate.py`. No recursive paid LLM
    rescan of the runner script is required.
-3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 20 files)**:
+3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 21 files)**:
    All four findings from `454b2e7` (predictable quick-start passwords,
    password exposure in shell history / `curl` arguments, mutable GitHub Action
    tags, and coverage test execution under `contents: write`) are remediated in

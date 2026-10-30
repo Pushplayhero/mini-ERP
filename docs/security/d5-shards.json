@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 177,
+  "expected_total_files": 178,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 177,
+      "expected_total_files": 178,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -181,7 +181,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 20,
+          "expected_file_count": 21,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -191,6 +191,7 @@
             "README.zh-TW.md",
             "SECURITY.md",
             "docs/adr/ADR-001-modular-monolith.md",
+            "docs/adr/ADR-010-platform-plugins.md",
             "docs/adr/PHASE2-platform-architecture-overview.md",
             "docs/adr/README.md",
             "docs/adr/WEEK7-phase1-hardening-brief.md",
@@ -293,7 +294,7 @@
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 22,
+      "expected_file_count": 23,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",
@@ -306,6 +307,7 @@
         "docs/adr/ADR-001-modular-monolith.md",
         "docs/adr/ADR-004-event-bus.md",
         "docs/adr/ADR-009-platform-permissions.md",
+        "docs/adr/ADR-010-platform-plugins.md",
         "docs/adr/PHASE2-platform-architecture-overview.md",
         "docs/adr/README.md",
         "docs/adr/WEEK7-phase1-hardening-brief.md",

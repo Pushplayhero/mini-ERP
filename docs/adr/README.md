@@ -10,6 +10,8 @@
 | [ADR-006](ADR-006-sales-and-hook-registry.md) | Sales module, hook registry | Accepted |
 | [ADR-007](ADR-007-inventory-and-shipping.md) | Inventory, shipping | Accepted |
 | [ADR-008](ADR-008-receivables.md) | Receivables — invoicing, payments, AR aging | Accepted |
+| [ADR-009](ADR-009-platform-permissions.md) | `platform.permissions` — identity, RBAC, and the authorization port | Accepted |
+| [ADR-010](ADR-010-platform-plugins.md) | `platform.plugins` — plugin loader, tenant enablement governance, and public-surface isolation | Accepted |
 
 ADR-003 through ADR-008 each passed a real `codex` CLI architecture
 consensus review before implementation (see each ADR's "Consensus
