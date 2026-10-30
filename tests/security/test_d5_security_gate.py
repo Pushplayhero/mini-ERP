@@ -86,6 +86,7 @@ def _configure_trusted_git_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gate, "_secure_windows_directory", lambda _path: None)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows child environment uses Win32 ACL helpers")
 def test_windows_child_environment_secures_results_root_and_exact_sha(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1448,16 +1449,17 @@ def test_micro_preview_includes_scope_budget_and_destination(
 
 
 def test_micro_scanner_argv_preserves_capacity_and_never_changes_approval(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        gate, "_validated_repo_input", lambda repo, path, **_kwargs: Path(repo) / path
+        gate, "_validated_repo_input", lambda repo, path, **_kwargs: (Path(repo) / path).resolve()
     )
-    repo = Path("C:/repo")
+    repo = tmp_path / "repo"
     argv = gate.build_scanner_argv(
         repo,
         "u03_events_hooks",
-        Path("C:/results"),
+        tmp_path / "results",
         profile="micro-v2",
     )
     codex_values = [argv[index + 1] for index, value in enumerate(argv) if value == "--codex"]
@@ -2111,7 +2113,8 @@ def test_scanner_success_terminates_remaining_process_group(
     assert output.is_file()
     assert gate.time.monotonic() - started < 6
     if sys.platform != "win32":
-        assert not gate._scanner_process_group_exists(int(output.read_text(encoding="utf-8")))
+        child_pid = int(output.read_text(encoding="utf-8").splitlines()[0].strip())
+        assert not gate._scanner_process_group_exists(child_pid)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper behavior")
@@ -2139,7 +2142,7 @@ def test_scanner_timeout_terminates_session_escaping_descendant(
         )
 
     assert gate.time.monotonic() - started < 6
-    child_pid = int(output.read_text(encoding="utf-8"))
+    child_pid = int(output.read_text(encoding="utf-8").splitlines()[0].strip())
     assert child_pid not in gate._linux_descendant_pids(gate.os.getpid())
 
 
@@ -2245,6 +2248,7 @@ def test_child_environment_refuses_precreated_npm_config_symlink(
     assert outside.read_text(encoding="utf-8") == "registry=https://attacker.invalid/\n"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH budget is Windows-specific")
 def test_windows_scanner_cache_path_stays_below_max_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2325,9 +2329,9 @@ def test_preflight_fails_closed_without_scanner_invocation(
         if argv and argv[0] == "git":
             return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
         calls.append(argv)
-        if failure == "node" and argv[0] == "node.exe":
+        if failure == "node" and argv[0] in {"node", "node.exe"}:
             return subprocess.CompletedProcess(argv, 134, "raw node", "secret node")
-        if failure == "npx" and argv[0] == "npx.cmd":
+        if failure == "npx" and argv[0] in {"npx", "npx.cmd"}:
             return subprocess.CompletedProcess(argv, 134, "raw npx", "secret npx")
         if failure == "timeout":
             raise subprocess.TimeoutExpired(argv, 10, output="raw", stderr="secret")
@@ -2368,7 +2372,8 @@ def test_preflight_checks_node_then_npx_with_ten_second_timeout(
     result = gate.run_preflight(repo, tmp_path / "results")
 
     assert result.passed is True
-    assert [call[0][0] for call in calls] == ["node.exe", "npx.cmd"]
+    expected_binaries = ["node.exe", "npx.cmd"] if os.name == "nt" else ["node", "npx"]
+    assert [call[0][0] for call in calls] == expected_binaries
     assert [call[1]["timeout"] for call in calls] == [10, 10]
     expected_cwd = (
         tmp_path / "results" / result.output_dir.parts[-2] / ".state" / "runtime-preflight"
@@ -2416,7 +2421,8 @@ def test_preflight_probes_exact_scan_output_directory_before_paid_launch(
     assert checks["scanner_runtime_scope"] == {"status": "passed", "exit_code": 0}
     assert output.is_dir()
     assert list(output.iterdir()) == []
-    assert [call[0] for call in calls] == ["node.exe", "npx.cmd"]
+    expected_binaries = ["node.exe", "npx.cmd"] if os.name == "nt" else ["node", "npx"]
+    assert [call[0] for call in calls] == expected_binaries
 
 
 def test_preflight_rejects_unwritable_scan_output_before_paid_launch(
@@ -2641,7 +2647,7 @@ def test_run_scan_preflight_failure_never_invokes_scanner(
         if argv and argv[0] == "git":
             return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
         calls.append(argv)
-        if argv[0] == "node.exe":
+        if argv[0] in {"node", "node.exe"}:
             return subprocess.CompletedProcess(argv, 134, "raw", "secret")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -4643,7 +4649,10 @@ def test_git_invocations_use_sterile_config_and_bounded_process(
     argv, kwargs = calls[-1]
     assert "-c" in argv and "core.fsmonitor=false" in argv
     assert "core.hooksPath" in " ".join(argv)
-    assert kwargs["creationflags"] & 0x00000004  # CREATE_SUSPENDED
+    if os.name == "nt":
+        assert kwargs["creationflags"] & 0x00000004  # CREATE_SUSPENDED
+    else:
+        assert kwargs.get("start_new_session") is True
     env = kwargs["env"]
     assert "GIT_DIR" not in env
     assert env["GIT_CONFIG_NOSYSTEM"] == "1"
