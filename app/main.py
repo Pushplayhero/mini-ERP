@@ -1,28 +1,45 @@
 """FastAPI application entrypoint.
 
-Wires together: settings, the tenancy middleware (§10.2), exception ->
-HTTP-status mapping, module routers, the event bus's registration/
-subscription wiring, and the hook registry's registration wiring. Week 1
-mounted `masterdata`; Week 2 added `ledger` (ADR-005); Week 3 added the
+Wires together: settings, the authentication middleware (ADR-009 Decision 7),
+exception -> HTTP-status mapping, module routers, the event bus's
+registration/subscription wiring, and the hook registry's registration wiring.
+Week 1 mounted `masterdata`; Week 2 added `ledger` (ADR-005); Week 3 added the
 event bus + posting engine (ADR-003/ADR-004); Week 4 added `sales` (order
 lifecycle) plus the minimal hook registry and its one demonstration plugin,
 `app.plugins.credit_limit` (ADR-006); Week 5 added `inventory` (append-only
 stock + summary) and wired `sales.goods_shipped` — the first event with two
-subscribers — through both it and `ledger.posting` (ADR-007). Week 6 adds
+subscribers — through both it and `ledger.posting` (ADR-007). Week 6 added
 `receivables` (invoicing, payment application, AR aging) and its four
 posting events, closing the Phase 1 O2C line (ADR-008).
+
+WEEK9 Slice D (ADR-009, Phase 2) implements `AuthenticationMiddleware`
+with bearer-session token resolution, multi-tenant company context and actor
+context bound ambiently from the active session, and strict explicit route
+classification. See `docs/adr/ADR-009-platform-permissions.md`.
 """
 
 from __future__ import annotations
 
-import uuid
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, status
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from starlette.routing import Match
 
 from app.core import events, hooks
+from app.core.authorization import (
+    Authenticated,
+    Public,
+    RequiresPermission,
+    reset_current_actor,
+    set_current_actor,
+)
+from app.core.db import get_session_factory
 from app.core.exceptions import (
+    ActionDeniedError,
     ConflictError,
     DomainValidationError,
     NotFoundError,
@@ -40,49 +57,159 @@ from app.modules.receivables.router import router as receivables_router
 from app.modules.sales import events as sales_events
 from app.modules.sales import service as sales_service
 from app.modules.sales.router import router as sales_router
+from app.platform.permissions import service as permissions_service
+from app.platform.permissions.context import (
+    reset_current_session_id,
+    set_current_session_id,
+)
+from app.platform.permissions.middleware import (
+    MAX_CONCURRENT_LOGIN_VERIFICATIONS,
+    LoginProtectionMiddleware,
+    LoginRateLimiter,
+)
+from app.platform.permissions.router import router as permissions_router
 from app.plugins import credit_limit
 
 settings = get_settings()
 
-app = FastAPI(
-    title="mini-erp",
-    version="0.1.0",
-    description=(
-        "A minimal, correctness-obsessed open-source ERP kernel. "
-        "Phase 1 / Week 2: masterdata + ledger modules, multi-company tenancy groundwork."
-    ),
-)
+_TIER1_PUBLIC_PATHS = frozenset({"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"})
+_TIER1_ALLOWED_METHODS = frozenset({"GET", "HEAD"})
+
+
+def _match_route(request: Request) -> APIRoute | None:
+    for route in request.app.routes:
+        if isinstance(route, APIRoute):
+            match, _ = route.matches(request.scope)
+            if match == Match.FULL:
+                return route
+    return None
+
+
+def _route_is_public(route: APIRoute) -> bool:
+    return any(isinstance(dep.dependency, Public) for dep in route.dependencies)
+
+
+def _is_framework_doc_endpoint(endpoint: object) -> bool:
+    module = getattr(endpoint, "__module__", "") or ""
+    return module.startswith("fastapi")
+
+
+def _classify_routes_or_crash(app: FastAPI) -> None:
+    seen_tier1_paths: set[str] = set()
+
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None) or set()
+        endpoint = getattr(route, "endpoint", None)
+
+        if path in _TIER1_PUBLIC_PATHS:
+            if not _is_framework_doc_endpoint(endpoint):
+                raise RuntimeError(
+                    f"Custom route shadows Tier-1 documentation path {path!r} "
+                    f"with endpoint {endpoint!r}. Application endpoints must not shadow "
+                    "framework documentation routes."
+                )
+            if path in seen_tier1_paths:
+                raise RuntimeError(
+                    f"Duplicate/shadowed Tier-1 documentation route detected for path {path!r}."
+                )
+            seen_tier1_paths.add(path)
+
+            unallowed = [m for m in methods if m not in _TIER1_ALLOWED_METHODS]
+            if unallowed:
+                raise RuntimeError(
+                    f"Tier-1 public route {path} carries unallowed method(s) {unallowed} — "
+                    "only GET/HEAD are permitted on documentation endpoints."
+                )
+            continue
+
+        if not isinstance(route, APIRoute):
+            raise RuntimeError(f"Unclassified non-APIRoute at startup: {route!r}")
+
+        deps = [d.dependency for d in route.dependencies]
+        markers = [d for d in deps if isinstance(d, Public | Authenticated | RequiresPermission)]
+        if len(markers) != 1:
+            raise RuntimeError(
+                f"Route {route.path} {route.methods} carries {len(markers)} "
+                "classification marker(s) (expected exactly 1: one of Public(), "
+                "Authenticated(), or RequiresPermission(...)) — every route must be explicitly and "
+                "unambiguously classified (ADR-009 Decision 7c)."
+            )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _classify_routes_or_crash(app)
+    app.state.login_rate_limiter = LoginRateLimiter()
+    app.state.login_verification_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LOGIN_VERIFICATIONS)
+    yield
+
+
+def create_app() -> FastAPI:
+    application = FastAPI(
+        title="mini-ERP",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    application.state.login_rate_limiter = LoginRateLimiter()
+    application.state.login_verification_semaphore = asyncio.Semaphore(
+        MAX_CONCURRENT_LOGIN_VERIFICATIONS
+    )
+    application.add_middleware(LoginProtectionMiddleware)
+    return application
+
+
+app = create_app()
 
 
 @app.middleware("http")
-async def tenancy_middleware(
-    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+async def authentication_middleware(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
-    """Bind the active company context from a trusted tenant header.
+    """Resolve bearer token to actor context, session context, and active company context.
 
-    Week 1 has no auth/RBAC (Phase 2 territory), so `X-Company-Id` is the
-    documented stand-in for a verified JWT/session claim carrying the
-    caller's active company — it is set by a trusted upstream, never by
-    request *body* fields a client controls. If the header is absent or
-    malformed, no context is bound and any endpoint touching tenant-scoped
-    data will fail-closed via `TenancyContextError` (see app.core.db).
+    Fail-closed: all non-public routes require a valid bearer token matching an
+    active user session.
     """
-    header_value = request.headers.get(settings.tenant_header_name)
-    token = None
-    if header_value:
+    if (
+        request.url.path in _TIER1_PUBLIC_PATHS
+        and request.method in _TIER1_ALLOWED_METHODS
+        and _match_route(request) is None
+    ):
+        return await call_next(request)
+
+    route = _match_route(request)
+    if route is not None and _route_is_public(route):
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization")
+    parts = auth_header.split(maxsplit=1) if auth_header else []
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        return JSONResponse(
+            {"detail": "Not authenticated."},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    raw_token = parts[1].strip()
+
+    session_factory = get_session_factory()
+    async with session_factory() as db_session:
         try:
-            company_id = uuid.UUID(header_value)
-        except ValueError:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": f"Invalid {settings.tenant_header_name} header: not a UUID"},
-            )
-        token = set_current_company_id(company_id)
+            resolved = await permissions_service.resolve_actor(db_session, raw_token)
+        except permissions_service.InvalidSessionError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_401_UNAUTHORIZED)
+        except permissions_service.UserDisabledError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_403_FORBIDDEN)
+
+    actor_token = set_current_actor(resolved.actor_context)
+    session_token = set_current_session_id(resolved.session_id)
+    company_token = set_current_company_id(resolved.active_company_id)
     try:
         return await call_next(request)
     finally:
-        if token is not None:
-            reset_current_company_id(token)
+        reset_current_company_id(company_token)
+        reset_current_session_id(session_token)
+        reset_current_actor(actor_token)
 
 
 @app.exception_handler(NotFoundError)
@@ -94,6 +221,11 @@ async def not_found_handler(_request: Request, exc: NotFoundError) -> JSONRespon
 async def tenancy_context_handler(_request: Request, exc: TenancyContextError) -> JSONResponse:
     # Fail-closed at the DB layer surfaces here as 403: the caller made a
     # syntactically valid request but has no authorized tenant context.
+    return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": str(exc)})
+
+
+@app.exception_handler(ActionDeniedError)
+async def action_denied_handler(_request: Request, exc: ActionDeniedError) -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": str(exc)})
 
 
@@ -112,7 +244,7 @@ async def domain_validation_handler(_request: Request, exc: DomainValidationErro
     )
 
 
-@app.get("/health", tags=["ops"])
+@app.get("/health", tags=["ops"], dependencies=[Depends(Public())])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -122,6 +254,10 @@ app.include_router(ledger_router, prefix="/api/v1")
 app.include_router(sales_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
 app.include_router(receivables_router, prefix="/api/v1")
+# ADR-009 / WEEK9 Slice B: `/auth/*`, not under `/api/v1` — matches the ADR's
+# own literal path references (grouped alongside `/health`/`/docs` in the
+# Slice D public-route allowlist, not the business-module API surface).
+app.include_router(permissions_router)
 
 
 # ---------------------------------------------------------------------------

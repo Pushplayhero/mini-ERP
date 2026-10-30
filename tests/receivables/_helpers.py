@@ -15,7 +15,7 @@ from typing import Any
 from httpx import AsyncClient, Response
 
 from tests.conftest import company_headers
-from tests.ledger._helpers import create_account, create_period
+from tests.ledger._helpers import create_account, create_current_posting_periods
 from tests.sales._helpers import (
     confirm_order,
     create_customer,
@@ -57,7 +57,7 @@ async def setup_shipped_order(
     from tests.inventory._helpers import create_adjustment
 
     company_id = await sales_create_company(client, code)
-    await create_period(client, company_id, 2026, 8)
+    await create_current_posting_periods(client, company_id)
     for account_code, name, acct_type in (
         ("1000", "Cash", "asset"),
         ("1100", "Accounts Receivable", "asset"),

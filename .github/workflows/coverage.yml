@@ -14,6 +14,13 @@ on:
     # coverage-badge job below), and this workflow's push trigger only
     # fires for `main`, so the bot's own commit can never retrigger it.
 
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   DATABASE_URL: postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp
 
@@ -24,6 +31,8 @@ jobs:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:16-alpine
@@ -39,37 +48,24 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
-          version: "latest"
+          version: "0.12.18"
       - run: uv python install 3.12
       - run: uv sync --group dev
       - run: uv run alembic upgrade head
       - run: uv run pytest --cov=app --cov-report=term
 
-  # push-to-main only: regenerate the badge and commit it to a SEPARATE
-  # `badges` branch (never `main` -- `main` is protected by a required-
-  # status-checks ruleset with no bypass actors, and this job intentionally
-  # has none either; a persistent branch, not an ephemeral Actions
-  # artifact, so README can link something that doesn't expire or require
-  # auth).
-  coverage-badge:
-    name: coverage badge
+  # push-to-main step 1 (READ-ONLY): execute migrations, test suite, and badge
+  # rendering under `contents: read` so project/dependency code never runs
+  # with repository-write credentials (D.5 u13 governance remediation).
+  coverage-generate:
+    name: coverage generate (read-only)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    # Two near-simultaneous pushes to main would otherwise run this job
-    # concurrently: each checks out the SHA that triggered it, computes
-    # coverage for that stale snapshot, then races to commit+push the
-    # badge -- one push can be rejected, or an older badge can "win".
-    # Serializing per-ref plus re-checking out the live branch tip below
-    # (not the frozen trigger SHA) means only the latest push's coverage
-    # ever gets committed.
-    concurrency:
-      group: coverage-badge-${{ github.ref }}
-      cancel-in-progress: true
+      contents: read
     services:
       postgres:
         image: postgres:16-alpine
@@ -85,39 +81,60 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # Live branch tip, not the (possibly already-superseded) SHA
-          # that triggered this run -- see the concurrency comment above.
           ref: main
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
-          version: "latest"
+          version: "0.12.18"
       - run: uv python install 3.12
       - run: uv sync --group dev
       - run: uv run alembic upgrade head
       - run: uv run pytest --cov=app --cov-report=term
       - run: mkdir -p /tmp/badge-out
       - run: uv run coverage-badge -o /tmp/badge-out/coverage.svg -f
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: coverage-badge-svg
+          path: /tmp/badge-out/coverage.svg
+          if-no-files-found: error
+          retention-days: 1
+
+  # push-to-main step 2 (WRITE-ISOLATED): publishes the pre-rendered SVG to the
+  # `badges` branch without installing dependencies or executing repository code.
+  coverage-badge:
+    name: coverage badge publish
+    if: github.event_name == 'push'
+    needs: [coverage-generate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: coverage-badge-svg
+          path: /tmp/badge-in
+      - name: Validate SVG artifact before checkout
+        run: |
+          test -f /tmp/badge-in/coverage.svg
+          test ! -L /tmp/badge-in/coverage.svg
+          size=$(wc -c < /tmp/badge-in/coverage.svg)
+          test "$size" -gt 0 -a "$size" -le 65536
+          grep -q "<svg" /tmp/badge-in/coverage.svg
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
       - name: Publish badge to the badges branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # A separate worktree for the `badges` branch, independent of
-          # this job's `main` checkout above -- `main`'s working tree is
-          # never touched by this step. `actions/checkout@v4` only fetches
-          # `main` by default, so `origin/badges` has no local
-          # remote-tracking ref yet -- fetch it explicitly before
-          # `git worktree add` can resolve it. `--orphan` on the
-          # first-ever run (no `badges` branch exists yet); a normal
-          # tracked worktree checkout on every run after that.
           if git ls-remote --exit-code --heads origin badges > /dev/null; then
             git fetch --no-tags origin refs/heads/badges:refs/remotes/origin/badges
             git worktree add --track -b badges /tmp/badges-wt origin/badges
           else
             git worktree add --orphan -b badges /tmp/badges-wt
           fi
-          cp /tmp/badge-out/coverage.svg /tmp/badges-wt/coverage.svg
+          cp /tmp/badge-in/coverage.svg /tmp/badges-wt/coverage.svg
           cd /tmp/badges-wt
           git add coverage.svg
           git diff --staged --quiet || git commit -m "chore: update coverage badge [ci]"

@@ -60,10 +60,10 @@ lookup, never blind-create.
 Entry point: `uv run python -m app.cli.seed_demo`.
 """
 
-from __future__ import annotations
-
+import argparse
 import asyncio
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -82,9 +82,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # publish — placing it first, ahead of even stdlib-adjacent imports below,
 # keeps that ordering impossible to get wrong by accident.
 import app.main  # noqa: F401  (side effect: composition-root wiring)
+from app.core.authorization import ActorContext, actor_context
 from app.core.db import dispose_engine, get_session_factory
 from app.core.exceptions import ConflictError
-from app.core.tenancy import company_context, require_current_company_id
+from app.core.settings import get_settings
+from app.core.tenancy import company_context
 from app.modules.inventory import service as inventory_service
 from app.modules.inventory.schemas import StockAdjustmentCreate
 from app.modules.ledger import service as ledger_service
@@ -108,6 +110,42 @@ from app.modules.sales.models import SalesOrder, SalesOrderStatus
 from app.modules.sales.schemas import SalesOrderCreate, SalesOrderLineCreate
 
 logger = logging.getLogger("app.cli.seed_demo")
+
+DEMO_SEED_ACTOR = ActorContext(
+    user_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+    permission_codes=frozenset(
+        {
+            "masterdata.currency.read",
+            "masterdata.currency.create",
+            "masterdata.uom.read",
+            "masterdata.uom.create",
+            "masterdata.company.read",
+            "masterdata.company.create",
+            "masterdata.customer.read",
+            "masterdata.customer.create",
+            "masterdata.product.read",
+            "masterdata.product.create",
+            "masterdata.account.read",
+            "masterdata.account.create",
+            "ledger.period.read",
+            "ledger.period.create",
+            "ledger.journal_entry.read",
+            "ledger.journal_entry.create",
+            "sales.order.read",
+            "sales.order.create",
+            "sales.order.confirm",
+            "sales.order.ship",
+            "inventory.adjustment.create",
+            "inventory.summary.read",
+            "receivables.invoice.read",
+            "receivables.invoice.create",
+            "receivables.payment.read",
+            "receivables.payment.create",
+            "receivables.payment.allocate",
+        }
+    ),
+    is_system_actor=True,
+)
 
 T = TypeVar("T")
 
@@ -244,17 +282,58 @@ async def _ensure_reference_data(session: AsyncSession) -> None:
     )
 
 
-async def _ensure_company(session: AsyncSession) -> uuid.UUID:
+async def _ensure_company(
+    session: AsyncSession, *, target_company_code: str | None = None
+) -> uuid.UUID:
+    existing = await masterdata_service.list_companies_unchecked(session)
+    code = (
+        target_company_code
+        or os.environ.get("BOOTSTRAP_COMPANY_CODE")
+        or os.environ.get("BOOTSTRAP_ADMIN_COMPANY_CODE")
+    )
+
+    if existing:
+        if code:
+            for c in existing:
+                if c.code == code:
+                    if c.functional_currency_code != "TWD":
+                        raise RuntimeError(
+                            f"seed_demo: existing company '{code}' has unsupported functional "
+                            f"currency '{c.functional_currency_code}'. Phase 1 requires 'TWD'."
+                        )
+                    return c.id
+            existing_codes = [c.code for c in existing]
+            raise RuntimeError(
+                f"seed_demo: target company '{code}' not found in existing companies "
+                f"{existing_codes}. Did you run 'make bootstrap' with a matching company code?"
+            )
+        if len(existing) == 1:
+            c = existing[0]
+            if c.functional_currency_code != "TWD":
+                raise RuntimeError(
+                    f"seed_demo: existing company '{c.code}' has unsupported functional "
+                    f"currency '{c.functional_currency_code}'. Phase 1 requires 'TWD'."
+                )
+            return c.id
+        existing_codes = [c.code for c in existing]
+        raise RuntimeError(
+            f"seed_demo: multiple companies exist {existing_codes} but no company code was "
+            "specified. Set BOOTSTRAP_COMPANY_CODE or pass --company-code."
+        )
+
+    effective_code = code or "MAIN"
     company = await _get_or_create(
         session,
-        list_fn=masterdata_service.list_companies,
+        list_fn=masterdata_service.list_companies_unchecked,
         create_fn=lambda s: masterdata_service.create_company(
             s,
             CompanyCreate(
-                code=COMPANY_CODE, name="Demo Company Ltd.", functional_currency_code="TWD"
+                code=effective_code,
+                name="Main Company" if effective_code == "MAIN" else "Demo Company Ltd.",
+                functional_currency_code="TWD",
             ),
         ),
-        match=lambda c: c.code == COMPANY_CODE,
+        match=lambda c: c.code == effective_code,
         compatible=lambda c: c.functional_currency_code == "TWD",
         entity="company",
     )
@@ -364,14 +443,9 @@ async def _reconcile_stock(session: AsyncSession, product_id: uuid.UUID) -> None
             remaining_to_ship += scenario.qty
 
     target = _DESIRED_FINAL_ON_HAND + remaining_to_ship
-    company_id = require_current_company_id()
-    current = await inventory_service.get_or_lock_summary(session, company_id, product_id)
-    # `get_or_lock_summary` holds a row lock in this transaction; releasing
-    # it before the adjustment call (which re-acquires the same lock
-    # internally) needs a commit, not a mid-transaction release — simplest
-    # correct fix: commit this lock-and-read first, then adjust separately.
-    await session.commit()
-    delta = target - current.on_hand
+    summaries = await inventory_service.list_stock_summary(session, product_id=product_id)
+    on_hand = summaries[0].on_hand if summaries else Decimal("0")
+    delta = target - on_hand
     if delta != 0:
         await inventory_service.create_adjustment(
             session,
@@ -537,47 +611,91 @@ async def _find_or_create_payment_and_allocate(
 # ---------------------------------------------------------------------------
 
 
-async def seed_demo() -> SeedSummary:
+async def seed_demo(
+    *, allow_production: bool = False, company_code: str | None = None
+) -> SeedSummary:
+    settings = get_settings()
+    allow_prod_env = os.environ.get("ALLOW_SEED_DEMO_IN_PRODUCTION", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    effective_allow_production = allow_production or allow_prod_env
+    if settings.environment.lower() == "production" and not effective_allow_production:
+        raise RuntimeError(
+            "seed_demo is disabled in production environment unless "
+            "--allow-production is specified or ALLOW_SEED_DEMO_IN_PRODUCTION=1 is set"
+        )
+
     session_factory = get_session_factory()
     summary = SeedSummary()
 
-    async with session_factory() as session:
-        await _ensure_reference_data(session)
-        company_id = await _ensure_company(session)
-        summary.company_id = company_id
+    with actor_context(DEMO_SEED_ACTOR):
+        async with session_factory() as session:
+            await _ensure_reference_data(session)
+            company_id = await _ensure_company(session, target_company_code=company_code)
+            summary.company_id = company_id
 
-        with company_context(company_id):
-            await _ensure_chart_and_period(session)
-            customer_id, product_id = await _ensure_customer_and_product(session)
-            await _reconcile_stock(session, product_id)
-            for scenario in SCENARIOS:
-                await _resume_scenario(session, scenario, customer_id, product_id, summary)
+            with company_context(company_id):
+                await _ensure_chart_and_period(session)
+                customer_id, product_id = await _ensure_customer_and_product(session)
+                await _reconcile_stock(session, product_id)
+                for scenario in SCENARIOS:
+                    await _resume_scenario(session, scenario, customer_id, product_id, summary)
 
-            # Decision 4's v2->v3 consensus record requires this explicitly
-            # (Codex diff review 2026-08-15, finding 4): after resuming
-            # every scenario, on-hand must land on exactly
-            # `_DESIRED_FINAL_ON_HAND` — a self-check, not just a hope the
-            # remaining-work-aware reconciliation above got the math right.
-            final_summary = await inventory_service.get_or_lock_summary(
-                session, company_id, product_id
-            )
-            await session.commit()
-            if final_summary.on_hand != _DESIRED_FINAL_ON_HAND:
-                raise RuntimeError(
-                    f"seed_demo: expected on_hand == {_DESIRED_FINAL_ON_HAND} after resuming "
-                    f"every scenario, got {final_summary.on_hand} — the remaining-work-aware "
-                    "stock reconciliation invariant was violated; investigate before trusting "
-                    "this run's data."
+                # Decision 4's v2->v3 consensus record requires this explicitly
+                # (Codex diff review 2026-08-15, finding 4): after resuming
+                # every scenario, on-hand must land on exactly
+                # `_DESIRED_FINAL_ON_HAND` — a self-check, not just a hope the
+                # remaining-work-aware reconciliation above got the math right.
+                summaries = await inventory_service.list_stock_summary(
+                    session, product_id=product_id
                 )
+                final_summary = summaries[0] if summaries else None
+                await session.commit()
+                if final_summary is None or final_summary.on_hand != _DESIRED_FINAL_ON_HAND:
+                    actual_on_hand = final_summary.on_hand if final_summary else "None"
+                    raise RuntimeError(
+                        f"seed_demo: expected on_hand == {_DESIRED_FINAL_ON_HAND} after resuming "
+                        f"every scenario, got {actual_on_hand} — the remaining-work-aware "
+                        "stock reconciliation invariant was violated; investigate before trusting "
+                        "this run's data."
+                    )
 
     return summary
 
 
-async def _main() -> int:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Seed realistic demo dataset.")
+    parser.add_argument(
+        "--allow-production",
+        action="store_true",
+        default=False,
+        help="Allow running in production environment.",
+    )
+    parser.add_argument(
+        "--company-code",
+        default=os.environ.get("BOOTSTRAP_COMPANY_CODE")
+        or os.environ.get("BOOTSTRAP_ADMIN_COMPANY_CODE"),
+        help="Target company code to seed.",
+    )
+    return parser.parse_args(argv)
+
+
+async def _main(argv: list[str]) -> int:
+    args = _parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    result = await seed_demo()
+    try:
+        result = await seed_demo(
+            allow_production=args.allow_production, company_code=args.company_code
+        )
+    except RuntimeError as exc:
+        print(f"seed_demo error: {exc}", file=sys.stderr)
+        await dispose_engine()
+        return 1
+
     print(
         f"seed_demo summary: company_id={result.company_id} "
         f"scenarios_resumed={result.scenarios_resumed} "
@@ -590,4 +708,4 @@ async def _main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(_main()))
+    sys.exit(asyncio.run(_main(sys.argv[1:])))

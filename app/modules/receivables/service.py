@@ -52,6 +52,7 @@ from sqlalchemy.types import Date as SA_Date
 from sqlalchemy.types import Integer
 
 from app.core import events
+from app.core.authorization import require_permission
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.tenancy import require_current_company_id
 from app.modules.receivables.events import (
@@ -232,6 +233,7 @@ async def create_invoice(session: AsyncSession, data: InvoiceCreate) -> Invoice:
     race's whole story — no order-row lock needed, see ADR-008 Decision 1)
     -> publish `receivables.invoice_issued` -> flush.
     """
+    require_permission("receivables.invoice.create")
     company_id = require_current_company_id()
     order = await _fetch_order(session, company_id, data.order_id)
 
@@ -314,7 +316,7 @@ async def create_invoice(session: AsyncSession, data: InvoiceCreate) -> Invoice:
     return invoice
 
 
-async def get_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
+async def load_invoice_unchecked(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
     result = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
     if invoice is None:
@@ -322,7 +324,13 @@ async def get_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
     return invoice
 
 
+async def get_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
+    require_permission("receivables.invoice.read")
+    return await load_invoice_unchecked(session, invoice_id)
+
+
 async def list_invoices(session: AsyncSession) -> Sequence[Invoice]:
+    require_permission("receivables.invoice.read")
     result = await session.execute(select(Invoice).order_by(Invoice.invoice_no))
     return result.scalars().all()
 
@@ -335,6 +343,7 @@ async def void_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
     and a concurrent allocation on the same invoice serialize on this row
     lock.
     """
+    require_permission("receivables.invoice.void")
     result = await session.execute(
         select(Invoice).where(Invoice.id == invoice_id).with_for_update()
     )
@@ -383,6 +392,7 @@ async def create_payment(session: AsyncSession, data: PaymentCreate) -> Payment:
     `flush()` and 409s instead of double-posting Cash/AR; no pre-check
     needed here.
     """
+    require_permission("receivables.payment.create")
     company_id = require_current_company_id()
     customer = await _fetch_customer(session, company_id, data.customer_id)
     if customer.currency_code != _PHASE_1_CURRENCY:
@@ -429,18 +439,31 @@ async def create_payment(session: AsyncSession, data: PaymentCreate) -> Payment:
         # `POST /payments` (same external_ref, same body) therefore never
         # reaches this far anyway (it 409s at the payment insert above),
         # so this call only ever runs once per genuinely new payment.
-        await allocate_payment(session, payment.id, data.external_ref, data.allocations)
+        require_permission("receivables.payment.allocate")
+        await allocate_payment_core(session, payment.id, data.external_ref, data.allocations)
 
     await session.flush()
     return payment
 
 
-async def get_payment(session: AsyncSession, payment_id: uuid.UUID) -> Payment:
+async def load_payment_unchecked(session: AsyncSession, payment_id: uuid.UUID) -> Payment:
     result = await session.execute(select(Payment).where(Payment.id == payment_id))
     payment = result.scalar_one_or_none()
     if payment is None:
         raise NotFoundError("Payment", payment_id)
     return payment
+
+
+async def get_payment(session: AsyncSession, payment_id: uuid.UUID) -> Payment:
+    require_permission("receivables.payment.read")
+    return await load_payment_unchecked(session, payment_id)
+
+
+async def load_payment_by_external_ref_unchecked(
+    session: AsyncSession, external_ref: str
+) -> Payment | None:
+    result = await session.execute(select(Payment).where(Payment.external_ref == external_ref))
+    return result.scalar_one_or_none()
 
 
 async def get_payment_by_external_ref(session: AsyncSession, external_ref: str) -> Payment | None:
@@ -454,11 +477,12 @@ async def get_payment_by_external_ref(session: AsyncSession, external_ref: str) 
     predicate needed here (unlike this module's `sqlalchemy.table()` Core
     references to other modules' tables).
     """
-    result = await session.execute(select(Payment).where(Payment.external_ref == external_ref))
-    return result.scalar_one_or_none()
+    require_permission("receivables.payment.read")
+    return await load_payment_by_external_ref_unchecked(session, external_ref)
 
 
 async def list_payments(session: AsyncSession) -> Sequence[Payment]:
+    require_permission("receivables.payment.read")
     result = await session.execute(select(Payment).order_by(Payment.payment_no))
     return result.scalars().all()
 
@@ -469,6 +493,7 @@ async def void_payment(session: AsyncSession, payment_id: uuid.UUID) -> Payment:
     exactly, with the accounts swapped at the posting layer (see
     `ledger.posting.POSTING_RULES`).
     """
+    require_permission("receivables.payment.void")
     result = await session.execute(
         select(Payment).where(Payment.id == payment_id).with_for_update()
     )
@@ -522,27 +547,12 @@ def _fingerprint_allocations(allocations: Sequence[PaymentAllocationIn]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-async def allocate_payment(
+async def allocate_payment_core(
     session: AsyncSession,
     payment_id: uuid.UUID,
     request_ref: str,
     allocations_in: Sequence[PaymentAllocationIn],
 ) -> Payment:
-    """Non-committing core of one allocation command (ADR-008 Decision 3, R7, R14).
-
-    Flow: lock the payment row first (R1 doctrine) -> check it is not
-    voided -> compute this command's fingerprint and look up
-    `PaymentAllocationCommand` by `(payment_id, request_ref)`: a match with
-    the same fingerprint is an exact retry, replayed idempotently (return
-    the payment unchanged, no-op); a match with a different fingerprint is
-    the reused-reference contract violation (409) -> lock target invoices,
-    sorted by id (deterministic, deadlock-avoiding order — payment row
-    first, then invoices by id) -> validate every target (same company via
-    the automatic tenant filter, same customer, not voided) -> re-check
-    capacity on both sides under the locks -> insert the command row, then
-    one `PaymentAllocation` row per line, updating both maintained columns
-    and deriving each invoice's `status` -> flush.
-    """
     company_id = require_current_company_id()
     if not allocations_in:
         raise DomainValidationError("allocations must be non-empty")
@@ -652,6 +662,31 @@ async def allocate_payment(
     return payment
 
 
+async def allocate_payment(
+    session: AsyncSession,
+    payment_id: uuid.UUID,
+    request_ref: str,
+    allocations_in: Sequence[PaymentAllocationIn],
+) -> Payment:
+    """Non-committing core of one allocation command (ADR-008 Decision 3, R7, R14).
+
+    Flow: lock the payment row first (R1 doctrine) -> check it is not
+    voided -> compute this command's fingerprint and look up
+    `PaymentAllocationCommand` by `(payment_id, request_ref)`: a match with
+    the same fingerprint is an exact retry, replayed idempotently (return
+    the payment unchanged, no-op); a match with a different fingerprint is
+    the reused-reference contract violation (409) -> lock target invoices,
+    sorted by id (deterministic, deadlock-avoiding order — payment row
+    first, then invoices by id) -> validate every target (same company via
+    the automatic tenant filter, same customer, not voided) -> re-check
+    capacity on both sides under the locks -> insert the command row, then
+    one `PaymentAllocation` row per line, updating both maintained columns
+    and deriving each invoice's `status` -> flush.
+    """
+    require_permission("receivables.payment.allocate")
+    return await allocate_payment_core(session, payment_id, request_ref, allocations_in)
+
+
 # ---------------------------------------------------------------------------
 # AR aging (ADR-008 Decision 5, R4, R15)
 # ---------------------------------------------------------------------------
@@ -671,6 +706,7 @@ async def get_ar_aging(
     would silently drop payment-only customers and break the tie-out
     property for exactly the customers who most need to appear in it.
     """
+    require_permission("receivables.report.read")
     company_id = require_current_company_id()
     effective_bucket_date = bucket_date or date.today()
 

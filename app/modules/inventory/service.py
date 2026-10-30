@@ -27,17 +27,19 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import and_, or_, select
 from sqlalchemy import column as sa_column
-from sqlalchemy import select
 from sqlalchemy import table as sa_table
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import require_permission
 from app.core.exceptions import ConflictError, DomainValidationError
 from app.core.locking import acquire_company_advisory_lock
 from app.core.tenancy import require_current_company_id
@@ -219,6 +221,7 @@ async def create_adjustment(session: AsyncSession, data: StockAdjustmentCreate) 
     `WHERE source_type IS NOT NULL` clause, exactly as manual journal
     entries are excluded from `uq_journal_entries_source`.
     """
+    require_permission("inventory.adjustment.create")
     company_id = require_current_company_id()
     await _ensure_product_belongs_to_company(session, company_id, data.product_id)
     move = await apply_stock_move(
@@ -324,28 +327,52 @@ async def handle_goods_shipped(session: AsyncSession, payload: BaseModel) -> Non
 
 
 async def list_stock_summary(
-    session: AsyncSession, *, product_id: uuid.UUID | None = None
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID | None = None,
+    limit: int | None = None,
+    after_product_id: uuid.UUID | None = None,
 ) -> Sequence[StockSummary]:
     """Explicit `company_id` filter — see module/model docstrings for why
     `StockSummary` cannot rely on the automatic tenant-scoping ORM hook.
     """
+    require_permission("inventory.summary.read")
     company_id = require_current_company_id()
     stmt = select(StockSummary).where(StockSummary.company_id == company_id)
     if product_id is not None:
         stmt = stmt.where(StockSummary.product_id == product_id)
+    if after_product_id is not None:
+        stmt = stmt.where(StockSummary.product_id > after_product_id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     result = await session.execute(stmt.order_by(StockSummary.product_id))
     return result.scalars().all()
 
 
 async def list_stock_moves(
-    session: AsyncSession, *, product_id: uuid.UUID | None = None
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID | None = None,
+    limit: int | None = None,
+    after_created_at: datetime | None = None,
+    after_id: uuid.UUID | None = None,
 ) -> Sequence[StockMove]:
     """`StockMove` inherits `TenantScopedMixin`, so the automatic
     `do_orm_execute` hook already restricts this to the active company —
     no explicit `company_id` predicate needed (unlike `list_stock_summary`).
     """
-    stmt = select(StockMove).order_by(StockMove.created_at)
+    require_permission("inventory.move.read")
+    stmt = select(StockMove).order_by(StockMove.created_at, StockMove.id)
     if product_id is not None:
         stmt = stmt.where(StockMove.product_id == product_id)
+    if after_created_at is not None and after_id is not None:
+        stmt = stmt.where(
+            or_(
+                StockMove.created_at > after_created_at,
+                and_(StockMove.created_at == after_created_at, StockMove.id > after_id),
+            )
+        )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()

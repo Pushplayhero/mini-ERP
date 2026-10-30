@@ -13,6 +13,7 @@ here does to it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 
 import pytest
@@ -22,7 +23,7 @@ from app.core import hooks
 
 
 @pytest.fixture(autouse=True)
-def _isolated_hook_registry():
+def _isolated_hook_registry() -> Iterator[None]:
     """Snapshot + restore `app.core.hooks._handlers` around every test here.
 
     Necessary because this file explicitly exercises `reset()` (which wipes

@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Any
 
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 
 from tests.conftest import company_headers
 
 
 async def create_company(client: AsyncClient, code: str) -> uuid.UUID:
-    response = await client.post(
-        "/api/v1/companies",
-        json={"code": code, "name": f"{code} Inc.", "functional_currency_code": "TWD"},
-    )
-    assert response.status_code == 201, response.text
-    return uuid.UUID(response.json()["id"])
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code=code)
+    return auth.company_id
 
 
 async def uom_id(client: AsyncClient, company_id: uuid.UUID) -> uuid.UUID:
@@ -71,8 +70,8 @@ async def create_product(
 
 def order_line(
     product_id: uuid.UUID, qty: str | Decimal, *, unit_price: str | Decimal | None = None
-) -> dict:
-    line: dict = {"product_id": str(product_id), "qty": str(qty)}
+) -> dict[str, Any]:
+    line: dict[str, Any] = {"product_id": str(product_id), "qty": str(qty)}
     if unit_price is not None:
         line["unit_price"] = str(unit_price)
     return line
@@ -82,33 +81,33 @@ async def create_draft_order(
     client: AsyncClient,
     company_id: uuid.UUID,
     customer_id: uuid.UUID,
-    lines: list[dict],
+    lines: list[dict[str, Any]],
     *,
-    custom_data: dict | None = None,
-) -> dict:
-    payload: dict = {"customer_id": str(customer_id), "lines": lines}
+    custom_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"customer_id": str(customer_id), "lines": lines}
     if custom_data is not None:
         payload["custom_data"] = custom_data
     response = await client.post(
         "/api/v1/sales-orders", json=payload, headers=company_headers(company_id)
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    return dict(response.json())
 
 
-async def confirm_order(client: AsyncClient, company_id: uuid.UUID, order_id: str):
+async def confirm_order(client: AsyncClient, company_id: uuid.UUID, order_id: str) -> Response:
     return await client.post(
         f"/api/v1/sales-orders/{order_id}/confirm", headers=company_headers(company_id)
     )
 
 
-async def cancel_order(client: AsyncClient, company_id: uuid.UUID, order_id: str):
+async def cancel_order(client: AsyncClient, company_id: uuid.UUID, order_id: str) -> Response:
     return await client.post(
         f"/api/v1/sales-orders/{order_id}/cancel", headers=company_headers(company_id)
     )
 
 
-async def ship_order(client: AsyncClient, company_id: uuid.UUID, order_id: str):
+async def ship_order(client: AsyncClient, company_id: uuid.UUID, order_id: str) -> Response:
     return await client.post(
         f"/api/v1/sales-orders/{order_id}/ship", headers=company_headers(company_id)
     )

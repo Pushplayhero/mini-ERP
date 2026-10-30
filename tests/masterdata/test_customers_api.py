@@ -12,12 +12,10 @@ from tests.conftest import company_headers
 
 
 async def _create_company(client: AsyncClient, code: str = "ACME") -> uuid.UUID:
-    response = await client.post(
-        "/api/v1/companies",
-        json={"code": code, "name": f"{code} Inc.", "functional_currency_code": "TWD"},
-    )
-    assert response.status_code == 201, response.text
-    return uuid.UUID(response.json()["id"])
+    from tests._auth_helpers import setup_company_with_admin
+
+    auth = await setup_company_with_admin(client, code=code)
+    return auth.company_id
 
 
 @pytest.mark.asyncio
@@ -160,9 +158,9 @@ async def test_credit_limit_rounds_half_even_to_6dp(client: AsyncClient) -> None
 
 @pytest.mark.asyncio
 async def test_missing_company_context_is_rejected(client: AsyncClient) -> None:
-    """No X-Company-Id header -> fail-closed 403, never an empty/unfiltered result."""
+    """No Authorization header -> fail-closed 401, never an empty/unfiltered result."""
     response = await client.get("/api/v1/customers")
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

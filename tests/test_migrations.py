@@ -11,12 +11,26 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import Connection, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Explicit "state immediately before migration N ran" revision ids, used by
+# the per-migration round-trip/backfill tests below instead of a relative
+# `command.downgrade(cfg, "-1")`. A relative "-1" step only means "before
+# migration N" while N is still `head` — it silently stops meaning that the
+# moment any later migration is appended (exactly what happened when Slice
+# A's migration 0009 landed: "-1" started meaning "undo 0009 only", leaving
+# 0005/0008's own schema/constraints in place and breaking these tests' setup
+# — Codex diff review caught one of the four call sites still pointed at the
+# wrong migration's pre-state after the first fix pass). Explicit revision
+# ids are robust to any number of future migrations landing after either.
+_BEFORE_MIGRATION_0005 = "a2f5d8e91c47"  # 0005's own down_revision (0004's revision id)
+_BEFORE_MIGRATION_0008 = "c7d2e6f1a840"  # 0008's own down_revision (0007's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -39,6 +53,13 @@ EXPECTED_TABLES = {
     "payment_allocation_commands",
     "payment_allocations",
     "receivables_sequences",
+    # ADR-009 / WEEK9 Slice A / migration 0009.
+    "users",
+    "roles",
+    "permissions",
+    "role_permissions",
+    "user_company_roles",
+    "sessions",
     "alembic_version",
 }
 
@@ -58,7 +79,7 @@ async def test_upgrade_head_creates_expected_tables(db_engine: AsyncEngine) -> N
 async def test_money_and_quantity_columns_are_numeric_20_6(db_engine: AsyncEngine) -> None:
     """master-plan §10.1: amount/quantity columns must be NUMERIC(20, 6)."""
 
-    def _inspect(sync_conn):  # type: ignore[no-untyped-def]
+    def _inspect(sync_conn: Connection) -> Any:
         inspector = inspect(sync_conn)
         cols = {c["name"]: c for c in inspector.get_columns("customers")}
         return cols["credit_limit"]["type"]
@@ -80,7 +101,7 @@ async def test_migration_0005_schema_matches_adr_007(db_engine: AsyncEngine) -> 
     enum value (order lifecycle update).
     """
 
-    def _inspect(sync_conn):  # type: ignore[no-untyped-def]
+    def _inspect(sync_conn: Connection) -> Any:
         inspector = inspect(sync_conn)
         product_cols = {c["name"] for c in inspector.get_columns("products")}
         product_checks = {c["name"] for c in inspector.get_check_constraints("products")}
@@ -165,14 +186,14 @@ async def test_migration_0005_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
     # exists.
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0005)
         await asyncio.to_thread(command.upgrade, cfg, "head")
     finally:
         await core_db.dispose_engine()
 
     engine = core_db.get_engine()
 
-    def _inspect(sync_conn):  # type: ignore[no-untyped-def]
+    def _inspect(sync_conn: Connection) -> set[str]:
         return set(inspect(sync_conn).get_table_names())
 
     async with engine.connect() as conn:
@@ -204,7 +225,7 @@ async def test_migration_0008_schema_matches_adr_008(db_engine: AsyncEngine) -> 
     the `uq_invoices_order_live` partial unique index (Decision 1).
     """
 
-    def _inspect(sync_conn):  # type: ignore[no-untyped-def]
+    def _inspect(sync_conn: Connection) -> Any:
         inspector = inspect(sync_conn)
         sales_order_cols = {c["name"] for c in inspector.get_columns("sales_orders")}
         sales_order_checks = {c["name"] for c in inspector.get_check_constraints("sales_orders")}
@@ -268,7 +289,7 @@ async def test_migration_0008_shipped_at_backfill_on_populated_database(
 
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0008)
     finally:
         await core_db.dispose_engine()
 
@@ -383,7 +404,7 @@ async def test_migration_0008_shipped_at_backfill_rejects_zero_matching_outbox_e
 
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0008)
     finally:
         await core_db.dispose_engine()
 
@@ -515,7 +536,7 @@ async def test_migration_0008_shipped_at_backfill_rejects_duplicate_outbox_event
 
     await core_db.dispose_engine()
     try:
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0008)
     finally:
         await core_db.dispose_engine()
 
@@ -602,3 +623,25 @@ async def test_migration_0008_shipped_at_backfill_rejects_duplicate_outbox_event
         await asyncio.to_thread(command.upgrade, cfg, "head")
     finally:
         await core_db.dispose_engine()
+
+
+@pytest.mark.asyncio
+async def test_migration_0010_seeds_44_permissions_and_grants_all_to_admin(
+    db_engine: AsyncEngine,
+) -> None:
+    """ADR-009 / Slice D migration 0010: seeds the full 44-permission catalog
+    and grants every permission to the 'admin' role.
+    """
+    async with db_engine.connect() as conn:
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        # 1 (session.manage in 0009) + 44 (business permissions in 0010) = 45
+        assert (
+            perm_count == 45
+        ), f"expected exactly 45 permissions in total catalog, got {perm_count}"
+
+        admin_grants = await conn.scalar(
+            text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
+        )
+        assert (
+            admin_grants == 45
+        ), f"expected admin role to have all 45 permissions, got {admin_grants}"

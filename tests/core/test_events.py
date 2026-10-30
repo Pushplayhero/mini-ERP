@@ -9,6 +9,7 @@ at import time, in `app.main` (triggered here via the `client` fixture).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 
 import pytest
@@ -24,7 +25,7 @@ from tests.ledger._helpers import create_company
 
 
 @pytest.fixture(autouse=True)
-def _isolated_event_registry():
+def _isolated_event_registry() -> Iterator[None]:
     """Snapshot + restore `app.core.events`' registries around every test here.
 
     Added alongside the new `unregister()`/`reset()` tests below (ADR-006

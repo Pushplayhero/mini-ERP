@@ -17,6 +17,23 @@ relitigate them.
 > "each of the five platform modules gets its own ADR" and per §7.2's Q4
 > decision (`platform.permissions` first, contract-before-feature).
 
+
+## 2026-08-24 correction — authenticated session lifecycle
+
+The Slice D implementation correction supersedes any earlier binary route-classification
+wording in this ADR: every non-Tier-1 `APIRoute` carries exactly one of
+`Public()`, `Authenticated()`, or `RequiresPermission(code)`. `Authenticated()` is a
+real fail-closed dependency that calls `require_current_actor()` and does not inspect
+the active permission set.
+
+`POST /auth/switch-company` and `POST /auth/logout` are therefore authenticated
+session-lifecycle operations, not `session.manage`-gated operations. Their services
+require a current actor, current session id, and actor/session ownership; switching
+re-checks target-company entitlement and logout deletes the owned session row.
+The `session.manage` catalog row and admin grant remain unchanged as retained
+compatibility/reserved catalog state until a future migration revisits them. Earlier
+`RequiresPermission("session.manage")` statements below are historical review
+narrative and are superseded by this dated correction.
 ## Context
 
 Phase 1 shipped with a deliberate, documented Non-Goal: `X-Company-Id` is a
@@ -1082,8 +1099,20 @@ call before it was applied.
 4. [ ] `app/platform/permissions/`: `service.py` (login incl. multi-company
    selection, token resolution + per-request entitlement re-resolution,
    switch-company), `models.py`, `schemas.py`, `router.py` (`/auth/login`,
-   `/auth/switch-company`, `/auth/logout`), `Public`/`RequiresPermission`
-   FastAPI dependencies.
+   `/auth/switch-company`, `/auth/logout`).
+   **Post-acceptance correction (2026-08-17, `WEEK9-platform-permissions-
+   implementation-brief.md` round 2 Codex review)**: `Public`/
+   `RequiresPermission` do **not** live in `app/platform/permissions/` as
+   originally written here — that placement is unimplementable against
+   this ADR's own Decision 9 import contract (`app.modules must not import
+   app.platform`), since a business-module router could never import them
+   from `platform.permissions`. They are defined in
+   `app/core/authorization.py` instead (Action Item 3), the port business
+   modules are actually allowed to depend on (Decision 4). This is a real
+   fix to an internal inconsistency this ADR shipped with, only surfaced
+   by attempting to sequence implementation — not a re-litigation of any
+   Decision above, all of which stand unchanged. See the Week 9 brief for
+   the full mechanism.
 5. [ ] `app/cli/bootstrap_admin.py`: the full fresh-install CLI sequence
    (Decision 6) — exempt per Rule 10b, no actor binding needed, but must
    itself refuse to create a second user once any `users` row exists

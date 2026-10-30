@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -22,7 +23,9 @@ from tests.conftest import company_headers
 from tests.ledger._helpers import balanced_lines, create_account, create_company, create_period
 
 
-async def _post_original_entry(client: AsyncClient, company_id, cash, revenue) -> dict:
+async def _post_original_entry(
+    client: AsyncClient, company_id: uuid.UUID, cash: uuid.UUID, revenue: uuid.UUID
+) -> dict[str, Any]:
     today = date.today()
     await create_period(client, company_id, today.year, today.month)
     response = await client.post(
@@ -31,7 +34,7 @@ async def _post_original_entry(client: AsyncClient, company_id, cash, revenue) -
         headers=company_headers(company_id),
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    return dict(response.json())
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,319 @@
+{
+  "schema_version": "1.0",
+  "expected_total_files": 175,
+  "common_knowledge_base": [
+    "SECURITY.md",
+    "docs/security/threat-model.md",
+    "docs/security/scan-policy.md"
+  ],
+  "candidate_profiles": {
+    "micro-v2": {
+      "schema_version": "2.0",
+      "activation": "active",
+      "expected_total_files": 175,
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "session_capacity": 3,
+      "outer_concurrency": 1,
+      "max_cost_usd": 15.0,
+      "pilot_unit": "u03_events_hooks",
+      "pilot_units": [
+        "u01_identity",
+        "u02_runtime_config",
+        "u03_events_hooks",
+        "u04_sales_plugins",
+        "u05_inventory",
+        "u06_ledger_engine",
+        "u07_ledger_api",
+        "u08_receivables",
+        "u09_masterdata",
+        "u10_migrations",
+        "u11_operations_e2e",
+        "u12_gate",
+        "u13_governance",
+        "u14_dependencies"
+      ],
+      "operational_ceiling_usd": null,
+      "common_knowledge_base": [
+        "SECURITY.md",
+        "docs/security/threat-model.md",
+        "docs/security/scan-policy.md"
+      ],
+      "units": {
+        "u01_identity": {
+          "expected_file_count": 20,
+          "paths": [
+            "app/platform",
+            "app/core/authorization.py",
+            "app/core/tenancy.py",
+            "tests/platform",
+            "tests/core/test_authorization.py",
+            "tests/_auth_helpers.py",
+            "app/cli/bootstrap_admin.py",
+            "docs/adr/ADR-009-platform-permissions.md"
+          ]
+        },
+        "u02_runtime_config": {
+          "expected_file_count": 13,
+          "paths": [
+            "app/__init__.py",
+            "app/main.py",
+            "app/core/__init__.py",
+            "app/core/db.py",
+            "app/core/exceptions.py",
+            "app/core/settings.py",
+            "tests/__init__.py",
+            "tests/conftest.py",
+            "tests/test_smoke.py",
+            ".env.example",
+            "Dockerfile",
+            "docker-compose.yml",
+            "Makefile"
+          ]
+        },
+        "u03_events_hooks": {
+          "expected_file_count": 7,
+          "paths": [
+            "app/core/events.py",
+            "app/core/hooks.py",
+            "app/core/locking.py",
+            "tests/core/__init__.py",
+            "tests/core/test_events.py",
+            "tests/core/test_hooks.py",
+            "docs/adr/ADR-004-event-bus.md"
+          ]
+        },
+        "u04_sales_plugins": {
+          "expected_file_count": 19,
+          "paths": [
+            "app/modules/__init__.py",
+            "app/modules/sales",
+            "app/plugins",
+            "tests/sales",
+            "docs/adr/ADR-006-sales-and-hook-registry.md"
+          ]
+        },
+        "u05_inventory": {
+          "expected_file_count": 14,
+          "paths": [
+            "app/modules/inventory",
+            "tests/inventory",
+            "app/cli/rebuild_stock_summary.py",
+            "docs/adr/ADR-007-inventory-and-shipping.md"
+          ]
+        },
+        "u06_ledger_engine": {
+          "expected_file_count": 16,
+          "paths": [
+            "app/modules/ledger/README.md",
+            "app/modules/ledger/__init__.py",
+            "app/modules/ledger/events.py",
+            "app/modules/ledger/models.py",
+            "app/modules/ledger/posting.py",
+            "app/modules/ledger/service.py",
+            "tests/ledger/__init__.py",
+            "tests/ledger/_helpers.py",
+            "tests/ledger/test_gapless_numbering.py",
+            "tests/ledger/test_immutability.py",
+            "tests/ledger/test_posting.py",
+            "tests/ledger/test_property_trial_balance.py",
+            "tests/ledger/test_reversal.py",
+            "docs/adr/ADR-002-append-only-ledgers.md",
+            "docs/adr/ADR-003-posting-engine.md",
+            "docs/adr/ADR-005-ledger-journal-design.md"
+          ]
+        },
+        "u07_ledger_api": {
+          "expected_file_count": 8,
+          "paths": [
+            "app/modules/ledger/router.py",
+            "app/modules/ledger/schemas.py",
+            "tests/ledger/test_cross_company_isolation.py",
+            "tests/ledger/test_journal_entries_api.py",
+            "tests/ledger/test_period_close_concurrency.py",
+            "tests/ledger/test_period_closed_rejection.py",
+            "tests/ledger/test_periods_api.py",
+            "tests/ledger/test_trial_balance_api.py"
+          ]
+        },
+        "u08_receivables": {
+          "expected_file_count": 15,
+          "paths": [
+            "app/modules/receivables",
+            "tests/receivables",
+            "app/cli/rebuild_ar_balances.py",
+            "docs/adr/ADR-008-receivables.md"
+          ]
+        },
+        "u09_masterdata": {
+          "expected_file_count": 13,
+          "paths": [
+            "app/modules/masterdata",
+            "tests/masterdata"
+          ]
+        },
+        "u10_migrations": {
+          "expected_file_count": 15,
+          "paths": [
+            "alembic",
+            "alembic.ini",
+            "tests/test_migrations.py"
+          ]
+        },
+        "u11_operations_e2e": {
+          "expected_file_count": 11,
+          "paths": [
+            "app/cli/__init__.py",
+            "app/cli/demo_o2c.py",
+            "app/cli/seed_demo.py",
+            "app/cli/replay_outbox.py",
+            "tests/cli",
+            "tests/e2e"
+          ]
+        },
+        "u12_gate": {
+          "expected_file_count": 2,
+          "paths": [
+            "scripts/d5_security_gate.py",
+            "tests/security/test_d5_security_gate.py"
+          ]
+        },
+        "u13_governance": {
+          "expected_file_count": 20,
+          "paths": [
+            ".github/workflows",
+            ".gitignore",
+            "HANDOFF.md",
+            "LICENSE",
+            "README.md",
+            "README.zh-TW.md",
+            "SECURITY.md",
+            "docs/adr/ADR-001-modular-monolith.md",
+            "docs/adr/PHASE2-platform-architecture-overview.md",
+            "docs/adr/README.md",
+            "docs/adr/WEEK7-phase1-hardening-brief.md",
+            "docs/adr/WEEK8-phase1-polish-brief.md",
+            "docs/adr/WEEK9-platform-permissions-implementation-brief.md",
+            "docs/adr/WEEK9-slice-d-implementation-plan.md",
+            "docs/mini-erp-architecture.md",
+            "docs/open-erp-master-plan.md",
+            "docs/security"
+          ]
+        },
+        "u14_dependencies": {
+          "expected_file_count": 2,
+          "paths": [
+            "pyproject.toml",
+            "uv.lock"
+          ]
+        }
+      }
+    }
+  },
+  "shards": [
+    {
+      "id": "a_identity_runtime",
+      "expected_file_count": 32,
+      "max_cost_usd": 11.75,
+      "paths": [
+        "app/__init__.py",
+        "app/main.py",
+        "app/core",
+        "app/platform",
+        "tests/_auth_helpers.py",
+        "tests/conftest.py",
+        "tests/core",
+        "tests/platform",
+        "tests/test_smoke.py"
+      ]
+    },
+    {
+      "id": "b_sales_inventory_plugins",
+      "expected_file_count": 38,
+      "max_cost_usd": 11.75,
+      "paths": [
+        "app/modules/__init__.py",
+        "app/modules/sales",
+        "app/modules/inventory",
+        "app/plugins",
+        "tests/sales",
+        "tests/inventory",
+        "tests/e2e",
+        "docs/adr/ADR-006-sales-and-hook-registry.md",
+        "docs/adr/ADR-007-inventory-and-shipping.md"
+      ]
+    },
+    {
+      "id": "c_ledger_receivables",
+      "expected_file_count": 41,
+      "max_cost_usd": 11.75,
+      "paths": [
+        "app/modules/ledger",
+        "app/modules/receivables",
+        "tests/ledger",
+        "tests/receivables",
+        "app/cli/rebuild_ar_balances.py",
+        "app/cli/replay_outbox.py",
+        "app/cli/rebuild_stock_summary.py",
+        "docs/adr/ADR-002-append-only-ledgers.md",
+        "docs/adr/ADR-003-posting-engine.md",
+        "docs/adr/ADR-005-ledger-journal-design.md",
+        "docs/adr/ADR-008-receivables.md"
+      ]
+    },
+    {
+      "id": "d_masterdata_ops_migrations",
+      "expected_file_count": 42,
+      "max_cost_usd": 11.75,
+      "paths": [
+        "app/modules/masterdata",
+        "app/cli/__init__.py",
+        "app/cli/bootstrap_admin.py",
+        "app/cli/demo_o2c.py",
+        "app/cli/seed_demo.py",
+        "tests/masterdata",
+        "tests/cli",
+        "tests/test_migrations.py",
+        "tests/__init__.py",
+        "alembic",
+        ".env.example",
+        "alembic.ini",
+        "docker-compose.yml",
+        "Dockerfile",
+        "Makefile",
+        "pyproject.toml",
+        "uv.lock",
+        "scripts/d5_security_gate.py",
+        "tests/security/test_d5_security_gate.py"
+      ]
+    },
+    {
+      "id": "e_docs_governance",
+      "expected_file_count": 22,
+      "max_cost_usd": 11.75,
+      "paths": [
+        ".github/workflows",
+        ".gitignore",
+        "HANDOFF.md",
+        "LICENSE",
+        "README.md",
+        "README.zh-TW.md",
+        "SECURITY.md",
+        "docs/adr/ADR-001-modular-monolith.md",
+        "docs/adr/ADR-004-event-bus.md",
+        "docs/adr/ADR-009-platform-permissions.md",
+        "docs/adr/PHASE2-platform-architecture-overview.md",
+        "docs/adr/README.md",
+        "docs/adr/WEEK7-phase1-hardening-brief.md",
+        "docs/adr/WEEK8-phase1-polish-brief.md",
+        "docs/adr/WEEK9-platform-permissions-implementation-brief.md",
+        "docs/adr/WEEK9-slice-d-implementation-plan.md",
+        "docs/mini-erp-architecture.md",
+        "docs/open-erp-master-plan.md",
+        "docs/security"
+      ]
+    }
+  ],
+  "aggregate_max_cost_usd": 58.75,
+  "operational_ceiling_usd": 60.0
+}

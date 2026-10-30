@@ -8,6 +8,7 @@ four posting events, TWD-only enforcement, and cross-company isolation
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 
 import pytest
@@ -17,17 +18,25 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.cli import replay_outbox
 from app.cli.rebuild_ar_balances import rebuild_ar_balances
+from app.core.authorization import actor_context
 from app.core.tenancy import company_context
 from app.modules.ledger import posting
 from app.modules.ledger import service as ledger_service
 from app.modules.masterdata.models import OutboxEvent
 from app.modules.receivables.models import Invoice, Payment
+from tests.conftest import TEST_ADMIN_ACTOR, company_headers
 from tests.receivables._helpers import (
     allocation,
     create_payment,
     issue_invoice,
     setup_shipped_order,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 @pytest.mark.asyncio
@@ -44,7 +53,7 @@ async def test_rebuild_ar_balances_matches_live_state(
     alloc_resp = await client.post(
         f"/api/v1/receivables/payments/{payment['id']}/allocations",
         json={"request_ref": "REC1-A1", "allocations": [allocation(invoice["id"], "120")]},
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert alloc_resp.status_code == 200, alloc_resp.text
 
@@ -141,7 +150,7 @@ async def test_non_twd_customer_creation_is_rejected(client: AsyncClient) -> Non
             "name": "USD customer",
             "currency_code": "USD",
         },
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert resp.status_code == 422, resp.text
 
@@ -164,13 +173,13 @@ async def test_invoice_and_payment_are_isolated_across_companies(client: AsyncCl
     # Company B cannot see company A's invoice/payment.
     invoice_from_b = await client.get(
         f"/api/v1/receivables/invoices/{invoice_a['id']}",
-        headers={"X-Company-Id": str(ctx_b.company_id)},
+        headers=company_headers(ctx_b.company_id),
     )
     assert invoice_from_b.status_code == 404
 
     payment_from_b = await client.get(
         f"/api/v1/receivables/payments/{payment_a['id']}",
-        headers={"X-Company-Id": str(ctx_b.company_id)},
+        headers=company_headers(ctx_b.company_id),
     )
     assert payment_from_b.status_code == 404
 
@@ -178,13 +187,13 @@ async def test_invoice_and_payment_are_isolated_across_companies(client: AsyncCl
     cross_alloc = await client.post(
         f"/api/v1/receivables/payments/{payment_a['id']}/allocations",
         json={"request_ref": "REC4-CROSS", "allocations": [allocation(invoice_a["id"], "50")]},
-        headers={"X-Company-Id": str(ctx_b.company_id)},
+        headers=company_headers(ctx_b.company_id),
     )
     assert cross_alloc.status_code in (404, 422)
 
     aging_b = await client.get(
         "/api/v1/receivables/reports/ar-aging",
-        headers={"X-Company-Id": str(ctx_b.company_id)},
+        headers=company_headers(ctx_b.company_id),
     )
     assert aging_b.status_code == 200
     b_customer_ids = {row["customer_id"] for row in aging_b.json()}

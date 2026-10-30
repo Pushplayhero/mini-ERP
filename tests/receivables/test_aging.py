@@ -11,6 +11,7 @@ together: Σ open invoice balances - Σ unapplied credits == the ledger's
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -19,8 +20,10 @@ from httpx import AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from app.core.authorization import actor_context
 from app.core.tenancy import company_context
 from app.modules.receivables import service as receivables_service
+from tests.conftest import TEST_ADMIN_ACTOR, company_headers
 from tests.inventory._helpers import create_adjustment
 from tests.receivables._helpers import (
     allocation,
@@ -37,6 +40,12 @@ from tests.sales._helpers import (
     order_line,
     ship_order,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 @pytest.mark.asyncio
@@ -129,7 +138,7 @@ async def test_control_account_tie_out_property_after_operation_sequence(
             "request_ref": "AGE4-ALLOC-1",
             "allocations": [allocation(invoice_1["id"], "300")],
         },
-        headers={"X-Company-Id": str(company_id)},
+        headers=company_headers(company_id),
     )
     assert alloc_resp.status_code == 200, alloc_resp.text
 

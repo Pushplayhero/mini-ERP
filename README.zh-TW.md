@@ -23,9 +23,7 @@ kernel 藍圖見 `docs/mini-erp-architecture.md`。
 
 Phase 2 以後才會做：plugin **loader**（Phase 1 只硬寫死一個示範用的
 plugin ——`app/plugins/credit_limit.py`——不是動態載入機制）、
-workflow/審批引擎、RBAC（現在的 `X-Company-Id` header 是刻意、有記錄
-在案的權宜設計，代替未來真正 auth 層會設定的、經過驗證的 JWT/session
-claim——見下方「多租戶（Multi-tenancy）」）、使用者自訂欄位的管理介面
+workflow/審批引擎、使用者自訂欄位的管理介面
 （`custom_data JSONB` 欄位已經存在於每個主要業務實體——公司、客戶、
 商品、科目、訂單、發票、付款、傳票、會計期間——是這個機制的底層基礎，
 但 line/fact 層級的表（訂單明細、傳票明細、庫存異動）還沒有；也還沒有
@@ -36,9 +34,35 @@ Phase 4 的事。
 ## 技術棧
 
 Python 3.12 · FastAPI · SQLAlchemy 2.0（async, asyncpg）· Pydantic v2 ·
-PostgreSQL 16 · Alembic · [uv](https://docs.astral.sh/uv/) 做套件管理 ·
-[Hypothesis](https://hypothesis.readthedocs.io/) 做 property-based
-testing。
+PostgreSQL 16（嚴格型別、DB 層約束）· Alembic · pytest + pytest-asyncio +
+testcontainers-postgres。在 Linux 與 Windows 上均經過測試。
+
+## 開發
+
+需要 Python 3.12 與 [uv](https://docs.astral.sh/uv/)。
+
+```bash
+uv sync --all-extras
+cp .env.example .env
+
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
+
+make up
+make bootstrap
+make seed
+make demo
+make check
+```
+
+`make bootstrap` 是首次安裝時用來建立初始管理員帳號與租戶公司的指令。
+`make seed` 灌入展示資料集（支援冪等重複執行）。`make demo` 透過 live REST API 執行完整的 O2C 訂單生命週期走訪。
+
+`make test` 會針對短暫的 PostgreSQL 容器執行完整的測試套件。
+Docker-compose 流程（`make up` + `make bootstrap` + `make seed` + `make demo`）是端到端測試的參考工作流程。
 
 ## 快速開始
 
@@ -46,10 +70,20 @@ testing。
 
 ```bash
 cp .env.example .env
-make up      # docker compose up，會擋著直到 /health 回應
-make seed    # 灌一份真實感的展示資料（冪等——重跑也安全）
-make demo    # 讓一張訂單真的走完 REST API 的完整流程，印出結果試算表
+
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
+
+make up
+make bootstrap
+make seed
+make demo
 ```
+
+`make bootstrap` 會建立初始管理員帳號與公司（僅限首次安裝）。`make seed` 則支援冪等灌入展示資料。
 
 `make demo` 的輸出長這樣（下方「實際試試看」有同一條流程改用原生
 `curl` 跑的版本）：
@@ -72,22 +106,43 @@ Trial balance:
 其他 Makefile 指令：`make down`（停止）、`make clean`（停止並清掉
 volume）、`make test`（在你自己的環境裡跑 `pytest`）、`make check`
 （跟 CI 跑的完全一樣的 `ruff check` → `ruff format --check` → `mypy`
-→ `lint-imports` → `pytest` 那串流程）。
+→ `pytest` 那串流程）。
 
 ### 直接在本機跑（不用 Docker）
 
+先準備一個 PostgreSQL，並明確設定應用程式環境：
+
 ```bash
 uv sync --group dev
-cp .env.example .env   # 把 DATABASE_URL 改成指向你自己的 Postgres
+cp .env.example .env
+
+export DATABASE_URL='postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp'
+export APP_ENVIRONMENT=development
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
+
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
 ```
 
-`uv run python -m app.cli.seed_demo` 和
-`DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_o2c`
-是這個路徑下 `make seed`/`make demo` 的直接對應版本——`seed` 為什麼是
-直接跟資料庫對話、`demo` 為什麼是對著一個真的正在跑的 server 發送
-HTTP 請求，確切原因看 Makefile。
+在終端機 1 啟動 API：
+
+```bash
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+在終端機 2 執行 CLI：
+
+```bash
+uv run python -m app.cli.bootstrap_admin
+uv run python -m app.cli.seed_demo
+DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_o2c
+```
+
+`seed_demo` 直接連接 PostgreSQL；`demo_o2c` 是 HTTP client，
+因此必須先有正在執行的 uvicorn server。
 
 ## 架構
 
@@ -96,7 +151,7 @@ graph TB
     Client["curl / API client"]
 
     subgraph App["mini-erp — 單一 FastAPI process（modular monolith, ADR-001）"]
-        MW["TenancyMiddleware<br/>綁定 X-Company-Id"]
+        MW["AuthenticationMiddleware<br/>驗證 Bearer Token & 綁定 Session Context"]
 
         subgraph Modules["業務模組 — 互相獨立，不跨模組 import（CI 強制檢查）"]
             MD["masterdata<br/>公司 · 客戶 · 商品 · UoM · 科目"]
@@ -112,7 +167,7 @@ graph TB
 
     PG[("PostgreSQL 16<br/>append-only 事實表，ADR-002")]
 
-    Client -->|"HTTP + X-Company-Id header"| MW
+    Client -->|"HTTP + Authorization: Bearer <token>"| MW
     MW --> MD & SA & IN & RE
     SA -->|"sales.order.validate_confirm hook"| PL
     SA -->|"發布事件：order_confirmed（目前沒有訂閱者）、goods_shipped"| EB
@@ -123,7 +178,7 @@ graph TB
 ```
 
 每一個進入*租戶範圍（tenant-scoped）*操作的箭頭，在任何查詢真正執行
-之前都會先經過綁定 `X-Company-Id` 的租戶過濾（見下方「多租戶」）——
+之前都會先經過當前 Session Context 的租戶與權限過濾（見下方「多租戶」）——
 唯一的例外是幣別/UoM 這類參考資料（全域共用、不屬於任何一家公司；見
 下方的 `curl` 實作流程）。`sales` 也會發布 `order_confirmed`，但目前
 完全沒有訂閱者（ADR-006 Decision 4）——之所以還是要註冊，是為了讓
@@ -142,74 +197,85 @@ COGS/Inventory、扣庫存）→ `receivables` 開發票（過 AR/Revenue）→
 （有邊界、非真正無限）合法操作序列上，則由
 `tests/e2e/test_property_o2c_balances.py` 證實。
 
-## 實際試試看：用 `curl` 走一遍 O2C 流程
+## 實際試跑：以 `curl` 走完 O2C 流程
 
-以下是對一個剛 migrate 完的資料庫的真實輸出（把 UUID 換成你自己跑出來
-的值）：
+首先啟動服務並完成初始管理員帳號與公司建立（Bootstrap）：
 
 ```bash
-BASE=http://localhost:8000/api/v1
+make up
 
-# 參考資料（全域、不分租戶）——只需要 seed 一次。
-curl -s -X POST $BASE/currencies -H 'Content-Type: application/json' \
-  -d '{"code":"TWD","name":"New Taiwan Dollar","decimal_places":0}'
-# {"code":"TWD","name":"New Taiwan Dollar","decimal_places":0,"is_active":true}
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "請輸入初始管理員密碼: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
 
-UOM_ID=$(curl -s -X POST $BASE/uom -H 'Content-Type: application/json' \
-  -d '{"code":"EA","name":"Each"}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-# 真實的回應格式：{"id":"fff448b2-...","code":"EA","name":"Each","is_active":true}
+make bootstrap
+```
 
-# 下面每一個租戶範圍內的呼叫都需要 X-Company-Id——任何 request body
-# 裡都不會有 company_id 欄位（見「多租戶」）。
-COMPANY_ID=$(curl -s -X POST $BASE/companies -H 'Content-Type: application/json' \
-  -d '{"code":"ACME","name":"Acme Corp","functional_currency_code":"TWD"}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-H="-H X-Company-Id:$COMPANY_ID -H Content-Type:application/json"
+接著使用 Bearer Session 認證走完完整的 O2C 流程（將 UUID 替換為實際執行產生的數值）：
 
-curl -s -X POST $BASE/periods $H -d '{"year":2026,"month":8}' > /dev/null
+```bash
+BASE=http://localhost:8000
+API=$BASE/api/v1
+
+# 1. 登入取得 Bearer Session Token（ADR-009 權限認證）
+# 透過 stdin 傳遞環境變數憑證，避免密碼留存於 Shell History 或 curl 程序參數。
+TOKEN=$(python3 -c 'import json, os; print(json.dumps({"email": os.environ["BOOTSTRAP_ADMIN_EMAIL"], "password": os.environ["BOOTSTRAP_ADMIN_PASSWORD"]}))' \
+  | curl -s -X POST "$BASE/auth/login" -H 'Content-Type: application/json' --data-binary @- \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# 每個經過認證的請求均使用 Authorization: Bearer <token>（租戶資訊自動從 Session Context 解析）
+H=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+
+# 參考資料（貨幣、計量單位）與初始公司已在 bootstrap 階段建立。
+# 查詢已建立的 UoM：
+UOM_ID=$(curl -s $API/uom "${H[@]}" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')
+
+curl -s -X POST $API/periods "${H[@]}" -d '{"year":2026,"month":8}' > /dev/null
 for row in 1000:Cash:asset 1100:"Accounts Receivable":asset 1300:Inventory:asset \
            4000:Revenue:revenue 5000:COGS:expense; do
   IFS=: read -r code name type <<< "$row"
-  curl -s -X POST $BASE/accounts $H -d "{\"code\":\"$code\",\"name\":\"$name\",\"type\":\"$type\"}" > /dev/null
+  curl -s -X POST $API/accounts "${H[@]}" -d "{\"code\":\"$code\",\"name\":\"$name\",\"type\":\"$type\"}" > /dev/null
 done
 
-CUSTOMER_ID=$(curl -s -X POST $BASE/customers $H \
+CUSTOMER_ID=$(curl -s -X POST $API/customers "${H[@]}" \
   -d '{"code":"CUST-001","name":"Test Customer","currency_code":"TWD","credit_limit":"50000"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-PRODUCT_ID=$(curl -s -X POST $BASE/products $H \
+PRODUCT_ID=$(curl -s -X POST $API/products "${H[@]}" \
   -d "{\"sku\":\"WIDGET-1\",\"name\":\"Widget\",\"uom_id\":\"$UOM_ID\",\"list_price\":\"100\",\"standard_cost\":\"30\"}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-curl -s -X POST $BASE/inventory/adjustments $H \
+curl -s -X POST $API/inventory/adjustments "${H[@]}" \
   -d "{\"product_id\":\"$PRODUCT_ID\",\"qty_delta\":\"10\",\"reason\":\"initial stock\"}" > /dev/null
 
 # --- 真正的 O2C 那條線 ---
 
-ORDER_ID=$(curl -s -X POST $BASE/sales-orders $H \
+ORDER_ID=$(curl -s -X POST $API/sales-orders "${H[@]}" \
   -d "{\"customer_id\":\"$CUSTOMER_ID\",\"lines\":[{\"product_id\":\"$PRODUCT_ID\",\"qty\":\"2\",\"unit_price\":\"100\"}]}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-curl -s -X POST $BASE/sales-orders/$ORDER_ID/confirm $H > /dev/null
-curl -s -X POST $BASE/sales-orders/$ORDER_ID/ship $H
+curl -s -X POST $API/sales-orders/$ORDER_ID/confirm "${H[@]}" > /dev/null
+curl -s -X POST $API/sales-orders/$ORDER_ID/ship "${H[@]}"
 # {"...","status":"shipped","total":"200.000000",...}  — 過 Dr 5000 COGS 60 / Cr 1300 Inventory 60
 
-INVOICE_ID=$(curl -s -X POST $BASE/receivables/invoices $H -d "{\"order_id\":\"$ORDER_ID\"}" \
+INVOICE_ID=$(curl -s -X POST $API/receivables/invoices "${H[@]}" -d "{\"order_id\":\"$ORDER_ID\"}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 # 過 Dr 1100 AR 200 / Cr 4000 Revenue 200
 
-PAYMENT_ID=$(curl -s -X POST $BASE/receivables/payments $H \
+PAYMENT_ID=$(curl -s -X POST $API/receivables/payments "${H[@]}" \
   -d '{"customer_id":"'"$CUSTOMER_ID"'","external_ref":"PAY-001","amount":"200"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 # 過 Dr 1000 Cash 200 / Cr 1100 AR 200
 
-curl -s -X POST $BASE/receivables/payments/$PAYMENT_ID/allocations $H \
+curl -s -X POST $API/receivables/payments/$PAYMENT_ID/allocations "${H[@]}" \
   -d "{\"request_ref\":\"ALLOC-001\",\"allocations\":[{\"invoice_id\":\"$INVOICE_ID\",\"amount\":\"200\"}]}" \
   > /dev/null
 # 只是明細帳層級的沖款記錄（ADR-008 Decision 2）——不過任何傳票
 
-curl -s $BASE/reports/trial-balance $H
+curl -s $API/reports/trial-balance "${H[@]}"
 ```
 
 ```json
@@ -284,9 +350,9 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
 **多租戶（Multi-tenancy）。** `app/core/tenancy.py` 用一個
-`contextvars.ContextVar` 保存目前生效的公司 id，由 `TenancyMiddleware`
-（`app/main.py`）在每個 request 開始時，從一個受信任的 `X-Company-Id`
-header 綁定進去。`app/core/db.py` 註冊了一個 SQLAlchemy 的
+`contextvars.ContextVar` 保存目前生效的公司 id，由 `AuthenticationMiddleware`
+（`app/main.py`）在每個 request 開始時，從通過認證的 Bearer Session Token
+綁定進去（ADR-009）。`app/core/db.py` 註冊了一個 SQLAlchemy 的
 `do_orm_execute` hook，對每一個碰到租戶範圍資料表的 ORM
 **`SELECT`** 都會注入 `with_loader_criteria` 過濾成目前生效的公司
 （對任何非 `SELECT` 的敘述會直接返回不處理——寫入是另外一套機制，見
@@ -300,9 +366,8 @@ header 綁定進去。`app/core/db.py` 註冊了一個 SQLAlchemy 的
 是靠慣例保護、不是靠這個 hook：每一個 `INSERT` 的 `company_id` 都是
 從 `require_current_company_id()` 蓋上去的，絕不會來自 client
 輸入——`*Create` 這些 schema 根本沒有 `company_id` 欄位，所以現在就
-沒有任何方法能把它偷塞進 request body 裡。Phase 1 沒有 auth/RBAC
-（Phase 2 才有），所以這個 header 是刻意、有記錄在案的權宜設計，
-代替一個經過驗證的 JWT/session claim。
+沒有任何方法能把它偷塞進 request body 裡。存取受 `platform.permissions`
+的 Bearer Session 與精細權限檢查所保護。
 
 **金額（Money）。** 每一個金額欄位都是 `NUMERIC(20, 6)`；
 `exchange_rates.rate` 是 `NUMERIC(20, 10)` 並帶一個 `rate_date`

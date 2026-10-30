@@ -13,3 +13,4 @@ build/
 htmlcov/
 uv.lock.bak
 .import_linter_cache/
+.worktrees/

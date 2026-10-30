@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import RequiresPermission
 from app.core.db import get_db_session
 from app.modules.ledger import service
 from app.modules.ledger.schemas import (
@@ -34,7 +35,12 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 # ---------------------------------------------------------------------------
 
 
-@router.post("/periods", response_model=AccountingPeriodRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/periods",
+    response_model=AccountingPeriodRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequiresPermission("ledger.period.create"))],
+)
 async def create_period(
     payload: AccountingPeriodCreate, session: DbSession
 ) -> AccountingPeriodRead:
@@ -42,13 +48,21 @@ async def create_period(
     return AccountingPeriodRead.model_validate(period)
 
 
-@router.get("/periods", response_model=list[AccountingPeriodRead])
+@router.get(
+    "/periods",
+    response_model=list[AccountingPeriodRead],
+    dependencies=[Depends(RequiresPermission("ledger.period.read"))],
+)
 async def list_periods(session: DbSession) -> list[AccountingPeriodRead]:
     periods = await service.list_periods(session)
     return [AccountingPeriodRead.model_validate(p) for p in periods]
 
 
-@router.post("/periods/{period_id}/close", response_model=AccountingPeriodRead)
+@router.post(
+    "/periods/{period_id}/close",
+    response_model=AccountingPeriodRead,
+    dependencies=[Depends(RequiresPermission("ledger.period.close"))],
+)
 async def close_period(period_id: uuid.UUID, session: DbSession) -> AccountingPeriodRead:
     period = await service.close_period(session, period_id)
     return AccountingPeriodRead.model_validate(period)
@@ -60,7 +74,10 @@ async def close_period(period_id: uuid.UUID, session: DbSession) -> AccountingPe
 
 
 @router.post(
-    "/journal-entries", response_model=JournalEntryRead, status_code=status.HTTP_201_CREATED
+    "/journal-entries",
+    response_model=JournalEntryRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequiresPermission("ledger.journal_entry.create"))],
 )
 async def create_journal_entry(
     payload: JournalEntryCreateRequest, session: DbSession
@@ -82,13 +99,21 @@ async def create_journal_entry(
     return JournalEntryRead.model_validate(entry)
 
 
-@router.get("/journal-entries", response_model=list[JournalEntryRead])
+@router.get(
+    "/journal-entries",
+    response_model=list[JournalEntryRead],
+    dependencies=[Depends(RequiresPermission("ledger.journal_entry.read"))],
+)
 async def list_journal_entries(session: DbSession) -> list[JournalEntryRead]:
     entries = await service.list_journal_entries(session)
     return [JournalEntryRead.model_validate(e) for e in entries]
 
 
-@router.get("/journal-entries/{entry_id}", response_model=JournalEntryRead)
+@router.get(
+    "/journal-entries/{entry_id}",
+    response_model=JournalEntryRead,
+    dependencies=[Depends(RequiresPermission("ledger.journal_entry.read"))],
+)
 async def get_journal_entry(entry_id: uuid.UUID, session: DbSession) -> JournalEntryRead:
     entry = await service.get_journal_entry(session, entry_id)
     return JournalEntryRead.model_validate(entry)
@@ -98,6 +123,7 @@ async def get_journal_entry(entry_id: uuid.UUID, session: DbSession) -> JournalE
     "/journal-entries/{entry_id}/reverse",
     response_model=JournalEntryRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequiresPermission("ledger.journal_entry.reverse"))],
 )
 async def reverse_journal_entry(entry_id: uuid.UUID, session: DbSession) -> JournalEntryRead:
     reversal = await service.reverse_journal_entry(session, entry_id)
@@ -109,7 +135,11 @@ async def reverse_journal_entry(entry_id: uuid.UUID, session: DbSession) -> Jour
 # ---------------------------------------------------------------------------
 
 
-@router.get("/reports/trial-balance", response_model=list[TrialBalanceLine])
+@router.get(
+    "/reports/trial-balance",
+    response_model=list[TrialBalanceLine],
+    dependencies=[Depends(RequiresPermission("ledger.report.read"))],
+)
 async def get_trial_balance(
     session: DbSession, period_id: uuid.UUID | None = None
 ) -> list[TrialBalanceLine]:

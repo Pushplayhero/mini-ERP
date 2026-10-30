@@ -33,6 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.authorization import require_permission
 from app.core.exceptions import (
     ConflictError,
     DomainValidationError,
@@ -305,6 +306,7 @@ def _build_lines(
 
 
 async def create_period(session: AsyncSession, data: AccountingPeriodCreate) -> AccountingPeriod:
+    require_permission("ledger.period.create")
     period = AccountingPeriod(
         company_id=require_current_company_id(),
         year=data.year,
@@ -319,18 +321,24 @@ async def create_period(session: AsyncSession, data: AccountingPeriodCreate) -> 
 
 
 async def list_periods(session: AsyncSession) -> Sequence[AccountingPeriod]:
+    require_permission("ledger.period.read")
     result = await session.execute(
         select(AccountingPeriod).order_by(AccountingPeriod.year, AccountingPeriod.month)
     )
     return result.scalars().all()
 
 
-async def get_period(session: AsyncSession, period_id: uuid.UUID) -> AccountingPeriod:
+async def load_period_unchecked(session: AsyncSession, period_id: uuid.UUID) -> AccountingPeriod:
     result = await session.execute(select(AccountingPeriod).where(AccountingPeriod.id == period_id))
     period = result.scalar_one_or_none()
     if period is None:
         raise NotFoundError("AccountingPeriod", period_id)
     return period
+
+
+async def get_period(session: AsyncSession, period_id: uuid.UUID) -> AccountingPeriod:
+    require_permission("ledger.period.read")
+    return await load_period_unchecked(session, period_id)
 
 
 async def close_period(session: AsyncSession, period_id: uuid.UUID) -> AccountingPeriod:
@@ -344,6 +352,7 @@ async def close_period(session: AsyncSession, period_id: uuid.UUID) -> Accountin
     of scope per the ADR), so there is no conflicting state transition to
     reject here — a repeat close request is simply satisfied twice.
     """
+    require_permission("ledger.period.close")
     result = await session.execute(
         select(AccountingPeriod).where(AccountingPeriod.id == period_id).with_for_update()
     )
@@ -426,6 +435,7 @@ async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) 
     `session.commit()`; a flush-time failure bypassed it entirely and
     surfaced as an unhandled 500 instead of the promised 409.
     """
+    require_permission("ledger.journal_entry.create")
     try:
         entry = await post_journal_entry(session, data)
         await session.commit()
@@ -436,7 +446,7 @@ async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) 
     return entry
 
 
-async def get_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
+async def load_journal_entry_unchecked(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
     result = await session.execute(
         select(JournalEntry)
         .where(JournalEntry.id == entry_id)
@@ -448,7 +458,13 @@ async def get_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> Journ
     return entry
 
 
+async def get_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
+    require_permission("ledger.journal_entry.read")
+    return await load_journal_entry_unchecked(session, entry_id)
+
+
 async def list_journal_entries(session: AsyncSession) -> Sequence[JournalEntry]:
+    require_permission("ledger.journal_entry.read")
     result = await session.execute(
         select(JournalEntry)
         .options(selectinload(JournalEntry.lines))
@@ -494,7 +510,7 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
     non-event-sourced entries).
     """
     company_id = require_current_company_id()
-    original = await get_journal_entry(session, entry_id)
+    original = await load_journal_entry_unchecked(session, entry_id)
 
     if original.reversal_of_id is not None:
         raise ReversalNotAllowedError(
@@ -563,6 +579,7 @@ async def reverse_journal_entry(session: AsyncSession, entry_id: uuid.UUID) -> J
     `flush()` still gets translated to a 409 instead of bypassing conflict
     handling and surfacing as an unhandled 500.
     """
+    require_permission("ledger.journal_entry.reverse")
     try:
         reversal = await _post_reversal(session, entry_id)
         await session.commit()
@@ -610,6 +627,7 @@ async def get_trial_balance(
     check — the same defense-in-depth doctrine `_ensure_accounts_belong_to_company`
     itself already applies at write time, now also applied at read time.
     """
+    require_permission("ledger.report.read")
     company_id = require_current_company_id()
     stmt = (
         select(

@@ -87,6 +87,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # event schema and posting-handler subscription before any service call
 # below can publish one. Same requirement/placement as `app/cli/seed_demo.py`.
 import app.main  # noqa: F401  (side effect: composition-root wiring)
+from app.core.authorization import actor_context
 from app.core.tenancy import company_context
 from app.modules.inventory import service as inventory_service
 from app.modules.inventory.schemas import StockAdjustmentCreate
@@ -104,6 +105,7 @@ from app.modules.receivables import service as receivables_service
 from app.modules.receivables.schemas import InvoiceCreate, PaymentAllocationIn, PaymentCreate
 from app.modules.sales import service as sales_service
 from app.modules.sales.schemas import SalesOrderCreate, SalesOrderLineCreate
+from tests.conftest import TEST_ADMIN_ACTOR
 
 _ZERO = Decimal("0")
 _UNIT_PRICE = Decimal("100")
@@ -405,93 +407,94 @@ async def _run_example(dsn: str, plan: list[Op], seed_stock: int) -> None:
     engine = create_async_engine(dsn)
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with session_factory() as session:
-            company = await masterdata_service.create_company(
-                session,
-                CompanyCreate(
-                    code=f"HYPO2C{uuid.uuid4().hex[:10].upper()}",
-                    name="Hypothesis O2C Co",
-                    functional_currency_code="TWD",
-                ),
-            )
-            with company_context(company.id):
-                for code, name, acct_type in _STANDARD_CHART:
-                    await masterdata_service.create_account(
-                        session, AccountCreate(code=code, name=name, type=acct_type)
+        with actor_context(TEST_ADMIN_ACTOR):
+            async with session_factory() as session:
+                company = await masterdata_service.create_company(
+                    session,
+                    CompanyCreate(
+                        code=f"HYPO2C{uuid.uuid4().hex[:10].upper()}",
+                        name="Hypothesis O2C Co",
+                        functional_currency_code="TWD",
+                    ),
+                )
+                with company_context(company.id):
+                    for code, name, acct_type in _STANDARD_CHART:
+                        await masterdata_service.create_account(
+                            session, AccountCreate(code=code, name=name, type=acct_type)
+                        )
+                    # Codex diff review (Week 7 slice 5, finding 1; broadened in
+                    # round 2, finding A): postings in this flow default their
+                    # own date inconsistently — `sales.service.ship_order`/
+                    # `receivables.service.create_payment` both stamp
+                    # `datetime.now(timezone.utc)`, while
+                    # `receivables.service.create_invoice` defaults to local
+                    # `date.today()`. Near a month boundary, local and UTC can
+                    # disagree on which month "now" is in (e.g. Taipei UTC+8
+                    # just after local midnight on the 1st is still the
+                    # previous month in UTC). Round 1 covered that by creating
+                    # a period for both bases; round 2 pointed out these two
+                    # snapshots are taken here, BEFORE the example's several
+                    # subsequent DB round trips actually execute — if the
+                    # wall clock crosses a month boundary mid-example, a
+                    # later `datetime.now(timezone.utc)` call inside a service
+                    # function could still land in a month neither snapshot
+                    # covers. Also including the month immediately following
+                    # each snapshot closes that gap too: a single Hypothesis
+                    # example's execution (a handful of DB round trips) cannot
+                    # advance the wall clock by more than one calendar month,
+                    # so {this month, next month} x {local, UTC} is a strict
+                    # superset of every month any date default in this example
+                    # could possibly resolve to. Creating a period for each
+                    # distinct (year, month) (deduplicated via the `set`, since
+                    # they usually collapse to one or two) is correct
+                    # regardless of which basis a given posting call resolves
+                    # to, and costs nothing extra when they coincide.
+                    local_today = date.today()
+                    utc_today = datetime.now(timezone.utc).date()  # noqa: UP017
+                    periods_needed: set[tuple[int, int]] = set()
+                    for basis in (local_today, utc_today):
+                        periods_needed.add((basis.year, basis.month))
+                        next_month = (basis.replace(day=28) + timedelta(days=4)).replace(day=1)
+                        periods_needed.add((next_month.year, next_month.month))
+                    for year, month in periods_needed:
+                        await ledger_service.create_period(
+                            session, AccountingPeriodCreate(year=year, month=month)
+                        )
+                    customer = await masterdata_service.create_customer(
+                        session,
+                        CustomerCreate(
+                            code=f"HYPCUST{uuid.uuid4().hex[:8].upper()}",
+                            name="Hypothesis Customer",
+                            currency_code="TWD",
+                            # "do not check" sentinel — see module docstring.
+                            credit_limit=Decimal("0"),
+                        ),
                     )
-                # Codex diff review (Week 7 slice 5, finding 1; broadened in
-                # round 2, finding A): postings in this flow default their
-                # own date inconsistently — `sales.service.ship_order`/
-                # `receivables.service.create_payment` both stamp
-                # `datetime.now(timezone.utc)`, while
-                # `receivables.service.create_invoice` defaults to local
-                # `date.today()`. Near a month boundary, local and UTC can
-                # disagree on which month "now" is in (e.g. Taipei UTC+8
-                # just after local midnight on the 1st is still the
-                # previous month in UTC). Round 1 covered that by creating
-                # a period for both bases; round 2 pointed out these two
-                # snapshots are taken here, BEFORE the example's several
-                # subsequent DB round trips actually execute — if the
-                # wall clock crosses a month boundary mid-example, a
-                # later `datetime.now(timezone.utc)` call inside a service
-                # function could still land in a month neither snapshot
-                # covers. Also including the month immediately following
-                # each snapshot closes that gap too: a single Hypothesis
-                # example's execution (a handful of DB round trips) cannot
-                # advance the wall clock by more than one calendar month,
-                # so {this month, next month} x {local, UTC} is a strict
-                # superset of every month any date default in this example
-                # could possibly resolve to. Creating a period for each
-                # distinct (year, month) (deduplicated via the `set`, since
-                # they usually collapse to one or two) is correct
-                # regardless of which basis a given posting call resolves
-                # to, and costs nothing extra when they coincide.
-                local_today = date.today()
-                utc_today = datetime.now(timezone.utc).date()  # noqa: UP017
-                periods_needed: set[tuple[int, int]] = set()
-                for basis in (local_today, utc_today):
-                    periods_needed.add((basis.year, basis.month))
-                    next_month = (basis.replace(day=28) + timedelta(days=4)).replace(day=1)
-                    periods_needed.add((next_month.year, next_month.month))
-                for year, month in periods_needed:
-                    await ledger_service.create_period(
-                        session, AccountingPeriodCreate(year=year, month=month)
+                    uoms = await masterdata_service.list_uoms(session)
+                    ea_id = next(u.id for u in uoms if u.code == "EA")
+                    product = await masterdata_service.create_product(
+                        session,
+                        ProductCreate(
+                            sku=f"HYPSKU{uuid.uuid4().hex[:8].upper()}",
+                            name="Hypothesis Widget",
+                            uom_id=ea_id,
+                            list_price=_UNIT_PRICE,
+                            standard_cost=_STANDARD_COST,
+                        ),
                     )
-                customer = await masterdata_service.create_customer(
-                    session,
-                    CustomerCreate(
-                        code=f"HYPCUST{uuid.uuid4().hex[:8].upper()}",
-                        name="Hypothesis Customer",
-                        currency_code="TWD",
-                        # "do not check" sentinel — see module docstring.
-                        credit_limit=Decimal("0"),
-                    ),
-                )
-                uoms = await masterdata_service.list_uoms(session)
-                ea_id = next(u.id for u in uoms if u.code == "EA")
-                product = await masterdata_service.create_product(
-                    session,
-                    ProductCreate(
-                        sku=f"HYPSKU{uuid.uuid4().hex[:8].upper()}",
-                        name="Hypothesis Widget",
-                        uom_id=ea_id,
-                        list_price=_UNIT_PRICE,
-                        standard_cost=_STANDARD_COST,
-                    ),
-                )
-                # Seeded to exactly the plan's total demand — see module
-                # docstring "Stock provisioning".
-                await inventory_service.create_adjustment(
-                    session,
-                    StockAdjustmentCreate(
-                        product_id=product.id,
-                        qty_delta=Decimal(seed_stock),
-                        reason="hypothesis property test: seed exactly the plan's total demand",
-                    ),
-                )
+                    # Seeded to exactly the plan's total demand — see module
+                    # docstring "Stock provisioning".
+                    await inventory_service.create_adjustment(
+                        session,
+                        StockAdjustmentCreate(
+                            product_id=product.id,
+                            qty_delta=Decimal(seed_stock),
+                            reason="hypothesis property test: seed exactly the plan's total demand",
+                        ),
+                    )
 
-                await _execute_plan(session, plan, customer.id, product.id)
-                await _assert_invariants(session, product.id)
+                    await _execute_plan(session, plan, customer.id, product.id)
+                    await _assert_invariants(session, product.id)
     finally:
         await engine.dispose()
 

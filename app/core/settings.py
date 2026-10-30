@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,7 +19,10 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "mini-erp"
-    environment: str = "development"
+    environment: str = Field(
+        default="development",
+        validation_alias=AliasChoices("APP_ENVIRONMENT", "ENVIRONMENT", "environment"),
+    )
     debug: bool = False
 
     # Postgres connection. Async driver (asyncpg) is mandatory — see
@@ -28,13 +32,13 @@ class Settings(BaseSettings):
     database_pool_size: int = 5
     database_max_overflow: int = 10
 
-    # Name of the request header a trusted upstream (reverse proxy / auth
-    # middleware) sets to carry the authenticated user's active company.
-    # Phase 1 has no auth/RBAC yet (that's Phase 2 — platform.permissions), so
-    # this header is the deliberate, documented stand-in: it plays the same
-    # role a verified JWT claim will play later, and is never sourced from a
-    # request *body* field a client could spoof into a write payload.
-    tenant_header_name: str = "X-Company-Id"
+    # ADR-009 Decision 3 / WEEK9 Slice B: how long an opaque bearer session
+    # token stays valid after `POST /auth/login`. Not an ADR-009-pinned
+    # number — an ordinary implementation parameter, configurable per
+    # deployment. `switch-company`/every authenticated request never
+    # extends it (no sliding expiry) — a session's lifetime is fixed at
+    # creation; the user must log in again once it lapses.
+    session_ttl_hours: int = 12
 
 
 @lru_cache

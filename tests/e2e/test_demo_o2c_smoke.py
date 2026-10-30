@@ -28,14 +28,14 @@ from decimal import Decimal
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.cli.demo_o2c import CUSTOMER_CODE, PRODUCT_SKU, _headers, run_demo
+from app.cli.bootstrap_admin import bootstrap_admin
+from app.cli.demo_o2c import CUSTOMER_CODE, PRODUCT_SKU, run_demo
 
 
-async def _product_and_summary(demo_client: AsyncClient) -> tuple[str, list[object]]:
-    companies_resp = await demo_client.get("/api/v1/companies")
+async def _product_and_summary(demo_client: AsyncClient, token: str) -> tuple[str, list[object]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    companies_resp = await demo_client.get("/api/v1/companies", headers=headers)
     companies_resp.raise_for_status()
-    company_id = next(c["id"] for c in companies_resp.json() if c["code"] == "MAKEDEMO")
-    headers = _headers(company_id)
 
     products_resp = await demo_client.get("/api/v1/products", headers=headers)
     products_resp.raise_for_status()
@@ -49,8 +49,20 @@ async def _product_and_summary(demo_client: AsyncClient) -> tuple[str, list[obje
 
 
 @pytest.mark.asyncio
-async def test_demo_o2c_runs_and_is_rerunnable(client: AsyncClient) -> None:
+async def test_demo_o2c_runs_and_is_rerunnable(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.main import app
+
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "adminpassword123")
+
+    await bootstrap_admin(
+        email="admin@example.com",
+        password="adminpassword123",
+        company_code="MAKEDEMO",
+        company_name="Make Demo Co",
+    )
 
     # A dedicated ASGI-transport client, matching `demo_o2c.py`'s own
     # absolute-URL requests (unlike the `client` fixture's
@@ -61,7 +73,13 @@ async def test_demo_o2c_runs_and_is_rerunnable(client: AsyncClient) -> None:
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8000") as demo_client:
         await run_demo(demo_client)
 
-        _, summary_before_rerun = await _product_and_summary(demo_client)
+        login_resp = await demo_client.post(
+            "/auth/login", json={"email": "admin@example.com", "password": "adminpassword123"}
+        )
+        login_resp.raise_for_status()
+        token = login_resp.json()["access_token"]
+
+        _, summary_before_rerun = await _product_and_summary(demo_client, token)
 
         # Rerun: every step must resolve to the same order/invoice/payment
         # by its stable tag/ref and post nothing new — this is the actual
@@ -69,7 +87,7 @@ async def test_demo_o2c_runs_and_is_rerunnable(client: AsyncClient) -> None:
         # not merely by absence of an exception.
         await run_demo(demo_client)
 
-        _, summary_after_rerun = await _product_and_summary(demo_client)
+        _, summary_after_rerun = await _product_and_summary(demo_client, token)
         assert summary_before_rerun == summary_after_rerun, (
             "rerunning demo_o2c must not change on-hand stock — a change here means the "
             "remaining-work-aware reconciliation regressed to the fixed-target over-"
@@ -82,9 +100,10 @@ async def test_demo_o2c_runs_and_is_rerunnable(client: AsyncClient) -> None:
 
         # Sanity: the customer this script's own module docstring claims
         # to be self-contained about really was created idempotently too.
-        companies_resp = await demo_client.get("/api/v1/companies")
-        company_id = next(c["id"] for c in companies_resp.json() if c["code"] == "MAKEDEMO")
-        customers_resp = await demo_client.get("/api/v1/customers", headers=_headers(company_id))
+        headers = {"Authorization": f"Bearer {token}"}
+        companies_resp = await demo_client.get("/api/v1/companies", headers=headers)
+        companies_resp.raise_for_status()
+        customers_resp = await demo_client.get("/api/v1/customers", headers=headers)
         customers_resp.raise_for_status()
         matching_customers = [c for c in customers_resp.json() if c["code"] == CUSTOMER_CODE]
         assert len(matching_customers) == 1, "customer must not be duplicated across reruns"

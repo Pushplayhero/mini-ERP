@@ -3,37 +3,84 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import AwareDatetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import RequiresPermission
 from app.core.db import get_db_session
 from app.modules.inventory import service
 from app.modules.inventory.schemas import StockAdjustmentCreate, StockMoveRead, StockSummaryRead
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
+DEFAULT_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 500
+
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
-@router.post("/adjustments", response_model=StockMoveRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/adjustments",
+    response_model=StockMoveRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequiresPermission("inventory.adjustment.create"))],
+)
 async def create_adjustment(payload: StockAdjustmentCreate, session: DbSession) -> StockMoveRead:
     move = await service.create_adjustment(session, payload)
     return StockMoveRead.model_validate(move)
 
 
-@router.get("/summary", response_model=list[StockSummaryRead])
+@router.get(
+    "/summary",
+    response_model=list[StockSummaryRead],
+    dependencies=[Depends(RequiresPermission("inventory.summary.read"))],
+)
 async def get_stock_summary(
-    session: DbSession, product_id: uuid.UUID | None = None
+    session: DbSession,
+    product_id: uuid.UUID | None = None,
+    limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    after_product_id: uuid.UUID | None = None,
 ) -> list[StockSummaryRead]:
-    summaries = await service.list_stock_summary(session, product_id=product_id)
+    summaries = await service.list_stock_summary(
+        session, product_id=product_id, limit=limit, after_product_id=after_product_id
+    )
     return [StockSummaryRead.model_validate(s) for s in summaries]
 
 
-@router.get("/moves", response_model=list[StockMoveRead])
+@router.get(
+    "/moves",
+    response_model=list[StockMoveRead],
+    dependencies=[Depends(RequiresPermission("inventory.move.read"))],
+)
 async def list_stock_moves(
-    session: DbSession, product_id: uuid.UUID | None = None
+    session: DbSession,
+    product_id: uuid.UUID | None = None,
+    limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    after_created_at: AwareDatetime | None = None,
+    after_id: uuid.UUID | None = None,
 ) -> list[StockMoveRead]:
-    moves = await service.list_stock_moves(session, product_id=product_id)
+    if (after_created_at is None) != (after_id is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="after_created_at and after_id must be provided together",
+        )
+    if after_created_at is not None:
+        try:
+            after_created_at = after_created_at.astimezone(UTC)
+        except (OSError, OverflowError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="after_created_at must be representable as UTC",
+            ) from exc
+    moves = await service.list_stock_moves(
+        session,
+        product_id=product_id,
+        limit=limit,
+        after_created_at=after_created_at,
+        after_id=after_id,
+    )
     return [StockMoveRead.model_validate(m) for m in moves]

@@ -22,6 +22,7 @@ from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenancy import company_context
 from app.modules.ledger import service as ledger_service
@@ -32,7 +33,7 @@ from tests.ledger._helpers import balanced_lines, create_account, create_company
 
 @pytest.mark.asyncio
 async def test_entry_no_has_no_gap_after_db_level_rejection(
-    client: AsyncClient, db_session
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     company_id = await create_company(client, "GAPC1")
     headers = company_headers(company_id)

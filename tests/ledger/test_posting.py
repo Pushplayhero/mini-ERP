@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 
 import pytest
@@ -36,11 +37,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.cli import replay_outbox
 from app.core import events
+from app.core.authorization import actor_context
 from app.core.tenancy import company_context, current_company_id_or_none
 from app.modules.ledger import posting, service
 from app.modules.masterdata.models import OutboxEvent
+from tests.conftest import TEST_ADMIN_ACTOR
 from tests.inventory._helpers import create_adjustment, create_product, on_hand
 from tests.ledger._helpers import create_account, create_company, create_period
+
+
+@pytest.fixture(autouse=True)
+def _bind_admin() -> Iterator[None]:
+    with actor_context(TEST_ADMIN_ACTOR):
+        yield
 
 
 async def _setup_company_with_accounts(

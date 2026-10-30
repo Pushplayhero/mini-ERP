@@ -13,6 +13,7 @@ from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import TenancyContextError
 from app.core.tenancy import company_context
@@ -118,11 +119,13 @@ async def test_ledger_endpoints_reject_missing_company_context(client: AsyncClie
         ("GET", "/api/v1/reports/trial-balance"),
     ]:
         response = await client.request(method, path)
-        assert response.status_code == 403, f"{method} {path} did not fail-closed"
+        assert response.status_code == 401, f"{method} {path} did not fail-closed"
 
 
 @pytest.mark.asyncio
-async def test_orm_query_without_company_context_raises_for_ledger_models(db_session) -> None:
+async def test_orm_query_without_company_context_raises_for_ledger_models(
+    db_session: AsyncSession,
+) -> None:
     with pytest.raises(TenancyContextError):
         await db_session.execute(select(AccountingPeriod))
     with pytest.raises(TenancyContextError):
@@ -131,7 +134,7 @@ async def test_orm_query_without_company_context_raises_for_ledger_models(db_ses
 
 @pytest.mark.asyncio
 async def test_orm_query_with_company_context_is_filtered_for_periods(
-    client: AsyncClient, db_session
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     company_a = await create_company(client, "ISOLDBA")
     company_b = await create_company(client, "ISOLDBB")
@@ -147,7 +150,7 @@ async def test_orm_query_with_company_context_is_filtered_for_periods(
 
 @pytest.mark.asyncio
 async def test_trial_balance_excludes_cross_company_account_bypass_insert(
-    client: AsyncClient, db_session
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Diff-review regression: `get_trial_balance`'s accounts join used to
     filter only `JournalEntry.company_id`, never `_ACCOUNTS.c.company_id` —
@@ -160,13 +163,16 @@ async def test_trial_balance_excludes_cross_company_account_bypass_insert(
     another company's account. Prove the trial balance report no longer
     surfaces that other company's account metadata.
     """
+    from app.core.authorization import actor_context
+    from tests.conftest import TEST_ADMIN_ACTOR
+
     company_a = await create_company(client, "ISOLTB1")
     company_b = await create_company(client, "ISOLTB2")
     cash_a = await create_account(client, company_a, "1000", "Cash")
     revenue_b = await create_account(client, company_b, "4999", "Cross-Company Bogus", "revenue")
     period_a = await create_period(client, company_a, 2026, 1)
 
-    with company_context(company_a):
+    with actor_context(TEST_ADMIN_ACTOR), company_context(company_a):
         entry = JournalEntry(
             company_id=company_a,
             entry_no="JE-2026-999998",

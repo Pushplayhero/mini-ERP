@@ -143,8 +143,4 @@ async def check_credit_limit(session: AsyncSession, context: HookContext) -> Non
     exposure = uninvoiced_total + open_invoice_total + context.total
 
     if exposure > customer.credit_limit:
-        raise CreditLimitExceededError(
-            f"customer {context.customer_id} would exceed its credit limit "
-            f"({customer.credit_limit}): uninvoiced orders {uninvoiced_total} + open invoices "
-            f"{open_invoice_total} + this order's total {context.total} = {exposure}"
-        )
+        raise CreditLimitExceededError("Sales order exceeds the customer's credit limit")

@@ -25,10 +25,7 @@ phase implements.
 
 Out of scope until Phase 2+: a plugin **loader** (Phase 1 ships one
 hard-wired demonstration plugin — `app/plugins/credit_limit.py` — not a
-dynamic loading mechanism), workflow/approval engine, RBAC (today's
-`X-Company-Id` header is a deliberate, documented stand-in for a verified
-JWT/session claim a real auth layer will set later — see "Multi-tenancy"
-below), user-defined custom fields UI (the `custom_data JSONB` column
+dynamic loading mechanism), workflow/approval engine, user-defined custom fields UI (the `custom_data JSONB` column
 exists on every primary business entity — companies, customers, products,
 accounts, orders, invoices, payments, journal entries, accounting periods
 — as the underlying mechanism, though not on line/fact-level tables like
@@ -40,9 +37,63 @@ Taiwan-specific tax/e-invoice integration is Phase 4.
 ## Tech stack
 
 Python 3.12 · FastAPI · SQLAlchemy 2.0 (async, asyncpg) · Pydantic v2 ·
-PostgreSQL 16 · Alembic · [uv](https://docs.astral.sh/uv/) for packaging ·
-[Hypothesis](https://hypothesis.readthedocs.io/) for property-based
-testing.
+PostgreSQL 16 (strict types, DB-level constraints) · Alembic · pytest +
+pytest-asyncio + testcontainers-postgres. Tested on Linux and Windows.
+
+## Why this exists
+
+A lot of ERP tutorials demonstrate "how to insert into a `sales_orders`
+table" and stop. Real ERP kernels are interesting because of the
+invariants they must maintain *across* tables:
+
+- **Immutability of posted financial state:** Once an accounting period
+  closes or a journal entry posts, it is NEVER mutated or deleted.
+  Corrections are posted as explicit reversals (ADR-005).
+- **The O2C invariants hold under concurrency:** Two users trying to
+  fulfill the last unit of stock or exceed a credit limit simultaneously
+  cannot both succeed; one commits, one gets a structured `409 Conflict`
+  (ADR-006, ADR-007).
+- **Every financial movement is backed by balanced double-entry
+  bookkeeping:** A shipment posts COGS + Inventory; an invoice posts AR +
+  Revenue; a payment posts Cash + AR. No money moves without two balanced
+  sides.
+- **Fail-closed multi-tenancy:** A query without an active company context
+  RAISES; it does not return all rows or silently filter to nothing.
+
+This codebase is a clean, minimal reference implementation of those
+rules. It is structured to be read top-to-bottom, with ADRs documenting
+every non-obvious decision.
+
+## Development
+
+Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync --all-extras
+cp .env.example .env
+
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
+
+make up
+make bootstrap
+make seed
+make demo
+make check
+```
+
+`make bootstrap` is the first-install command that creates the initial
+administrator user and company. `make seed` populates the demo dataset
+(and is safe to rerun idempotently). `make demo` executes the live O2C walkthrough.
+
+`make test` runs the full test suite against an ephemeral PostgreSQL
+container (via `testcontainers-postgres` when Docker is running, with
+automatic fallback to embedded `pgserver` for sandboxed/no-daemon
+environments). The Docker-compose path (`make up` + `make bootstrap` + `make seed` + `make demo`)
+is the reference workflow for end-to-end testing.
 
 ## Quick start
 
@@ -50,10 +101,21 @@ testing.
 
 ```bash
 cp .env.example .env
-make up      # docker compose up, blocks until /health responds
-make seed    # populate a realistic demo dataset (idempotent — safe to rerun)
-make demo    # walk one order through the LIVE REST API, print the resulting trial balance
+
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
+
+make up
+make bootstrap
+make seed
+make demo
 ```
+
+`make bootstrap` creates the initial administrator user and tenant company
+(first-install only). `make seed` populates the demo dataset idempotently.
 
 `make demo`'s output looks like this (see "Try it" below for the same
 flow as raw `curl`):
@@ -80,18 +142,39 @@ volume), `make test` (`pytest` inside your own environment), `make check`
 
 ### Running on your host (no Docker)
 
+Start a PostgreSQL instance, then configure the application explicitly:
+
 ```bash
 uv sync --group dev
-cp .env.example .env   # edit DATABASE_URL to point at your own Postgres
+cp .env.example .env
+
+export DATABASE_URL='postgresql+asyncpg://mini_erp:mini_erp@localhost:5432/mini_erp'
+export APP_ENVIRONMENT=development
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
+
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
 ```
 
-`uv run python -m app.cli.seed_demo` and
-`DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_o2c`
-are the direct equivalents of `make seed`/`make demo` for this path — see
-the Makefile for exactly why `seed` talks to the database directly while
-`demo` is a real HTTP client against a running server.
+In terminal 1, start the API:
+
+```bash
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+In terminal 2, run the direct CLI commands:
+
+```bash
+uv run python -m app.cli.bootstrap_admin
+uv run python -m app.cli.seed_demo
+DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_o2c
+```
+
+`seed_demo` talks directly to PostgreSQL. `demo_o2c` is an HTTP client
+and therefore requires the running uvicorn process.
 
 ## Architecture
 
@@ -100,7 +183,7 @@ graph TB
     Client["curl / API client"]
 
     subgraph App["mini-erp — one FastAPI process (modular monolith, ADR-001)"]
-        MW["TenancyMiddleware<br/>binds X-Company-Id"]
+        MW["AuthenticationMiddleware<br/>verifies Bearer token & binds Session Context"]
 
         subgraph Modules["business modules — independent, no cross-module imports (CI-enforced)"]
             MD["masterdata<br/>companies · customers · products · UoM · accounts"]
@@ -116,7 +199,7 @@ graph TB
 
     PG[("PostgreSQL 16<br/>append-only fact tables, ADR-002")]
 
-    Client -->|"HTTP + X-Company-Id header"| MW
+    Client -->|"HTTP + Authorization: Bearer <token>"| MW
     MW --> MD & SA & IN & RE
     SA -->|"sales.order.validate_confirm hook"| PL
     SA -->|"publish: order_confirmed (no subscriber yet), goods_shipped"| EB
@@ -127,7 +210,7 @@ graph TB
 ```
 
 Every arrow into a *tenant-scoped* operation crosses the
-`X-Company-Id`-bound tenancy filter (see "Multi-tenancy" below) before
+active Session Context tenancy filter (see "Multi-tenancy" below) before
 any query runs — currency/UoM reference data is the one exception
 (global, not company-owned; see the `curl` walkthrough below). `sales`
 publishes `order_confirmed` too, but it currently has no subscriber at
@@ -151,72 +234,86 @@ not literally unbounded) legal operation sequences,
 
 ## Try it: the O2C flow as `curl`
 
-Real output from a freshly-migrated database (redact/replace the UUIDs
-with whatever your own run produces):
+First, ensure the app is up and bootstrapped:
 
 ```bash
-BASE=http://localhost:8000/api/v1
+make up
 
-# Reference data (global, not tenant-scoped) — seed once.
-curl -s -X POST $BASE/currencies -H 'Content-Type: application/json' \
-  -d '{"code":"TWD","name":"New Taiwan Dollar","decimal_places":0}'
-# {"code":"TWD","name":"New Taiwan Dollar","decimal_places":0,"is_active":true}
+export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+read -rsp "Bootstrap admin password: " BOOTSTRAP_ADMIN_PASSWORD && echo
+export BOOTSTRAP_ADMIN_PASSWORD
+export BOOTSTRAP_COMPANY_CODE=MAIN
+export BOOTSTRAP_COMPANY_NAME='Main Company'
 
-UOM_ID=$(curl -s -X POST $BASE/uom -H 'Content-Type: application/json' \
-  -d '{"code":"EA","name":"Each"}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-# real response shape: {"id":"fff448b2-...","code":"EA","name":"Each","is_active":true}
+make bootstrap
+```
 
-# Every tenant-scoped call below needs X-Company-Id — no company_id field
-# in any request body (see "Multi-tenancy").
-COMPANY_ID=$(curl -s -X POST $BASE/companies -H 'Content-Type: application/json' \
-  -d '{"code":"ACME","name":"Acme Corp","functional_currency_code":"TWD"}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-H="-H X-Company-Id:$COMPANY_ID -H Content-Type:application/json"
+Then run the full O2C flow using bearer session authentication (redact/replace
+the UUIDs with whatever your own run produces):
 
-curl -s -X POST $BASE/periods $H -d '{"year":2026,"month":8}' > /dev/null
+```bash
+BASE=http://localhost:8000
+API=$BASE/api/v1
+
+# 1. Login to obtain a bearer session token (ADR-009 Authentication).
+# Pipe credentials from environment variables via stdin so secrets never appear
+# in shell history or curl process arguments.
+TOKEN=$(python3 -c 'import json, os; print(json.dumps({"email": os.environ["BOOTSTRAP_ADMIN_EMAIL"], "password": os.environ["BOOTSTRAP_ADMIN_PASSWORD"]}))' \
+  | curl -s -X POST "$BASE/auth/login" -H 'Content-Type: application/json' --data-binary @- \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# Every authenticated request uses Authorization: Bearer <token> (tenancy is
+# resolved ambiently from the active session).
+H=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+
+# Reference data (currencies, UoM) and the initial company are seeded at bootstrap.
+# Discover the seeded UoM:
+UOM_ID=$(curl -s $API/uom "${H[@]}" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')
+
+curl -s -X POST $API/periods "${H[@]}" -d '{"year":2026,"month":8}' > /dev/null
 for row in 1000:Cash:asset 1100:"Accounts Receivable":asset 1300:Inventory:asset \
            4000:Revenue:revenue 5000:COGS:expense; do
   IFS=: read -r code name type <<< "$row"
-  curl -s -X POST $BASE/accounts $H -d "{\"code\":\"$code\",\"name\":\"$name\",\"type\":\"$type\"}" > /dev/null
+  curl -s -X POST $API/accounts "${H[@]}" -d "{\"code\":\"$code\",\"name\":\"$name\",\"type\":\"$type\"}" > /dev/null
 done
 
-CUSTOMER_ID=$(curl -s -X POST $BASE/customers $H \
+CUSTOMER_ID=$(curl -s -X POST $API/customers "${H[@]}" \
   -d '{"code":"CUST-001","name":"Test Customer","currency_code":"TWD","credit_limit":"50000"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-PRODUCT_ID=$(curl -s -X POST $BASE/products $H \
+PRODUCT_ID=$(curl -s -X POST $API/products "${H[@]}" \
   -d "{\"sku\":\"WIDGET-1\",\"name\":\"Widget\",\"uom_id\":\"$UOM_ID\",\"list_price\":\"100\",\"standard_cost\":\"30\"}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-curl -s -X POST $BASE/inventory/adjustments $H \
+curl -s -X POST $API/inventory/adjustments "${H[@]}" \
   -d "{\"product_id\":\"$PRODUCT_ID\",\"qty_delta\":\"10\",\"reason\":\"initial stock\"}" > /dev/null
 
 # --- the actual O2C line ---
 
-ORDER_ID=$(curl -s -X POST $BASE/sales-orders $H \
+ORDER_ID=$(curl -s -X POST $API/sales-orders "${H[@]}" \
   -d "{\"customer_id\":\"$CUSTOMER_ID\",\"lines\":[{\"product_id\":\"$PRODUCT_ID\",\"qty\":\"2\",\"unit_price\":\"100\"}]}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
-curl -s -X POST $BASE/sales-orders/$ORDER_ID/confirm $H > /dev/null
-curl -s -X POST $BASE/sales-orders/$ORDER_ID/ship $H
+curl -s -X POST $API/sales-orders/$ORDER_ID/confirm "${H[@]}" > /dev/null
+curl -s -X POST $API/sales-orders/$ORDER_ID/ship "${H[@]}"
 # {"...","status":"shipped","total":"200.000000",...}  — posts Dr 5000 COGS 60 / Cr 1300 Inventory 60
 
-INVOICE_ID=$(curl -s -X POST $BASE/receivables/invoices $H -d "{\"order_id\":\"$ORDER_ID\"}" \
+INVOICE_ID=$(curl -s -X POST $API/receivables/invoices "${H[@]}" -d "{\"order_id\":\"$ORDER_ID\"}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 # posts Dr 1100 AR 200 / Cr 4000 Revenue 200
 
-PAYMENT_ID=$(curl -s -X POST $BASE/receivables/payments $H \
+PAYMENT_ID=$(curl -s -X POST $API/receivables/payments "${H[@]}" \
   -d '{"customer_id":"'"$CUSTOMER_ID"'","external_ref":"PAY-001","amount":"200"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 # posts Dr 1000 Cash 200 / Cr 1100 AR 200
 
-curl -s -X POST $BASE/receivables/payments/$PAYMENT_ID/allocations $H \
+curl -s -X POST $API/receivables/payments/$PAYMENT_ID/allocations "${H[@]}" \
   -d "{\"request_ref\":\"ALLOC-001\",\"allocations\":[{\"invoice_id\":\"$INVOICE_ID\",\"amount\":\"200\"}]}" \
   > /dev/null
 # subledger-only bookkeeping (ADR-008 Decision 2) — posts nothing
 
-curl -s $BASE/reports/trial-balance $H
+curl -s $API/reports/trial-balance "${H[@]}"
 ```
 
 ```json
@@ -299,8 +396,8 @@ A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
 
 **Multi-tenancy.** `app/core/tenancy.py` holds the active company id in a
-`contextvars.ContextVar`, bound per-request by `TenancyMiddleware`
-(`app/main.py`) from a trusted `X-Company-Id` header. `app/core/db.py`
+`contextvars.ContextVar`, bound per-request by `AuthenticationMiddleware`
+(`app/main.py`) from the authenticated bearer session (ADR-009). `app/core/db.py`
 registers a SQLAlchemy `do_orm_execute` hook that injects
 `with_loader_criteria` filtering to the active company for every ORM
 **`SELECT`** touching a tenant-scoped table (it returns immediately for
@@ -315,9 +412,8 @@ another company" and "doesn't exist" are indistinguishable by design.
 Writes themselves are protected by convention, not this hook: every
 `INSERT` stamps `company_id` from `require_current_company_id()`, never
 from client input — `*Create` schemas have no `company_id` field at all,
-so nothing can be smuggled into a request body even today. Phase 1 has
-no auth/RBAC (Phase 2), so the header is a deliberate, documented
-stand-in for a verified JWT/session claim.
+so nothing can be smuggled into a request body. Access is guarded by
+`platform.permissions` bearer sessions and granular permission enforcement.
 
 **Money.** Every monetary column is `NUMERIC(20, 6)`; `exchange_rates.rate`
 is `NUMERIC(20, 10)` with a `rate_date` (Phase 1 is TWD-only in practice —

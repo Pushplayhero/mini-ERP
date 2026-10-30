@@ -55,13 +55,16 @@ async def test_concurrent_confirm_only_one_wins(
 
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
+    from app.core.authorization import actor_context
+    from tests.conftest import TEST_ADMIN_ACTOR
+
     first_locked = asyncio.Event()
     release_first = asyncio.Event()
-    results: dict[str, object] = {}
+    results: dict[str, tuple[str, str]] = {}
 
     async def confirm_task_a() -> None:
         async with session_factory() as session:
-            with company_context(company_id):
+            with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
                 # Same lock `confirm_order` takes internally — but we need to
                 # observe "task A holds the lock" from *outside* confirm_order,
                 # so we run confirm_order in a background coroutine and use a
@@ -83,7 +86,7 @@ async def test_concurrent_confirm_only_one_wins(
     async def confirm_task_b() -> None:
         await first_locked.wait()
         async with session_factory() as session:
-            with company_context(company_id):
+            with actor_context(TEST_ADMIN_ACTOR), company_context(company_id):
                 try:
                     order_obj = await sales_service.confirm_order(session, order_id)
                     await session.commit()

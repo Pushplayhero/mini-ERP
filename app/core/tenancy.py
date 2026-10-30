@@ -3,9 +3,9 @@
 Two pieces live here:
 
 1. `_current_company_id`: a `contextvars.ContextVar` holding the active
-   company for the current request. Set by `TenancyMiddleware` in
-   `app.main` from a trusted header (see `Settings.tenant_header_name`),
-   never from a client-supplied body field.
+   company for the current request. Set by `AuthenticationMiddleware` in
+   `app.main` from the active user session (ADR-009), never from a client-supplied
+   body field or unverified header.
 
 2. `TenantScopedMixin`: a *marker* mixin (not a full ORM base) that
    tenant-scoped models inherit from. `app.core.db` registers a
