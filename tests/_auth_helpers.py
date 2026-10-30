@@ -1,4 +1,4 @@
-"""Authentication and authorization test helpers for Slice D."""
+"""Authentication and authorization test helpers for Slice D and Slice E."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from httpx import AsyncClient
 
+from app.cli.manage_companies import create_company as cli_create_company
 from app.core.db import get_session_factory
 from app.platform.permissions import service as permissions_service
 
@@ -50,13 +51,7 @@ async def login_user(
 
 
 async def _ensure_anchor_admin_token(client: AsyncClient) -> str:
-    """Ensure an initial bootstrap admin exists and return its access token.
-
-    This ensures that ALL test companies (even the very first one in a test)
-    are created strictly through the authenticated HTTP endpoint `POST /api/v1/companies`,
-    exercising full route authorization, permission checks (masterdata.company.create),
-    validation, and response handlers (ADR-009 Cutover).
-    """
+    """Ensure an initial bootstrap admin exists and return its access token."""
     existing_token = next(iter(_COMPANY_TOKEN_CACHE.values()), None)
     if existing_token is not None:
         return existing_token
@@ -91,21 +86,13 @@ async def setup_company_with_admin(
     user_email = email or f"admin_{code.lower()}_{uuid.uuid4().hex[:6]}@example.com"
     session_factory = get_session_factory()
 
-    admin_token = await _ensure_anchor_admin_token(client)
-
-    # Every company is created through the authenticated HTTP endpoint POST /api/v1/companies
-    resp = await client.post(
-        "/api/v1/companies",
-        json={"code": code, "name": company_name, "functional_currency_code": "TWD"},
-        headers={"Authorization": f"Bearer {admin_token}"},
+    # Slice E: Company creation is performed via manage_companies CLI under COMPANY_ADMIN_ACTOR
+    company = await cli_create_company(
+        code=code,
+        name=company_name,
+        functional_currency_code="TWD",
     )
-    if resp.status_code == 201:
-        company_id = uuid.UUID(resp.json()["id"])
-    else:
-        raise RuntimeError(
-            f"setup_company_with_admin: failed to create company {code} via HTTP: "
-            f"{resp.status_code} {resp.text}"
-        )
+    company_id = company.id
 
     # Bind the admin user and role to the new company
     async with session_factory() as session:

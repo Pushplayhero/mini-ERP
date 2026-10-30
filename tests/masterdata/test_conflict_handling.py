@@ -14,6 +14,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cli import manage_companies
 from app.core.authorization import actor_context
 from app.core.exceptions import ConflictError
 from app.core.tenancy import company_context
@@ -36,28 +37,35 @@ async def _uom_id(client: AsyncClient, company_id: uuid.UUID) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Duplicate unique keys -> 409, not 500
+# Duplicate unique keys -> 409 / ConflictError, not 500
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_duplicate_company_code_is_409(client: AsyncClient) -> None:
-    from tests._auth_helpers import setup_company_with_admin
-
-    auth = await setup_company_with_admin(client, code="ANCH")
-    first = await client.post(
-        "/api/v1/companies",
-        json={"code": "DUPCO", "name": "First", "functional_currency_code": "TWD"},
-        headers=auth.headers,
+async def test_duplicate_company_code_is_409(db_session: AsyncSession) -> None:
+    code = f"DUP_{uuid.uuid4().hex[:4].upper()}"
+    first = await manage_companies.create_company(
+        code=code,
+        name="First",
+        functional_currency_code="TWD",
+        session=db_session,
     )
-    assert first.status_code == 201
+    assert first.code == code
 
-    second = await client.post(
-        "/api/v1/companies",
-        json={"code": "DUPCO", "name": "Second", "functional_currency_code": "TWD"},
-        headers=auth.headers,
+    with pytest.raises(ConflictError):
+        await manage_companies.create_company(
+            code=code,
+            name="Second",
+            functional_currency_code="TWD",
+            session=db_session,
+        )
+
+    # CLI _main also reports failure on duplicate code
+    rc = await manage_companies._main(
+        ["--code", code, "--name", "Third", "--functional-currency-code", "TWD"],
+        dispose=False,
     )
-    assert second.status_code == 409, second.text
+    assert rc == 1
 
 
 @pytest.mark.asyncio

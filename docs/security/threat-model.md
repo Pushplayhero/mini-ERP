@@ -22,8 +22,8 @@ Status: Slice D.5 baseline draft; reviewed 2026-08-24. This document is scan con
 
 ## Security invariants
 
-- SI-001 route classification is exactly `4 Public / 2 Authenticated / 52 RequiresPermission / 0 invalid`.
-- SI-002 permission catalog parity is `44 migration / 44 routes / 44 services`.
+- SI-001 route classification is exactly `4 Public / 2 Authenticated / 47 RequiresPermission / 0 invalid` (after Slice E moved 5 masterdata write endpoints to CLI).
+- SI-002 permission catalog parity is `44 migration / 39 HTTP routes + 5 CLI-only / 44 services`.
 - SI-003 Public means bearer authentication is optional; it does not make input or data unrestricted.
 - SI-004 Authenticated lifecycle operations require the current actor and owned current session.
 - SI-005 Cross-company reads and writes fail closed; target-company access is re-authorized on switch.
