@@ -225,6 +225,25 @@ forbidden_modules = [
     "app.cli",
 ]
 
+# ADR-010 Decision 6: platform.plugins dependency contract
+[[tool.importlinter.contracts]]
+name = "platform.plugins may depend on core and masterdata only"
+type = "forbidden"
+source_modules = ["app.platform.plugins"]
+forbidden_modules = [
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+    "app.plugins",
+    "app.platform.permissions",
+    "app.platform.customfields",
+    "app.platform.workflow",
+    "app.platform.integration",
+    "app.main",
+    "app.cli",
+]
+
 # Closes the one gap the contract above structurally cannot (Codex
 # diff-review rounds 3/4): a bare `import app`/`app.modules`/`app.platform`
 # statement, which a purely-enumerated `forbidden` list never catches
@@ -255,9 +274,23 @@ forbidden_modules = [
 # importer, not from one named source) — applied globally rather than
 # `platform.permissions`-only is intentional here, since no file in this
 # codebase has any legitimate reason to import any of these three bare.
+# ADR-010 R1: Extended to protect all five business module roots, platform
+# subpackages, and app.plugins against parent-package attribute traversal.
 [[tool.importlinter.contracts]]
 name = "no bare imports of app / app.modules / app.platform package roots"
 type = "protected"
-protected_modules = ["app", "app.modules", "app.platform"]
+protected_modules = [
+    "app",
+    "app.modules",
+    "app.modules.masterdata",
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+    "app.platform",
+    "app.platform.permissions",
+    "app.platform.plugins",
+    "app.plugins",
+]
 allowed_importers = []
 as_packages = false

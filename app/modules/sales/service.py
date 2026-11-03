@@ -67,6 +67,7 @@ from app.modules.sales.schemas import SalesOrderCreate, SalesOrderLineCreate, Sa
 # owns `SYNTHETIC_SALE_EVENT_TYPE` — the hook-point name belongs to the
 # module that fires it, the registry module stays generic.
 SALES_ORDER_VALIDATE_CONFIRM = "sales.order.validate_confirm"
+hooks.define_hook_point(SALES_ORDER_VALIDATE_CONFIRM, "1.0.0")
 
 _CUSTOMERS = sa_table(
     "customers",
