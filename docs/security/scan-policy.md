@@ -11,13 +11,13 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **178 tracked files**, assigned exactly once across:
+The current inventory is **183 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
-| `u01_identity` | 20 |
+| `u01_identity` | 23 |
 | `u02_runtime_config` | 13 |
-| `u03_events_hooks` | 7 |
+| `u03_events_hooks` | 9 |
 | `u04_sales_plugins` | 19 |
 | `u05_inventory` | 14 |
 | `u06_ledger_engine` | 16 |

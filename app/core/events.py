@@ -59,6 +59,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError
+from app.core.plugins import get_plugin_runtime_gate
 from app.core.tenancy import require_current_company_id
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,11 @@ def register_event(event_type: str, schema: type[BaseModel]) -> None:
     _schemas[event_type] = schema
 
 
+def registered_event_types() -> frozenset[str]:
+    """Return a read-only frozenset of all registered event types (ADR-010)."""
+    return frozenset(_schemas.keys())
+
+
 def subscribe(event_type: str, handler: EventHandler) -> None:
     """Register `handler` to run (in subscription order) whenever `event_type` is dispatched.
 
@@ -219,9 +225,22 @@ async def _dispatch(session: AsyncSession, event_type: str, payload_model: BaseM
     Any handler exception propagates unchanged — ADR-004 Decision 1
     (fail-closed): the caller's whole transaction aborts, no partial
     dispatch is ever swallowed here.
+
+    If a handler carries `__plugin_name__` and `PluginRuntimeGate` is wired
+    (ADR-010 Decisions 2 & 4), the execution is passed through the gate to
+    evaluate tenant enablement and inject validated plugin configuration.
     """
+    gate = get_plugin_runtime_gate()
     for handler in _handlers.get(event_type, []):
-        await handler(session, payload_model)
+        plugin_name = getattr(handler, "__plugin_name__", None)
+        if plugin_name is not None and gate is not None:
+
+            async def _invoke(h: EventHandler = handler) -> None:
+                await h(session, payload_model)
+
+            await gate(session, plugin_name, _invoke)
+        else:
+            await handler(session, payload_model)
 
 
 async def publish(session: AsyncSession, event_type: str, payload: dict[str, Any]) -> None:

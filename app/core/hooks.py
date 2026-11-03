@@ -43,11 +43,13 @@ registry makes the "pull the plugin out and prove the decoupling" test
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.plugins import get_plugin_runtime_gate, parse_semver
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,27 @@ HookHandler = Callable[[AsyncSession, HookContext], Awaitable[None]]
 # ---------------------------------------------------------------------------
 
 _handlers: dict[str, list[HookHandler]] = {}
+_hook_specs: dict[str, str] = {}
+
+
+def define_hook_point(hook_name: str, version: str) -> None:
+    """Declare a versioned hook point contract (ADR-010).
+
+    Validates `version` as strict SemVer and registers `hook_name` into `_hook_specs`.
+    Static definitions survive `reset()` calls so test suites do not wipe module-level declarations.
+    """
+    parse_semver(version)
+    _hook_specs[hook_name] = version
+
+
+def get_hook_point_version(hook_name: str) -> str | None:
+    """Return the declared SemVer version of `hook_name`, or None if undefined."""
+    return _hook_specs.get(hook_name)
+
+
+def defined_hook_points() -> Mapping[str, str]:
+    """Return a read-only mapping of all declared hook points and their versions."""
+    return dict(_hook_specs)
 
 
 def register(hook_name: str, fn: HookHandler) -> None:
@@ -137,6 +160,19 @@ async def run(hook_name: str, session: AsyncSession, context: HookContext) -> No
     whether anything is listening). Any handler exception propagates
     unchanged — fail-closed, no handler's exception is ever caught here on
     the caller's behalf.
+
+    If a handler carries `__plugin_name__` and `PluginRuntimeGate` is wired
+    (ADR-010 Decisions 2 & 4), the execution is passed through the gate to
+    evaluate tenant enablement and inject validated plugin configuration.
     """
+    gate = get_plugin_runtime_gate()
     for handler in _handlers.get(hook_name, []):
-        await handler(session, context)
+        plugin_name = getattr(handler, "__plugin_name__", None)
+        if plugin_name is not None and gate is not None:
+
+            async def _invoke(h: HookHandler = handler) -> None:
+                await h(session, context)
+
+            await gate(session, plugin_name, _invoke)
+        else:
+            await handler(session, context)

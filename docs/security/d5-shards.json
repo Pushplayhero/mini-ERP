@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 178,
+  "expected_total_files": 183,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 178,
+      "expected_total_files": 183,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -41,7 +41,7 @@
       ],
       "units": {
         "u01_identity": {
-          "expected_file_count": 20,
+          "expected_file_count": 23,
           "paths": [
             "app/platform",
             "app/core/authorization.py",
@@ -72,14 +72,16 @@
           ]
         },
         "u03_events_hooks": {
-          "expected_file_count": 7,
+          "expected_file_count": 9,
           "paths": [
             "app/core/events.py",
             "app/core/hooks.py",
             "app/core/locking.py",
+            "app/core/plugins.py",
             "tests/core/__init__.py",
             "tests/core/test_events.py",
             "tests/core/test_hooks.py",
+            "tests/core/test_plugins_port.py",
             "docs/adr/ADR-004-event-bus.md"
           ]
         },
@@ -216,7 +218,7 @@
   "shards": [
     {
       "id": "a_identity_runtime",
-      "expected_file_count": 32,
+      "expected_file_count": 37,
       "max_cost_usd": 11.75,
       "paths": [
         "app/__init__.py",

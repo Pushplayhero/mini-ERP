@@ -40,6 +40,27 @@ class Settings(BaseSettings):
     # creation; the user must log in again once it lapses.
     session_ttl_hours: int = 12
 
+    # ADR-010 Decisions 1 & 2 / WEEK10 Slice A: plugin discovery and operator
+    # overrides. enable_plugin_entrypoints controls scanning for external
+    # python entry points (mini_erp.plugins group). disabled_plugins allows
+    # operators to exclude specific discovered plugins at deploy time.
+    enable_plugin_entrypoints: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "MINI_ERP_ENABLE_PLUGIN_ENTRYPOINTS",
+            "ENABLE_PLUGIN_ENTRYPOINTS",
+            "enable_plugin_entrypoints",
+        ),
+    )
+    disabled_plugins: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "MINI_ERP_DISABLED_PLUGINS",
+            "DISABLED_PLUGINS",
+            "disabled_plugins",
+        ),
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
