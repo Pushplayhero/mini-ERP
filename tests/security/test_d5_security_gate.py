@@ -1306,14 +1306,14 @@ def _micro_budget_ledger(root: Path, sha: str, units: tuple[str, ...], destinati
     return ledger
 
 
-def test_manifest_assigns_exactly_194_current_tracked_files() -> None:
+def test_manifest_assigns_exactly_199_current_tracked_files() -> None:
     repo = Path(__file__).resolve().parents[2]
     assignments = gate.validate_manifest(repo)
-    assert [len(assignments[shard]) for shard in gate.SHARD_IDS] == [45, 38, 41, 47, 23]
-    assert sum(map(len, assignments.values())) == 194
+    assert [len(assignments[shard]) for shard in gate.SHARD_IDS] == [48, 38, 41, 48, 24]
+    assert sum(map(len, assignments.values())) == 199
 
 
-def test_micro_profile_assigns_all_194_current_files_once() -> None:
+def test_micro_profile_assigns_all_199_current_files_once() -> None:
     repo = Path(__file__).resolve().parents[2]
     assignments = gate.validate_manifest(repo, profile="micro-v2")
     config = gate._profile_config("micro-v2")
@@ -1322,22 +1322,22 @@ def test_micro_profile_assigns_all_194_current_files_once() -> None:
     assert config["operational_ceiling_usd"] is None
     assert list(assignments) == list(gate.MICRO_UNIT_IDS)
     assert [len(assignments[unit]) for unit in gate.MICRO_UNIT_IDS] == [
-        31,
+        32,
         13,
-        9,
+        11,
         19,
         14,
         16,
         8,
         15,
         13,
-        16,
+        17,
         15,
         2,
-        21,
+        22,
         2,
     ]
-    assert sum(map(len, assignments.values())) == 194
+    assert sum(map(len, assignments.values())) == 199
     assert {"scripts/d5_security_gate.py"}.issubset(assignments["u12_gate"])
     assert {"tests/security/test_d5_security_gate.py"}.issubset(assignments["u12_gate"])
     assert {"docs/security/d5-shards.json"}.issubset(assignments["u13_governance"])
@@ -1420,7 +1420,7 @@ def test_micro_plan_unit_is_offline_and_deterministic(monkeypatch: pytest.Monkey
     preview = gate.plan_unit(repo, "u03_events_hooks", profile="micro-v2")
     assert preview["profile"] == "micro-v2"
     assert preview["unit"] == "u03_events_hooks"
-    assert preview["file_count"] == 9
+    assert preview["file_count"] == 11
     assert preview["capacity"] == 3
     assert preview["worker_slots"] == 2
     assert preview["output_dir"] == "<external-results>/<sha>/u03_events_hooks"

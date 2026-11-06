@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 194,
+  "expected_total_files": 199,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 194,
+      "expected_total_files": 199,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -41,7 +41,7 @@
       ],
       "units": {
         "u01_identity": {
-          "expected_file_count": 31,
+          "expected_file_count": 32,
           "paths": [
             "app/platform",
             "app/core/authorization.py",
@@ -72,13 +72,15 @@
           ]
         },
         "u03_events_hooks": {
-          "expected_file_count": 9,
+          "expected_file_count": 11,
           "paths": [
+            "app/core/customfields.py",
             "app/core/events.py",
             "app/core/hooks.py",
             "app/core/locking.py",
             "app/core/plugins.py",
             "tests/core/__init__.py",
+            "tests/core/test_customfields_port.py",
             "tests/core/test_events.py",
             "tests/core/test_hooks.py",
             "tests/core/test_plugins_port.py",
@@ -155,7 +157,7 @@
           ]
         },
         "u10_migrations": {
-          "expected_file_count": 16,
+          "expected_file_count": 17,
           "paths": [
             "alembic",
             "alembic.ini",
@@ -184,7 +186,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 21,
+          "expected_file_count": 22,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -195,6 +197,7 @@
             "SECURITY.md",
             "docs/adr/ADR-001-modular-monolith.md",
             "docs/adr/ADR-010-platform-plugins.md",
+            "docs/adr/ADR-011-platform-customfields.md",
             "docs/adr/PHASE2-platform-architecture-overview.md",
             "docs/adr/README.md",
             "docs/adr/WEEK7-phase1-hardening-brief.md",
@@ -219,7 +222,7 @@
   "shards": [
     {
       "id": "a_identity_runtime",
-      "expected_file_count": 45,
+      "expected_file_count": 48,
       "max_cost_usd": 11.75,
       "paths": [
         "app/__init__.py",
@@ -269,7 +272,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 47,
+      "expected_file_count": 48,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -298,7 +301,7 @@
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 23,
+      "expected_file_count": 24,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",
@@ -312,6 +315,7 @@
         "docs/adr/ADR-004-event-bus.md",
         "docs/adr/ADR-009-platform-permissions.md",
         "docs/adr/ADR-010-platform-plugins.md",
+        "docs/adr/ADR-011-platform-customfields.md",
         "docs/adr/PHASE2-platform-architecture-overview.md",
         "docs/adr/README.md",
         "docs/adr/WEEK7-phase1-hardening-brief.md",
