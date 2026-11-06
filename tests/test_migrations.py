@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _BEFORE_MIGRATION_0005 = "a2f5d8e91c47"  # 0005's own down_revision (0004's revision id)
 _BEFORE_MIGRATION_0008 = "c7d2e6f1a840"  # 0008's own down_revision (0007's revision id)
 _BEFORE_MIGRATION_0011 = "e7b8c9d0a1f2"  # 0011's own down_revision (0010's revision id)
+_BEFORE_MIGRATION_0012 = "b4c5d6e7f8a1"  # 0012's own down_revision (0011's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -63,6 +64,8 @@ EXPECTED_TABLES = {
     "sessions",
     # ADR-010 / WEEK10 Slice B / migration 0011.
     "company_plugins",
+    # ADR-011 / WEEK11 Slice A / migration 0012.
+    "custom_field_definitions",
     "alembic_version",
 }
 
@@ -632,22 +635,22 @@ async def test_migration_0008_shipped_at_backfill_rejects_duplicate_outbox_event
 async def test_migration_0010_and_0011_seed_permissions_and_grant_all_to_admin(
     db_engine: AsyncEngine,
 ) -> None:
-    """ADR-009 / ADR-010: seeds the full permission catalog (45 -> 47)
+    """ADR-009 / ADR-010 / ADR-011: seeds the full permission catalog (45 -> 49)
     and grants every permission to the 'admin' role.
     """
     async with db_engine.connect() as conn:
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        # 1 (session.manage in 0009) + 44 (business permissions in 0010) + 2 (plugins in 0011) = 47
+        # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012) = 49
         assert (
-            perm_count == 47
-        ), f"expected exactly 47 permissions in total catalog, got {perm_count}"
+            perm_count == 49
+        ), f"expected exactly 49 permissions in total catalog, got {perm_count}"
 
         admin_grants = await conn.scalar(
             text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
         )
         assert (
-            admin_grants == 47
-        ), f"expected admin role to have all 47 permissions, got {admin_grants}"
+            admin_grants == 49
+        ), f"expected admin role to have all 49 permissions, got {admin_grants}"
 
 
 @pytest.mark.asyncio
@@ -745,4 +748,122 @@ async def test_migration_0011_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "company_plugins" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 47
+        assert perm_count == 49
+
+
+@pytest.mark.asyncio
+async def test_migration_0012_schema_matches_adr_011(db_engine: AsyncEngine) -> None:
+    """Assert migration 0012 creates custom_field_definitions table and constraints."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_conn: Connection) -> Any:
+        inspector = inspect(sync_conn)
+        cols = {c["name"]: c for c in inspector.get_columns("custom_field_definitions")}
+        fks = inspector.get_foreign_keys("custom_field_definitions")
+        uqs = inspector.get_unique_constraints("custom_field_definitions")
+        indexes = inspector.get_indexes("custom_field_definitions")
+        check_constraints = inspector.get_check_constraints("custom_field_definitions")
+        return cols, fks, uqs, indexes, check_constraints
+
+    async with db_engine.connect() as conn:
+        cols, fks, uqs, indexes, check_constraints = await conn.run_sync(_inspect)
+
+        seeded_perms = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT code FROM permissions "
+                        "WHERE code IN ('platform.customfield.read', 'platform.customfield.manage')"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    expected_cols = {
+        "id",
+        "company_id",
+        "entity_type",
+        "field_key",
+        "field_type",
+        "label",
+        "is_required",
+        "is_active",
+        "default_value",
+        "validation_rules",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_cols.issubset(cols.keys())
+
+    # FK constraint check: company_id -> companies(id) ON DELETE RESTRICT
+    company_fk = next((fk for fk in fks if fk["referred_table"] == "companies"), None)
+    assert company_fk is not None
+    assert company_fk["options"].get("ondelete") == "RESTRICT"
+
+    # Unique constraint check: (company_id, entity_type, field_key)
+    assert any(uq["name"] == "uq_custom_field_company_entity_key" for uq in uqs)
+
+    # Index check: (company_id, entity_type)
+    assert any(ix["name"] == "ix_custom_field_definitions_company_entity" for ix in indexes)
+
+    # Check constraints (defense-in-depth at PostgreSQL DDL layer)
+    ck_names = {ck["name"] for ck in check_constraints}
+    expected_cks = {
+        "ck_custom_field_key_format",
+        "ck_custom_field_entity_type_valid",
+        "ck_custom_field_type_valid",
+        "ck_custom_field_validation_rules_is_object",
+        "ck_custom_field_label_nonempty",
+    }
+    assert expected_cks.issubset(ck_names)
+
+    # Permissions check
+    assert set(seeded_perms) == {"platform.customfield.read", "platform.customfield.manage"}
+
+
+@pytest.mark.asyncio
+async def test_migration_0012_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEngine) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0012 drops custom_field_definitions and 2 permissions,
+    and upgrade head restores them cleanly.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0012)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(inspect(sync_conn).get_table_names())
+            )
+            assert "custom_field_definitions" not in table_names
+
+            perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+            assert perm_count == 47
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        assert "custom_field_definitions" in table_names
+
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        assert perm_count == 49

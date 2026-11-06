@@ -215,7 +215,8 @@ async def _clean_tenant_tables(
                 "payment_allocations, payment_allocation_commands, payments, "
                 "invoices, receivables_sequences, "
                 "sales_order_lines, sales_orders, sales_sequences, "
-                "customers, products, accounts, outbox, company_plugins, companies, "
+                "customers, products, accounts, outbox, company_plugins, "
+                "custom_field_definitions, companies, "
                 # ADR-009 / WEEK9 Slice B: `users` is real per-test data (an
                 # email a test creates), not a shared catalog like
                 # `roles`/`permissions`/`role_permissions` (those stay
@@ -289,6 +290,8 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "receivables.report.read",
         "platform.plugin.read",
         "platform.plugin.manage",
+        "platform.customfield.read",
+        "platform.customfield.manage",
     }
 )
 

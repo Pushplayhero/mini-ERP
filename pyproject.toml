@@ -244,6 +244,25 @@ forbidden_modules = [
     "app.cli",
 ]
 
+# ADR-011 Decision 7: platform.customfields dependency contract
+[[tool.importlinter.contracts]]
+name = "platform.customfields may depend on core and masterdata only"
+type = "forbidden"
+source_modules = ["app.platform.customfields"]
+forbidden_modules = [
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+    "app.plugins",
+    "app.platform.permissions",
+    "app.platform.plugins",
+    "app.platform.workflow",
+    "app.platform.integration",
+    "app.main",
+    "app.cli",
+]
+
 # ADR-010 Decision 6: plugins public-surface-only boundary
 [[tool.importlinter.contracts]]
 name = "plugins must not import platform or module internals (models or routers)"
@@ -312,6 +331,7 @@ protected_modules = [
     "app.platform",
     "app.platform.permissions",
     "app.platform.plugins",
+    "app.platform.customfields",
     "app.plugins",
 ]
 allowed_importers = []
