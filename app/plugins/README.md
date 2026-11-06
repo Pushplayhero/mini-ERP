@@ -1,31 +1,29 @@
 # `app/plugins/` — customize without forking the core
 
 This directory is where mini-erp's "客製不碰核心" (customize without
-touching the kernel) thesis becomes real code, per ADR-006. Everything in
-here is optional, in the sense that deleting a plugin file and its one
-registration line in `app/main.py` removes the customization it provides
+touching the kernel) thesis becomes real code, per ADR-006 and ADR-010. Everything in
+here is optional, in the sense that removing a plugin declaration and its
+manifest registration unplugs the customization it provides
 and nothing else breaks — the module it customizes never imported it, never
 called it directly, and has no idea it existed.
 
 ## What a plugin is
 
 A plugin is trusted, admin-installed Python code (no sandbox, no signature
-verification — see master-plan §10.3) that hooks into one of two mechanisms
-the kernel exposes, both living in `app.core`:
+verification — see master-plan §10.3 and ADR-010) that hooks into kernel mechanisms
+exposed in `app.core`:
 
 - **`app.core.events`** (ADR-004): "something happened." A plugin can
-  `subscribe()` to a durable, replayable fact (e.g. `sales.order_confirmed`)
+  subscribe to a durable, replayable fact (e.g. `sales.order_confirmed`)
   and react to it — send a Slack message, call a webhook, write an
   audit-log row. Handlers run synchronously, inside the publisher's
   transaction; an exception aborts that transaction.
-- **`app.core.hooks`** (ADR-006): "something is *about* to happen — should
-  it be allowed?" A plugin can `register()` on a named hook point (e.g.
+- **`app.core.hooks`** (ADR-006, ADR-010): "something is *about* to happen — should
+  it be allowed?" A plugin can bind to a versioned hook point (e.g.
   `sales.order.validate_confirm`, exposed as
   `app.modules.sales.service.SALES_ORDER_VALIDATE_CONFIRM`) and veto the
   operation by raising, or let it proceed by returning normally. This is
-  never durably recorded and never replayed — see `app/core/hooks.py`'s
-  module docstring for why events and hooks are kept as two separate,
-  narrowly-scoped mechanisms instead of one.
+  never durably recorded and never replayed.
 
 Both mechanisms are fail-closed: a plugin's exception is never swallowed on
 its behalf. If your hook/handler wants to reject a business operation,
@@ -37,53 +35,34 @@ crash should never be silently absorbed into a 200.
 
 ## What ships here today
 
-- **`credit_limit.py`** — registers on
+- **`credit_limit.py`** — declares `PLUGIN_MANIFEST` registered on
   `sales.order.validate_confirm`. Blocks a sales order from being confirmed
   if doing so would push the customer's confirmed-order exposure past
-  `customer.credit_limit`. `credit_limit == 0` means "don't check." See the
-  module's own docstring for the exposure formula and the concurrency
-  argument (`SELECT ... FOR UPDATE` on the customer row).
+  `customer.credit_limit + config.grace_amount`. `credit_limit == 0` means "don't check."
+  Configured per-tenant via `CreditLimitPluginConfig(grace_amount)`.
+  See the module docstring for the exposure formula and concurrency argument.
 
-## Writing a new plugin
+## Writing a new plugin (ADR-010)
 
-1. Add a new file under `app/plugins/` (or extend an existing one — nothing
-   requires one file per plugin).
-2. Import whatever you need — `app.core.*` and any `app.modules.*` are all
-   fair game; `app.plugins` is explicitly exempt from the
-   business-module-independence `import-linter` contract that keeps
-   `sales`/`ledger`/`masterdata`/etc. from importing each other. Prefer
-   calling a module's public **service functions** where one exists
-   (`app.modules.masterdata.service.get_customer`, etc.) over reaching into
-   its ORM models directly — models can change shape between releases in
-   ways a plugin author has no visibility into, and a service function is
-   the module's actual public contract. Reaching into models (as
-   `credit_limit.py` does, for `Customer`/`SalesOrder` — see that module's
-   docstring for why) is acceptable when you specifically need something a
-   service function does not expose (e.g. `with_for_update()` locking, or a
-   raw aggregate query) — just know you are now coupled to that module's
-   schema, and a future migration could break you. Enforcing "public
-   surface only" is deferred to Phase 2's plugin loader; for now it is
-   convention, not physics.
-3. Write your handler with the signature the mechanism expects:
-   - event subscriber: `async def handler(session: AsyncSession, payload: BaseModel) -> None`
-   - hook handler: `async def handler(session: AsyncSession, context: HookContext) -> None`
-4. Register it in `app/main.py`, next to the other module wiring:
-   `events.subscribe("some.event_type", handler)` or
-   `hooks.register("some.hook_point", handler)`.
-5. That's it. To remove the customization: delete the registration line (and
-   the file, if nothing else uses it). Both `app.core.events` and
-   `app.core.hooks` support `unregister(...)` too, if you need to swap a
-   handler out at runtime (mainly useful for tests — see
-   `tests/sales/test_credit_limit_plugin.py`'s
-   `test_removing_the_plugin_allows_confirm_that_would_otherwise_be_blocked`
-   for the canonical proof that this decoupling is real, not aspirational).
-
-## What Phase 2 will add (not here yet)
-
-A real plugin *loader* — discovery via entry points, dependency/ordering
-declarations between plugins, versioned hook-point compatibility, and
-enforcement (not just convention) that a plugin only touches modules'
-public surfaces. Week 4 intentionally ships the minimum registry that
-proves the dependency direction and nothing more (ADR-006 Decision 1,
-Option A's whole argument is that this minimum is what Phase 2's loader
-plugs into unchanged).
+1. Add a new file under `app/plugins/` (or package as an installed Python entry point
+   under the group `"mini_erp.plugins"`).
+2. **Public surface only (CI-enforced by import-linter)**:
+   Plugins may import `app.core.*` and business module public service layers
+   (`app.modules.<module>.service`, `app.modules.<module>.schemas`).
+   Importing internal ORM models (`app.modules.<module>.models`) or routers
+   (`app.modules.<module>.router`) is strictly forbidden by import-linter.
+   Intra-transaction helpers that run under an already-authorized business action
+   use `*_unchecked` service helpers that enforce tenant isolation (`require_current_company_id()`).
+3. Define an optional `config_schema` using Pydantic `BaseModel` with `extra="forbid"`.
+   The schema must be viable with `{}` defaults (`model_validate({})` succeeds).
+4. Declare `PLUGIN_MANIFEST = PluginManifest(...)`:
+   - `name`: unique identifier (`^[a-z][a-z0-9_]{1,99}$`)
+   - `version`: SemVer `X.Y.Z`
+   - `title`, `description`
+   - `default_enabled`: whether newly created tenants run this by default
+   - `requires`: tuple of `PluginDependency` prerequisites
+   - `config_schema`: optional Pydantic model
+   - `hooks`: tuple of `HookBinding(hook_name, required_version, handler)`
+   - `events`: tuple of `EventBinding(event_type, handler)`
+5. Register built-in manifests in `app/main.py` via `BUILTIN_PLUGIN_MANIFESTS` passed to
+   `plugins_loader.bootstrap_plugins(...)`.

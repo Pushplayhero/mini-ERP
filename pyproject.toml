@@ -244,6 +244,28 @@ forbidden_modules = [
     "app.cli",
 ]
 
+# ADR-010 Decision 6: plugins public-surface-only boundary
+[[tool.importlinter.contracts]]
+name = "plugins must not import platform or module internals (models or routers)"
+type = "forbidden"
+source_modules = ["app.plugins"]
+allow_indirect_imports = true
+forbidden_modules = [
+    "app.platform",
+    "app.main",
+    "app.cli",
+    "app.modules.masterdata.models",
+    "app.modules.masterdata.router",
+    "app.modules.sales.models",
+    "app.modules.sales.router",
+    "app.modules.inventory.models",
+    "app.modules.inventory.router",
+    "app.modules.receivables.models",
+    "app.modules.receivables.router",
+    "app.modules.ledger.models",
+    "app.modules.ledger.router",
+]
+
 # Closes the one gap the contract above structurally cannot (Codex
 # diff-review rounds 3/4): a bare `import app`/`app.modules`/`app.platform`
 # statement, which a purely-enumerated `forbidden` list never catches

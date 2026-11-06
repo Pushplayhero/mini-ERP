@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.routing import Match
 
-from app.core import events, hooks
+from app.core import events
 from app.core.authorization import (
     Authenticated,
     Public,
@@ -56,7 +56,6 @@ from app.modules.masterdata.router import router as masterdata_router
 from app.modules.receivables import events as receivables_events
 from app.modules.receivables.router import router as receivables_router
 from app.modules.sales import events as sales_events
-from app.modules.sales import service as sales_service
 from app.modules.sales.router import router as sales_router
 from app.platform.permissions import service as permissions_service
 from app.platform.permissions.context import (
@@ -351,21 +350,13 @@ events.subscribe(
 
 
 # ---------------------------------------------------------------------------
-# Hook registry wiring (Week 4, ADR-006 Decision 1/2)
+# Plugin runtime gate & loader bootstrap (ADR-010 / Week 10 Slice C)
 #
-# Same "once, at import time, module-level" discipline as the event bus
-# wiring above. `sales` never imports `app.plugins` (import-linter
-# contracts enforce this); this is the one place — the composition root,
-# like `app.main` already is for routers/events — allowed to know both
-# exist and wire them together.
+# Built-in plugins (`credit_limit`) declare `PLUGIN_MANIFEST` and are bootstrapped
+# via loader alongside any installed entry points. The runtime gate port is
+# wired here once at composition root before bootstrapping.
 # ---------------------------------------------------------------------------
-hooks.register(sales_service.SALES_ORDER_VALIDATE_CONFIRM, credit_limit.check_credit_limit)
+BUILTIN_PLUGIN_MANIFESTS = (credit_limit.PLUGIN_MANIFEST,)
 
-# ---------------------------------------------------------------------------
-# Plugin runtime gate & loader bootstrap (ADR-010 / Week 10 Slice B)
-# ---------------------------------------------------------------------------
-# In Slice B, credit_limit is still registered directly above without a manifest.
-# In Slice C, credit_limit will declare PLUGIN_MANIFEST and will be bootstrapped
-# via loader. The runtime gate port is wired here once at composition root.
 set_plugin_runtime_gate(plugins_service.execute_with_plugin_gate_unchecked)
-plugins_loader.bootstrap_plugins()
+plugins_loader.bootstrap_plugins(BUILTIN_PLUGIN_MANIFESTS)

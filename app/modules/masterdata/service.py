@@ -14,13 +14,19 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from decimal import Decimal
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import require_current_actor, require_permission
-from app.core.exceptions import ConflictError, NotFoundError, TenancyContextError
+from app.core.exceptions import (
+    ConflictError,
+    DomainValidationError,
+    NotFoundError,
+    TenancyContextError,
+)
 from app.core.tenancy import require_current_company_id
 from app.modules.masterdata.models import (
     Account,
@@ -173,6 +179,28 @@ async def load_customer_unchecked(session: AsyncSession, customer_id: uuid.UUID)
     if customer is None:
         raise NotFoundError("Customer", customer_id)
     return customer
+
+
+async def lock_customer_credit_limit_unchecked(
+    session: AsyncSession, customer_id: uuid.UUID
+) -> Decimal:
+    """Lock the customer row FOR UPDATE and return its credit_limit (ADR-010 §5.1).
+
+    Intra-transaction helper invoked by plugins after the entry-point service
+    has authorized the business operation. Enforces fail-closed tenancy via
+    `require_current_company_id()` + `TenantScopedMixin` loader criteria without
+    requiring `masterdata.customer.read`.
+    """
+    require_current_company_id()
+    result = await session.execute(
+        select(Customer.credit_limit).where(Customer.id == customer_id).with_for_update()
+    )
+    credit_limit = result.scalar_one_or_none()
+    if credit_limit is None:
+        raise DomainValidationError(
+            f"customer {customer_id} not found or does not belong to this company"
+        )
+    return credit_limit
 
 
 async def get_customer(session: AsyncSession, customer_id: uuid.UUID) -> Customer:

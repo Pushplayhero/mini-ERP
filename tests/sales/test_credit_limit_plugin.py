@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.core import hooks
@@ -230,3 +232,143 @@ async def test_removing_the_plugin_allows_confirm_that_would_otherwise_be_blocke
         assert allowed.json()["status"] == "confirmed"
     finally:
         hooks.register(sales_service.SALES_ORDER_VALIDATE_CONFIRM, credit_limit.check_credit_limit)
+
+
+# ---------------------------------------------------------------------------
+# ADR-010 Manifest & Dynamic Configuration Tests
+# ---------------------------------------------------------------------------
+
+
+def test_credit_limit_plugin_manifest_metadata() -> None:
+    manifest = credit_limit.PLUGIN_MANIFEST
+    assert manifest.name == "credit_limit"
+    assert manifest.version == "1.0.0"
+    assert manifest.title == "Customer Credit Limit Guard"
+    assert manifest.default_enabled is True
+    assert manifest.config_schema is credit_limit.CreditLimitPluginConfig
+    assert len(manifest.hooks) == 1
+    assert manifest.hooks[0].hook_name == sales_service.SALES_ORDER_VALIDATE_CONFIRM
+    assert manifest.hooks[0].handler is credit_limit.check_credit_limit
+    assert manifest.events == ()
+    assert manifest.requires == ()
+
+
+def test_credit_limit_config_bankers_rounding_and_alias() -> None:
+    # Default grace_amount is 0
+    cfg_default = credit_limit.CreditLimitPluginConfig()
+    assert cfg_default.grace_amount == Decimal("0.000000")
+
+    # Banker's Rounding (ROUND_HALF_EVEN) to 6 decimal places:
+    # .1234565 rounds to even (6): .123456
+    cfg1 = credit_limit.CreditLimitPluginConfig.model_validate({"grace_amount": "100.1234565"})
+    assert cfg1.grace_amount == Decimal("100.123456")
+    # .1234575 rounds to even (8): .123458
+    cfg2 = credit_limit.CreditLimitPluginConfig.model_validate({"grace_amount": "100.1234575"})
+    assert cfg2.grace_amount == Decimal("100.123458")
+
+    # Alias `grace_allowance` accepted during validation
+    cfg_alias = credit_limit.CreditLimitPluginConfig.model_validate({"grace_allowance": "50.00"})
+    assert cfg_alias.grace_amount == Decimal("50.000000")
+
+    # Negative values rejected
+    with pytest.raises(ValidationError):
+        credit_limit.CreditLimitPluginConfig.model_validate({"grace_amount": "-10.00"})
+
+    # Extra fields rejected (extra="forbid")
+    with pytest.raises(ValidationError):
+        credit_limit.CreditLimitPluginConfig.model_validate({"extra_prop": 123})
+
+    # Huge exponent and boundary overflow rejected with ValidationError
+    with pytest.raises(ValidationError):
+        credit_limit.CreditLimitPluginConfig.model_validate({"grace_amount": "1e50"})
+    with pytest.raises(ValidationError):
+        credit_limit.CreditLimitPluginConfig.model_validate(
+            {"grace_amount": "99999999999999.9999999"}
+        )
+
+    # Float and bool rejected
+    with pytest.raises(ValidationError):
+        credit_limit.CreditLimitPluginConfig.model_validate({"grace_amount": 10.5})
+    with pytest.raises(ValidationError):
+        credit_limit.CreditLimitPluginConfig.model_validate({"grace_amount": True})
+
+
+@pytest.mark.asyncio
+async def test_tenant_plugin_toggle_via_api(client: AsyncClient) -> None:
+    """Proves ADR-010 multi-tenant isolation: disabling the plugin in Company A
+    does NOT disable it in Company B.
+    """
+    co_a = await create_company(client, "TOGA")
+    co_b = await create_company(client, "TOGB")
+
+    cust_a = await create_customer(client, co_a, "CUSTA", credit_limit="100")
+    cust_b = await create_customer(client, co_b, "CUSTB", credit_limit="100")
+    prod_a = await create_product(client, co_a, "PRODA", list_price="150")
+    prod_b = await create_product(client, co_b, "PRODB", list_price="150")
+
+    order_a = await create_draft_order(
+        client, co_a, cust_a, [order_line(prod_a, "1", unit_price="150")]
+    )
+    order_b = await create_draft_order(
+        client, co_b, cust_b, [order_line(prod_b, "1", unit_price="150")]
+    )
+
+    # Initially both are blocked (total 150 > limit 100)
+    assert (await confirm_order(client, co_a, order_a["id"])).status_code == 409
+    assert (await confirm_order(client, co_b, order_b["id"])).status_code == 409
+
+    # Disable credit_limit for Company A via API
+    patch_resp = await client.patch(
+        "/api/v1/plugins/credit_limit",
+        json={"is_enabled": False},
+        headers=company_headers(co_a),
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["is_enabled"] is False
+
+    # Company A confirm now succeeds
+    allowed_a = await confirm_order(client, co_a, order_a["id"])
+    assert allowed_a.status_code == 200
+    assert allowed_a.json()["status"] == "confirmed"
+
+    # Company B confirm remains blocked
+    blocked_b = await confirm_order(client, co_b, order_b["id"])
+    assert blocked_b.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_tenant_plugin_grace_amount_via_api(client: AsyncClient) -> None:
+    """Configuring grace_amount dynamically expands the credit ceiling for the tenant."""
+    company_id = await create_company(client, "GRACE")
+    customer_id = await create_customer(client, company_id, "GRACECUST", credit_limit="100")
+    product_id = await create_product(client, company_id, "GRACEPROD", list_price="120")
+
+    order_1 = await create_draft_order(
+        client, company_id, customer_id, [order_line(product_id, "1", unit_price="120")]
+    )
+
+    # 1. Total 120 > limit 100 -> 409
+    resp_1 = await confirm_order(client, company_id, order_1["id"])
+    assert resp_1.status_code == 409
+
+    # 2. Configure grace_amount = 50 -> ceiling = 150
+    patch_resp = await client.patch(
+        "/api/v1/plugins/credit_limit",
+        json={"config": {"grace_amount": "50.000000"}},
+        headers=company_headers(company_id),
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["config"] == {"grace_amount": "50.000000"}
+
+    # 3. Confirm order 1 (120 <= 150) -> 200 OK
+    resp_1_retry = await confirm_order(client, company_id, order_1["id"])
+    assert resp_1_retry.status_code == 200
+    assert resp_1_retry.json()["status"] == "confirmed"
+
+    # 4. Draft order 2 for 40 -> total exposure 120 + 40 = 160 > 150 -> 409
+    prod_small = await create_product(client, company_id, "GRACESMALL", list_price="40")
+    order_2 = await create_draft_order(
+        client, company_id, customer_id, [order_line(prod_small, "1", unit_price="40")]
+    )
+    resp_2 = await confirm_order(client, company_id, order_2["id"])
+    assert resp_2.status_code == 409

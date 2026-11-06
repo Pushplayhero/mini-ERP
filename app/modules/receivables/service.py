@@ -49,7 +49,7 @@ from sqlalchemy import table as sa_table
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.types import Date as SA_Date
-from sqlalchemy.types import Integer
+from sqlalchemy.types import Integer, String
 
 from app.core import events
 from app.core.authorization import require_permission
@@ -73,6 +73,7 @@ from app.modules.receivables.models import (
 )
 from app.modules.receivables.schemas import (
     ARAgingRow,
+    CustomerExposure,
     InvoiceCreate,
     PaymentAllocationIn,
     PaymentCreate,
@@ -102,7 +103,7 @@ _SALES_ORDERS = sa_table(
     sa_column("customer_id"),
     sa_column("status"),
     sa_column("currency_code"),
-    sa_column("total"),
+    sa_column("total", AMOUNT),
     sa_column("shipped_at"),
     sa_column("snapshot_customer_code"),
     sa_column("snapshot_customer_name"),
@@ -821,3 +822,56 @@ async def get_ar_aging(
         )
     rows.sort(key=lambda r: r.customer_code)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Customer Exposure (ADR-010 §5.1)
+# ---------------------------------------------------------------------------
+
+
+async def get_customer_exposure_unchecked(
+    session: AsyncSession, customer_id: uuid.UUID
+) -> CustomerExposure:
+    """Compute customer uninvoiced-order and open-invoice exposure in one SELECT (ADR-010 §5.1).
+
+    Enforces fail-closed tenancy (`require_current_company_id()`) and explicitly
+    scopes all three subquery clauses by `company_id` because `_SALES_ORDERS` is
+    a lightweight Core `sqlalchemy.table()` construct.
+    """
+    company_id = require_current_company_id()
+
+    uninvoiced_subquery = (
+        select(func.coalesce(func.sum(_SALES_ORDERS.c.total), _ZERO))
+        .where(
+            _SALES_ORDERS.c.company_id == company_id,
+            _SALES_ORDERS.c.customer_id == customer_id,
+            sa_cast(_SALES_ORDERS.c.status, String).in_(("CONFIRMED", "SHIPPED")),
+            ~_SALES_ORDERS.c.id.in_(
+                select(Invoice.order_id).where(
+                    Invoice.company_id == company_id,
+                    Invoice.status != InvoiceStatus.VOIDED,
+                )
+            ),
+        )
+        .scalar_subquery()
+    )
+    open_invoice_subquery = (
+        select(func.coalesce(func.sum(Invoice.total - Invoice.settled_amount), _ZERO))
+        .where(
+            Invoice.company_id == company_id,
+            Invoice.customer_id == customer_id,
+            Invoice.status != InvoiceStatus.VOIDED,
+        )
+        .scalar_subquery()
+    )
+    exposure_result = await session.execute(
+        select(
+            uninvoiced_subquery.label("uninvoiced_orders_total"),
+            open_invoice_subquery.label("open_invoices_total"),
+        )
+    )
+    exposure_row = exposure_result.one()
+    return CustomerExposure(
+        uninvoiced_orders_total=exposure_row.uninvoiced_orders_total,
+        open_invoices_total=exposure_row.open_invoices_total,
+    )

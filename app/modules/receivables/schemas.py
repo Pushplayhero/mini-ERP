@@ -174,3 +174,17 @@ class ARAgingRow(BaseModel):
     days_90_plus: Decimal
     unapplied_credits: Decimal
     net_total: Decimal
+
+
+# ---------------------------------------------------------------------------
+# Exposure snapshot (ADR-010 §5.1)
+# ---------------------------------------------------------------------------
+
+
+class CustomerExposure(BaseModel):
+    """Single-snapshot customer credit exposure components (ADR-010 §5.1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    uninvoiced_orders_total: Decimal
+    open_invoices_total: Decimal
