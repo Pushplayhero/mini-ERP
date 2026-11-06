@@ -8,7 +8,7 @@
 > 取代購買顧問工時來客製、而且真正能信任自己資料的鼎新。開源、
 > API-first、可用 plugin 擴充的 ERP 核心。
 
-**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成。** 五個業務模組
+**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions` 與 `platform.plugins`）已完成。** 五個業務模組
 ——masterdata、ledger、sales、inventory + shipping、receivables——
 在一個真正的複式簿記過帳引擎（posting engine）之上，實作了完整的
 order-to-cash（O2C，訂單到收款）流程；每一個模組都有對應的
@@ -19,11 +19,9 @@ ADR-002 記錄的則是 Week 1-2 就已經拍板並上線的決策（兩者的�
 台灣本地化）見 `docs/open-erp-master-plan.md`，這個 Phase 所實作的原始
 kernel 藍圖見 `docs/mini-erp-architecture.md`。
 
-## Phase 1 的 Non-Goals（刻意不做的事）
+## Non-Goals（刻意不做的事）
 
-Phase 2 以後才會做：plugin **loader**（Phase 1 只硬寫死一個示範用的
-plugin ——`app/plugins/credit_limit.py`——不是動態載入機制）、
-workflow/審批引擎、使用者自訂欄位的管理介面
+目前核心的範疇外：不受信任插件沙箱化（plugin 為管理者安裝的受信任 in-process 程式碼，master-plan §10.3 / ADR-010）、workflow/審批引擎、使用者自訂欄位的管理介面
 （`custom_data JSONB` 欄位已經存在於每個主要業務實體——公司、客戶、
 商品、科目、訂單、發票、付款、傳票、會計期間——是這個機制的底層基礎，
 但 line/fact 層級的表（訂單明細、傳票明細、庫存異動）還沒有；也還沒有
@@ -347,6 +345,8 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 | Sales 模組、hook registry | [ADR-006](docs/adr/ADR-006-sales-and-hook-registry.md) |
 | Inventory、出貨 | [ADR-007](docs/adr/ADR-007-inventory-and-shipping.md) |
 | Receivables ——開票、收款、帳齡 | [ADR-008](docs/adr/ADR-008-receivables.md) |
+| `platform.permissions` ——身分驗證、RBAC 與授權埠 | [ADR-009](docs/adr/ADR-009-platform-permissions.md) |
+| `platform.plugins` ——插件載入器、租戶啟用治理與公開介面隔離 | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
 
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
@@ -381,8 +381,8 @@ round-half-even（銀行家捨入法），不是丟給 DB 隱含轉型：傳票�
 `Customer.credit_limit`、`Product.list_price`/`standard_cost`
 （`masterdata.schemas`）、`SalesOrderLineCreate.unit_price`
 （`sales.schemas`）則是從 Week 8 Decision 0 開始。每個模組各自擁有
-一份私有的 round-half-even 輔助函式（masterdata/sales/receivables
-裡叫 `_round_half_even_6dp`；ledger 裡叫
+一份私有的 round-half-even 輔助函式（masterdata/sales/receivables 與
+`plugins.credit_limit` 裡叫 `_round_half_even_6dp`；ledger 裡叫
 `_round_half_even_to_6dp`）——依照 import-linter 的模組獨立性契約，
 從不跨模組 import——而不是共用 `app/core/` 底下的一份。`credit_limit`
 /價格/成本欄位的合法值一律包含零（不會被拒絕），這點跟
@@ -420,11 +420,12 @@ rollback；順序只影響 `ship` 失敗時，是哪個 handler 的例外被歸�
 
 **Plugins。** In-process、沒有沙箱——跟 Odoo 一樣的信任模型（見
 `SECURITY.md`）：plugin 是管理者自己選擇安裝的程式碼，不是不受信任
-的第三方輸入。`app/plugins/credit_limit.py` 是 Phase 1 唯一的示範
-plugin，透過 `sales.order.validate_confirm` 這個 hook，在客戶的曝險
-（未結案的發票 + 已確認但還沒開發票的訂單）會超過信用額度時，否決
-`sales.confirm_order`（`credit_limit == 0` 代表「不檢查」）。真正的
-plugin **loader**（動態探索/註冊機制）是 Phase 2 的範疇。
+的第三方輸入。插件宣告 `PluginManifest`（`app/core/plugins.py`），並透過
+確定性 Kahn 拓撲排序載入器（`app/platform/plugins/loader.py`）進行動態探索與啟動。
+各公司的啟用狀態與 JSONB 設定（例如 `credit_limit.grace_amount`）儲存在
+`company_plugins` 表，透過 `/api/v1/plugins`（及 `app/cli/manage_plugins.py`）進行治理，
+並在業務交易執行時由 `PluginRuntimeGate` 強制把關。Import-linter 嚴格限制插件只能引用模組的
+公開 `service` 與 `schemas` 層，禁止直接 import 內部 ORM model 或 router（ADR-010）。
 
 ## 專案目錄結構
 
@@ -439,9 +440,10 @@ app/
 │   ├── inventory/    # stock_moves（append-only）+ stock_summary，goods_shipped 的訂閱者
 │   └── receivables/  # 發票、收款、沖款、帳齡
 ├── platform/
-│   └── permissions/ # ADR-009 RBAC 模型、認證/session 服務、/auth router
-├── plugins/          # credit_limit.py ——唯一一個寫死安裝的示範 plugin
-├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
+│   ├── permissions/ # ADR-009 RBAC 模型、認證/session 服務、/auth router
+│   └── plugins/     # ADR-010 拓撲載入器、company_plugins 服務、/api/v1/plugins router
+├── plugins/          # credit_limit.py ——內建客戶信用額度把關 manifest
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
 └── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
 docs/

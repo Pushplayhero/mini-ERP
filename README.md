@@ -9,7 +9,7 @@ English | [繁體中文](README.zh-TW.md)
 > hours, and actually trust with their data. Open-source, API-first,
 > plugin-extensible ERP kernel.
 
-**This repository state = Phase 1 ("Kernel") complete.** Five business
+**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions` & `platform.plugins`) complete.** Five business
 modules — masterdata, ledger, sales, inventory + shipping, receivables —
 implement a full order-to-cash (O2C) line on top of a real double-entry
 posting engine, each backed by an [architecture decision
@@ -21,12 +21,9 @@ for the longer-term plan (Platform → Suites → Taiwan localization) and
 `docs/mini-erp-architecture.md` for the original kernel blueprint this
 phase implements.
 
-## Non-Goals (Phase 1)
+## Non-Goals
 
-Out of scope until Phase 2+: a plugin **loader** (Phase 1 ships one
-hard-wired demonstration plugin — `app/plugins/credit_limit.py` — not a
-dynamic loading mechanism), workflow/approval engine, user-defined custom fields UI (the `custom_data JSONB` column
-exists on every primary business entity — companies, customers, products,
+Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), workflow/approval engine, user-defined custom fields UI (the custom_data JSONB column exists on every primary business entity — companies, customers, products,
 accounts, orders, invoices, payments, journal entries, accounting periods
 — as the underlying mechanism, though not on line/fact-level tables like
 order lines, journal lines, or stock moves; there is also no admin UI or
@@ -392,6 +389,8 @@ substitute — follow the links for the actual reasoning.
 | Sales module, hook registry | [ADR-006](docs/adr/ADR-006-sales-and-hook-registry.md) |
 | Inventory, shipping | [ADR-007](docs/adr/ADR-007-inventory-and-shipping.md) |
 | Receivables — invoicing, payments, AR aging | [ADR-008](docs/adr/ADR-008-receivables.md) |
+| `platform.permissions` — identity, RBAC, and the authorization port | [ADR-009](docs/adr/ADR-009-platform-permissions.md) |
+| `platform.plugins` — plugin loader, tenant enablement governance, and public-surface isolation | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
 
 A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
@@ -427,7 +426,7 @@ receivables payment/allocation amounts (`receivables.schemas`) since Week
 `standard_cost` (`masterdata.schemas`), and
 `SalesOrderLineCreate.unit_price` (`sales.schemas`) since Week 8 Decision
 0. Each module owns its own private round-half-even helper
-(`_round_half_even_6dp` in masterdata/sales/receivables;
+(`_round_half_even_6dp` in masterdata/sales/receivables and plugins.credit_limit;
 `_round_half_even_to_6dp` in ledger) — never imported cross-module, per
 the import-linter module-independence contract — rather than sharing one
 from `app/core/`. Zero is always a legal value for `credit_limit`/
@@ -470,12 +469,14 @@ failure reason on a bad `ship`. `app.cli.replay_outbox` re-dispatches any
 
 **Plugins.** In-process, no sandbox — same trust model as Odoo (see
 `SECURITY.md`): a plugin is code an administrator chose to install, not
-untrusted third-party input. `app/plugins/credit_limit.py` is Phase 1's
-one demonstration plugin, vetoing `sales.confirm_order` via the
-`sales.order.validate_confirm` hook when a customer's exposure (open
-invoices + uninvoiced confirmed orders) would exceed their credit limit
-(`credit_limit == 0` means "do not check"). A real plugin *loader*
-(dynamic discovery/registration) is Phase 2 scope.
+untrusted third-party input. Plugins declare a `PluginManifest` (`app/core/plugins.py`)
+and are dynamically sorted and bootstrapped via a deterministic Kahn topological
+loader (`app/platform/plugins/loader.py`). Tenant enablement and JSONB configuration
+(e.g., `credit_limit.grace_amount`) are governed per-company in `company_plugins`
+via `/api/v1/plugins` (and `app/cli/manage_plugins.py`), enforced during business
+transactions by `PluginRuntimeGate`. Import-linter strictly isolates plugins to public
+module `service` and `schemas` layers, forbidding direct imports of internal ORM models
+or routers (ADR-010).
 
 ## Project layout
 
@@ -490,9 +491,10 @@ app/
 │   ├── inventory/    # stock_moves (append-only) + stock_summary, goods_shipped subscriber
 │   └── receivables/  # invoices, payments, allocations, AR aging
 ├── platform/
-│   └── permissions/ # ADR-009 RBAC models, auth/session service, /auth router
-├── plugins/          # credit_limit.py — the one hard-wired demonstration plugin
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+│   ├── permissions/ # ADR-009 RBAC models, auth/session service, /auth router
+│   └── plugins/     # ADR-010 topological loader, company_plugins service, /api/v1/plugins router
+├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
 └── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/

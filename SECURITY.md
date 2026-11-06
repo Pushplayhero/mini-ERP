@@ -10,20 +10,21 @@ describe the Phase 1 trust boundaries and evidence requirements; they do not
 claim that the D.5 scan has passed. The existing trusted-plugin policy and
 reporting guidance below remain authoritative.
 
-## Plugin trust model (master-plan §10.3, ADR-006)
+## Plugin trust model (master-plan §10.3, ADR-006, ADR-010)
 
 mini-erp's plugin mechanism (`app/plugins/`, `app.core.hooks`,
-`app.core.events`) has **no sandbox**. This is a deliberate, documented
-design choice, not an oversight:
+`app.core.events`, `app.platform.plugins`) has **no sandbox**. This is a
+deliberate, documented design choice, not an oversight:
 
 - A plugin (e.g. `app/plugins/credit_limit.py`) is **admin-installed,
   trusted, in-process Python code** — the same trust model Odoo uses for its
   addon ecosystem. Installing a plugin means granting it the same privileges
   the application process itself has: full database access (via the same
   `AsyncSession` the triggering request is using), the ability to raise
-  exceptions that abort transactions, and — since nothing here enforces
-  "public surface only" (deferred to Phase 2's plugin loader) — the ability to
-  import and call anything in `app.core`/`app.modules.*`.
+  exceptions that abort transactions, and — while CI enforces "public surface
+  only" via `import-linter` boundaries (ADR-010) so plugins only import public
+  `service`/`schemas` layers in `app.core` and `app.modules.*` — Python itself
+  provides no runtime import or process sandbox.
 - **Hooks execute inside the business transaction that triggered them.** A
   hook handler registered on `sales.order.validate_confirm` runs with the same
   database session, the same tenancy context, and the same transaction
@@ -33,7 +34,7 @@ design choice, not an oversight:
   should visibly break the operation it hooked into, not silently corrupt or
   half-apply it.
 - **Do not install untrusted plugin code.** There is no code-signing, no
-  permission model, and no resource/CPU/memory sandboxing in Phase 1. A
+  plugin-level OS permission sandbox, and no resource/CPU/memory sandboxing. A
   malicious or buggy plugin can read/write any data the installing company's
   database user can reach, and can block or corrupt any transaction it hooks
   into. Treat installing a plugin with the same care as installing a Python
@@ -44,13 +45,9 @@ design choice, not an oversight:
   passed to handlers are public API surface for plugin authors; breaking
   changes to either are treated as breaking releases.
 
-## What Phase 2 adds
+## What Phase 2 implemented (ADR-010)
 
-A real plugin loader (entry-point discovery, dependency/ordering declarations,
-versioned hook-point compatibility checks) and, potentially, enforcement (not
-just convention) that a plugin only touches modules' public service functions
-rather than reaching into ORM models directly. None of that ships in Phase 1 —
-see `app/plugins/README.md` for what does.
+Phase 2 added a deterministic Kahn topological plugin loader (with SemVer range compatibility, entry-point discovery, and dependency declarations), per-company tenant enablement and JSONB configuration governance (/api/v1/plugins, company_plugins), and CI-enforced import-linter contracts ensuring plugins touch only public service/schemas layers rather than internal ORM models or routers. Untrusted code sandboxing remains a deliberate non-goal (plugins are trusted in-process code). See `app/plugins/README.md` for details.
 
 ## Reporting a vulnerability
 

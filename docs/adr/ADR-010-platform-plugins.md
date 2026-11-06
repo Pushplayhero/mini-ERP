@@ -623,7 +623,7 @@ Mounted by `app.platform.plugins.router`:
 
 ## Action Items (Week 10 Implementation Sequence)
 
-1. **Slice A — Core plugin port, versioned hooks/events, and deterministic loader:**
+1. [x] **Slice A — Core plugin port, versioned hooks/events, and deterministic loader:**
    - Implement `app/core/plugins.py` (`PluginManifest`, `HookBinding`,
      `EventBinding`, `PluginDependency`, `PluginLoadError`,
      `plugin_config_context`, `get_current_plugin_config`,
@@ -638,7 +638,7 @@ Mounted by `app.platform.plugins.router`:
    - Unit-test topological sort, lexicographical tie-breaking, cycle detection,
      SemVer compatibility, and startup inductive invariants in
      `tests/platform/test_plugin_loader.py`.
-2. **Slice B — Migration `0011`, `company_plugins` persistence, and management API:**
+2. [x] **Slice B — Migration `0011`, `company_plugins` persistence, and management API:**
    - Add Alembic migration `0011_platform_plugins.py` (`company_plugins` table +
      `platform.plugin.read` and `platform.plugin.manage` permissions granted to
      `admin`).
@@ -647,7 +647,7 @@ Mounted by `app.platform.plugins.router`:
      wire `/api/v1/plugins` + runtime gate in `app/main.py`.
    - Update `tests/conftest.py` (`_clean_tenant_tables` truncation list) and
      existing permission-count assertions (45 $\rightarrow$ 47).
-3. **Slice C — Public-surface-only refactor of `credit_limit.py` and `import-linter` enforcement:**
+3. [x] **Slice C — Public-surface-only refactor of `credit_limit.py` and `import-linter` enforcement:**
    - Implement `masterdata.service.lock_customer_credit_limit_unchecked` and
      `receivables.service.get_customer_exposure_unchecked` (typing
      `_SALES_ORDERS.c.total` as `AMOUNT`, casting `_SALES_ORDERS.c.status` to
@@ -657,7 +657,7 @@ Mounted by `app.platform.plugins.router`:
      `CreditLimitPluginConfig(grace_amount)` and use only public service ports.
    - Add the two new `forbidden` contracts and extend the `protected` contract
      in `pyproject.toml`; verify `import-linter` passes with zero violations.
-4. **Slice D — End-to-end tenant plugin governance, concurrency proof, and documentation closure:**
+4. [x] **Slice D — End-to-end tenant plugin governance, concurrency proof, and documentation closure:**
    - Add integration and concurrency tests in `tests/platform/test_plugins_api.py`
      covering per-company enable/disable of `credit_limit`, `grace_amount`
      configuration, runtime dependency `422`/`409` guards, concurrent
