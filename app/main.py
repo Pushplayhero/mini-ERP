@@ -45,6 +45,7 @@ from app.core.exceptions import (
     NotFoundError,
     TenancyContextError,
 )
+from app.core.plugins import set_plugin_runtime_gate
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
 from app.modules.inventory import service as inventory_service
@@ -68,6 +69,9 @@ from app.platform.permissions.middleware import (
     LoginRateLimiter,
 )
 from app.platform.permissions.router import router as permissions_router
+from app.platform.plugins import loader as plugins_loader
+from app.platform.plugins import service as plugins_service
+from app.platform.plugins.router import router as plugins_router
 from app.plugins import credit_limit
 
 settings = get_settings()
@@ -258,6 +262,7 @@ app.include_router(receivables_router, prefix="/api/v1")
 # own literal path references (grouped alongside `/health`/`/docs` in the
 # Slice D public-route allowlist, not the business-module API surface).
 app.include_router(permissions_router)
+app.include_router(plugins_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -355,3 +360,12 @@ events.subscribe(
 # exist and wire them together.
 # ---------------------------------------------------------------------------
 hooks.register(sales_service.SALES_ORDER_VALIDATE_CONFIRM, credit_limit.check_credit_limit)
+
+# ---------------------------------------------------------------------------
+# Plugin runtime gate & loader bootstrap (ADR-010 / Week 10 Slice B)
+# ---------------------------------------------------------------------------
+# In Slice B, credit_limit is still registered directly above without a manifest.
+# In Slice C, credit_limit will declare PLUGIN_MANIFEST and will be bootstrapped
+# via loader. The runtime gate port is wired here once at composition root.
+set_plugin_runtime_gate(plugins_service.execute_with_plugin_gate_unchecked)
+plugins_loader.bootstrap_plugins()
