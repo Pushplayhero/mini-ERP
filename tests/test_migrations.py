@@ -31,6 +31,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # ids are robust to any number of future migrations landing after either.
 _BEFORE_MIGRATION_0005 = "a2f5d8e91c47"  # 0005's own down_revision (0004's revision id)
 _BEFORE_MIGRATION_0008 = "c7d2e6f1a840"  # 0008's own down_revision (0007's revision id)
+_BEFORE_MIGRATION_0011 = "e7b8c9d0a1f2"  # 0011's own down_revision (0010's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -60,6 +61,8 @@ EXPECTED_TABLES = {
     "role_permissions",
     "user_company_roles",
     "sessions",
+    # ADR-010 / WEEK10 Slice B / migration 0011.
+    "company_plugins",
     "alembic_version",
 }
 
@@ -626,22 +629,120 @@ async def test_migration_0008_shipped_at_backfill_rejects_duplicate_outbox_event
 
 
 @pytest.mark.asyncio
-async def test_migration_0010_seeds_44_permissions_and_grants_all_to_admin(
+async def test_migration_0010_and_0011_seed_permissions_and_grant_all_to_admin(
     db_engine: AsyncEngine,
 ) -> None:
-    """ADR-009 / Slice D migration 0010: seeds the full 44-permission catalog
+    """ADR-009 / ADR-010: seeds the full permission catalog (45 -> 47)
     and grants every permission to the 'admin' role.
     """
     async with db_engine.connect() as conn:
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        # 1 (session.manage in 0009) + 44 (business permissions in 0010) = 45
+        # 1 (session.manage in 0009) + 44 (business permissions in 0010) + 2 (plugins in 0011) = 47
         assert (
-            perm_count == 45
-        ), f"expected exactly 45 permissions in total catalog, got {perm_count}"
+            perm_count == 47
+        ), f"expected exactly 47 permissions in total catalog, got {perm_count}"
 
         admin_grants = await conn.scalar(
             text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
         )
         assert (
-            admin_grants == 45
-        ), f"expected admin role to have all 45 permissions, got {admin_grants}"
+            admin_grants == 47
+        ), f"expected admin role to have all 47 permissions, got {admin_grants}"
+
+
+@pytest.mark.asyncio
+async def test_migration_0011_schema_matches_adr_010(db_engine: AsyncEngine) -> None:
+    """Assert migration 0011 creates company_plugins table and constraints."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_conn: Connection) -> Any:
+        inspector = inspect(sync_conn)
+        cols = {c["name"]: c for c in inspector.get_columns("company_plugins")}
+        fks = inspector.get_foreign_keys("company_plugins")
+        uqs = inspector.get_unique_constraints("company_plugins")
+        indexes = inspector.get_indexes("company_plugins")
+        return cols, fks, uqs, indexes
+
+    async with db_engine.connect() as conn:
+        cols, fks, uqs, indexes = await conn.run_sync(_inspect)
+
+        # Permissions check
+        seeded_perms = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT code FROM permissions "
+                        "WHERE code IN ('platform.plugin.read', 'platform.plugin.manage')"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert "id" in cols
+    assert "company_id" in cols
+    assert "plugin_name" in cols
+    assert "is_enabled" in cols
+    assert "config" in cols
+    assert "created_at" in cols
+    assert "updated_at" in cols
+    assert "created_by" in cols
+    assert "updated_by" in cols
+
+    # FK constraint check
+    company_fk = next((fk for fk in fks if fk["referred_table"] == "companies"), None)
+    assert company_fk is not None
+    assert company_fk["options"].get("ondelete") == "RESTRICT"
+
+    # Unique constraint check
+    assert any(uq["name"] == "uq_company_plugins_company_plugin" for uq in uqs)
+
+    # Index check
+    assert any(ix["name"] == "ix_company_plugins_company_id" for ix in indexes)
+
+    assert set(seeded_perms) == {"platform.plugin.read", "platform.plugin.manage"}
+
+
+@pytest.mark.asyncio
+async def test_migration_0011_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEngine) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0011 drops company_plugins and 2 permissions,
+    and upgrade head restores them cleanly.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0011)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(inspect(sync_conn).get_table_names())
+            )
+            assert "company_plugins" not in table_names
+
+            perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+            assert perm_count == 45
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        assert "company_plugins" in table_names
+
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        assert perm_count == 47

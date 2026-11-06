@@ -28,6 +28,7 @@ from app.core.plugins import (
     PluginLoadError,
     PluginManifest,
     get_current_plugin_config,
+    get_plugin_runtime_gate,
     is_semver_compatible,
     parse_semver,
     plugin_config_context,
@@ -308,6 +309,7 @@ async def test_hooks_run_intercepts_stamped_handler_with_runtime_gate(
         intercepted.append(plugin_name)
         await invoke()
 
+    saved_gate = get_plugin_runtime_gate()
     set_plugin_runtime_gate(fake_gate)
     try:
         ctx = HookContext(
@@ -320,7 +322,7 @@ async def test_hooks_run_intercepts_stamped_handler_with_runtime_gate(
         await hooks.run("test_point", db_session, ctx)
         assert intercepted == ["gated_plugin"]
     finally:
-        set_plugin_runtime_gate(None)
+        set_plugin_runtime_gate(saved_gate)
         hooks._hook_specs.clear()
         hooks._hook_specs.update(saved_specs)
         hooks._handlers.clear()
@@ -360,6 +362,7 @@ async def test_events_dispatch_intercepts_stamped_handler_with_runtime_gate(
         intercepted.append(plugin_name)
         await invoke()
 
+    saved_gate = get_plugin_runtime_gate()
     set_plugin_runtime_gate(fake_gate)
     try:
         await events.redispatch(
@@ -369,7 +372,7 @@ async def test_events_dispatch_intercepts_stamped_handler_with_runtime_gate(
         )
         assert intercepted == ["gated_event_plugin"]
     finally:
-        set_plugin_runtime_gate(None)
+        set_plugin_runtime_gate(saved_gate)
         events._schemas.clear()
         events._schemas.update(saved_schemas)
         events._handlers.clear()

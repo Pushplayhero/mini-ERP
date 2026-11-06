@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import require_current_actor, require_permission
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, TenancyContextError
 from app.core.tenancy import require_current_company_id
 from app.modules.masterdata.models import (
     Account,
@@ -106,6 +106,27 @@ async def list_companies(session: AsyncSession) -> Sequence[Company]:
 
 async def load_company_unchecked(session: AsyncSession, company_id: uuid.UUID) -> Company:
     result = await session.execute(select(Company).where(Company.id == company_id))
+    company = result.scalars().first()
+    if company is None:
+        raise NotFoundError("Company", company_id)
+    return company
+
+
+async def lock_company_unchecked(session: AsyncSession, company_id: uuid.UUID) -> Company:
+    """Lock the tenant root row via SELECT ... FOR UPDATE (ADR-010).
+
+    Enforces fail-closed tenancy: `company_id` must match the active company context.
+    Serializes tenant plugin enablement/configuration mutations, preventing
+    READ COMMITTED write-skew.
+    """
+    active = require_current_company_id()
+    if company_id != active:
+        raise TenancyContextError(
+            f"Cannot lock company {company_id}: does not match active company context {active}"
+        )
+    result = await session.execute(
+        select(Company).where(Company.id == company_id).with_for_update()
+    )
     company = result.scalars().first()
     if company is None:
         raise NotFoundError("Company", company_id)
