@@ -37,6 +37,7 @@ from app.core.authorization import (
     reset_current_actor,
     set_current_actor,
 )
+from app.core.customfields import set_custom_data_validator
 from app.core.db import get_session_factory
 from app.core.exceptions import (
     ActionDeniedError,
@@ -57,6 +58,8 @@ from app.modules.receivables import events as receivables_events
 from app.modules.receivables.router import router as receivables_router
 from app.modules.sales import events as sales_events
 from app.modules.sales.router import router as sales_router
+from app.platform.customfields import service as customfields_service
+from app.platform.customfields.router import router as customfields_router
 from app.platform.permissions import service as permissions_service
 from app.platform.permissions.context import (
     reset_current_session_id,
@@ -262,6 +265,7 @@ app.include_router(receivables_router, prefix="/api/v1")
 # Slice D public-route allowlist, not the business-module API surface).
 app.include_router(permissions_router)
 app.include_router(plugins_router, prefix="/api/v1")
+app.include_router(customfields_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +364,4 @@ BUILTIN_PLUGIN_MANIFESTS = (credit_limit.PLUGIN_MANIFEST,)
 
 set_plugin_runtime_gate(plugins_service.execute_with_plugin_gate_unchecked)
 plugins_loader.bootstrap_plugins(BUILTIN_PLUGIN_MANIFESTS)
+set_custom_data_validator(customfields_service.validate_and_normalize_custom_data_unchecked)

@@ -11,11 +11,11 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **199 tracked files**, assigned exactly once across:
+The current inventory is **205 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
-| `u01_identity` | 32 |
+| `u01_identity` | 38 |
 | `u02_runtime_config` | 13 |
 | `u03_events_hooks` | 11 |
 | `u04_sales_plugins` | 19 |
@@ -51,7 +51,7 @@ claim or retry a paid unit; a retry requires a new explicit authorization and
 fresh exact-SHA review.
 
 Per explicit owner decision (2026-10-12 / 2026-10-22), completed `micro-v2`
-unit scans for `u01_identity` through `u11_operations_e2e` (all 151 application,
+unit scans for `u01_identity` through `u11_operations_e2e` (all 157 application,
 platform, migration, CLI, and E2E files) remain accepted pass evidence across
 subsequent D.5 remediation commits when those units' files are unchanged. Retain
 each unit's artifacts and per-unit cost outside the repository and all worktrees
