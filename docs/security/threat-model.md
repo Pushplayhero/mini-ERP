@@ -22,8 +22,8 @@ Status: Slice D.5 baseline draft; reviewed 2026-08-24. This document is scan con
 
 ## Security invariants
 
-- SI-001 route classification is exactly `4 Public / 2 Authenticated / 50 RequiresPermission / 0 invalid` (after Slice E moved 5 masterdata write endpoints to CLI and ADR-010 Slice B added 3 plugin governance endpoints).
-- SI-002 permission catalog parity is `47 migration (46 active + 1 retained session.manage) / 41 HTTP routes + 5 CLI-only / 46 services`.
+- SI-001 route classification is exactly `4 Public / 2 Authenticated / 55 RequiresPermission / 0 invalid` (after Slice E moved 5 masterdata write endpoints to CLI, ADR-010 Slice B added 3 plugin governance endpoints, and ADR-011 Slice B added 5 custom-field governance endpoints).
+- SI-002 permission catalog parity is `49 migration (48 active + 1 retained session.manage) / 43 HTTP routes + 5 CLI-only / 48 services`.
 - SI-003 Public means bearer authentication is optional; it does not make input or data unrestricted.
 - SI-004 Authenticated lifecycle operations require the current actor and owned current session.
 - SI-005 Cross-company reads and writes fail closed; target-company access is re-authorized on switch.

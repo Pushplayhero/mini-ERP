@@ -9,7 +9,7 @@ English | [繁體中文](README.zh-TW.md)
 > hours, and actually trust with their data. Open-source, API-first,
 > plugin-extensible ERP kernel.
 
-**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions` & `platform.plugins`) complete.** Five business
+**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, & `platform.customfields`) complete.** Five business
 modules — masterdata, ledger, sales, inventory + shipping, receivables —
 implement a full order-to-cash (O2C) line on top of a real double-entry
 posting engine, each backed by an [architecture decision
@@ -23,11 +23,7 @@ phase implements.
 
 ## Non-Goals
 
-Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), workflow/approval engine, user-defined custom fields UI (the custom_data JSONB column exists on every primary business entity — companies, customers, products,
-accounts, orders, invoices, payments, journal entries, accounting periods
-— as the underlying mechanism, though not on line/fact-level tables like
-order lines, journal lines, or stock moves; there is also no admin UI or
-central field-definition table yet), and any frontend
+Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), workflow/approval engine, custom fields on line/fact-level tables (`platform.customfields` governs the `custom_data JSONB` column on the 8 primary tenant-scoped business entities — customers, products, accounts, orders, invoices, payments, journal entries, and accounting periods — via `custom_field_definitions`, `/api/v1/custom-fields`, and `app/cli/manage_custom_fields.py` per ADR-011, but not on order lines, journal lines, or stock moves, and there is no admin frontend UI), and any frontend
 (this is an API-only kernel — `/docs` is the interactive client for now).
 Taiwan-specific tax/e-invoice integration is Phase 4.
 
@@ -391,6 +387,7 @@ substitute — follow the links for the actual reasoning.
 | Receivables — invoicing, payments, AR aging | [ADR-008](docs/adr/ADR-008-receivables.md) |
 | `platform.permissions` — identity, RBAC, and the authorization port | [ADR-009](docs/adr/ADR-009-platform-permissions.md) |
 | `platform.plugins` — plugin loader, tenant enablement governance, and public-surface isolation | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
+| `platform.customfields` — tenant-governed custom field engine, strong type normalization, and public port isolation | [ADR-011](docs/adr/ADR-011-platform-customfields.md) |
 
 A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
@@ -478,12 +475,24 @@ transactions by `PluginRuntimeGate`. Import-linter strictly isolates plugins to 
 module `service` and `schemas` layers, forbidding direct imports of internal ORM models
 or routers (ADR-010).
 
+**Custom fields.** Every primary tenant-scoped transactional entity (`Customer`,
+`Product`, `Account`, `AccountingPeriod`, `JournalEntry`, `SalesOrder`, `Invoice`,
+`Payment`) carries a `custom_data JSONB` column governed per-company in
+`custom_field_definitions` via `/api/v1/custom-fields` and
+`app/cli/manage_custom_fields.py` (ADR-011). Field definition mutations serialize
+via `lock_company_unchecked` (`SELECT ... FOR UPDATE`). Business modules validate and
+normalize `custom_data` on create and update through the lightweight core port
+(`app/core/customfields.py`) without importing `app.platform.customfields`:
+unknown keys fail closed (`422`), `DECIMAL` fields are Banker's Rounded
+(`ROUND_HALF_EVEN`) to `NUMERIC(20, 6)`, and automated rule-driven journal
+postings bypass manual-entry custom-field requirements.
+
 ## Project layout
 
 ```
 app/
 ├── core/            # settings, async DB session mgmt, tenancy context/filter,
-│                     # event bus, hook registry, exceptions, advisory locking
+│                     # event bus, hook registry, customfields/plugins/auth ports, exceptions
 ├── modules/
 │   ├── masterdata/   # companies, customers, products, UoM, accounts, currencies
 │   ├── ledger/       # journal entries, accounting periods, trial balance, posting engine
@@ -491,10 +500,11 @@ app/
 │   ├── inventory/    # stock_moves (append-only) + stock_summary, goods_shipped subscriber
 │   └── receivables/  # invoices, payments, allocations, AR aging
 ├── platform/
-│   ├── permissions/ # ADR-009 RBAC models, auth/session service, /auth router
-│   └── plugins/     # ADR-010 topological loader, company_plugins service, /api/v1/plugins router
+│   ├── permissions/  # ADR-009 RBAC models, auth/session service, /auth router
+│   ├── plugins/      # ADR-010 topological loader, company_plugins service, /api/v1/plugins router
+│   └── customfields/ # ADR-011 custom_field_definitions service, runtime validator, /api/v1/custom-fields router
 ├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
 └── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/
