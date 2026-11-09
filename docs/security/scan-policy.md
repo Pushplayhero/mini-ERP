@@ -11,7 +11,7 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **209 tracked files**, assigned exactly once across:
+The current inventory is **210 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
@@ -27,7 +27,7 @@ The current inventory is **209 tracked files**, assigned exactly once across:
 | `u10_migrations` | 17 |
 | `u11_operations_e2e` | 17 |
 | `u12_gate` | 2 |
-| `u13_governance` | 22 |
+| `u13_governance` | 23 |
 | `u14_dependencies` | 2 |
 
 Every real unit scan still requires an external owner authorization and an

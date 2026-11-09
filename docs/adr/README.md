@@ -13,6 +13,7 @@
 | [ADR-009](ADR-009-platform-permissions.md) | `platform.permissions` — identity, RBAC, and the authorization port | Accepted |
 | [ADR-010](ADR-010-platform-plugins.md) | `platform.plugins` — plugin loader, tenant enablement governance, and public-surface isolation | Accepted |
 | [ADR-011](ADR-011-platform-customfields.md) | `platform.customfields` — tenant-governed custom field engine, strong type normalization, and public port isolation | Accepted |
+| [ADR-012](ADR-012-platform-workflow.md) | `platform.workflow` — configurable approval chains, amount-threshold routing, and state-transition gate | Accepted |
 
 ADR-003 through ADR-008 each passed a real `codex` CLI architecture
 consensus review before implementation (see each ADR's "Consensus
