@@ -175,19 +175,19 @@ Endpoints under `/api/v1/custom-fields`:
 
 ## Action Items (Week 11 Implementation Sequence)
 
-1. **Slice A — Core customfields port, Migration 0012, and import-linter contracts:**
+1. [x] **Slice A — Core customfields port, Migration 0012, and import-linter contracts:**
    - Create `app/core/customfields.py` (`CustomFieldType`, `CustomFieldEntityType`, `FIELD_KEY_PATTERN`, `CustomDataValidator` / `CustomDataValidatorPort`, `set_custom_data_validator`, `validate_and_normalize_custom_data`).
    - Add Alembic migration `0012_platform_customfields.py` (`custom_field_definitions` table + 2 new permissions `platform.customfield.read` & `platform.customfield.manage` granted to `admin`).
-   - Update `pyproject.toml` import-linter contracts.
-   - Unit test core port and migration upgrade/downgrade.
-2. **Slice B — `platform.customfields` service, models, schemas, and management API:**
+   - Update `pyproject.toml` import-linter contracts (12/12 kept).
+   - Unit test core port and migration upgrade/downgrade (`tests/core/test_customfields_port.py`, `tests/test_migrations.py`).
+2. [x] **Slice B — `platform.customfields` service, models, schemas, and management API:**
    - Create `app/platform/customfields/{models,schemas,service,router}.py`.
    - Wire router and runtime validator in `app/main.py`.
-   - Router and service tests covering field creation, validation rule enforcement, and Banker's Rounding defaults.
-3. **Slice C — Business module integration and CLI tooling:**
+   - Router and service tests covering field creation, validation rule enforcement, and Banker's Rounding defaults (`tests/platform/test_customfields_service.py`, `tests/platform/test_customfields_router.py`).
+3. [x] **Slice C — Business module integration and CLI tooling:**
    - Wire `validate_and_normalize_custom_data` into `Customer`, `Product`, `Account`, `AccountingPeriod`, `JournalEntry`, `SalesOrder`, `Invoice`, and `Payment` creation/update paths.
    - Create CLI `app/cli/manage_custom_fields.py` (`CUSTOM_FIELD_ADMIN_ACTOR`, list, define, update, deactivate).
-   - Integration tests for business entities rejecting unknown/invalid custom fields.
-4. **Slice D — End-to-end tenant governance, concurrency proof, and documentation closure:**
-   - Comprehensive tests for multi-tenant custom field isolation, concurrency lock on field definition mutations, and decimal banker's rounding.
-   - Update `threat-model.md`, `README.md`, `README.zh-TW.md`, `HANDOFF.md`, and D.5 security gate manifest.
+   - Integration tests for business entities rejecting unknown/invalid custom fields (`tests/cli/test_manage_custom_fields.py`, `tests/platform/test_customfields_business_integration.py`).
+4. [x] **Slice D — End-to-end tenant governance, concurrency proof, and documentation closure:**
+   - Comprehensive tests for multi-tenant custom field isolation, concurrency lock on field definition mutations, and decimal banker's rounding (`tests/platform/test_customfields_concurrency.py`).
+   - Update `threat-model.md`, `README.md`, `README.zh-TW.md`, `SECURITY.md`, `HANDOFF.md`, and D.5 security gate manifest (`d5-shards.json`, `scan-policy.md`, `tests/security/test_d5_security_gate.py` reconciled to 209 files).

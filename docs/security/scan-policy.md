@@ -11,11 +11,11 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **208 tracked files**, assigned exactly once across:
+The current inventory is **209 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
-| `u01_identity` | 39 |
+| `u01_identity` | 40 |
 | `u02_runtime_config` | 13 |
 | `u03_events_hooks` | 11 |
 | `u04_sales_plugins` | 19 |
@@ -51,7 +51,7 @@ claim or retry a paid unit; a retry requires a new explicit authorization and
 fresh exact-SHA review.
 
 Per explicit owner decision (2026-10-12 / 2026-10-22), completed `micro-v2`
-unit scans for `u01_identity` through `u11_operations_e2e` (all 157 application,
+unit scans for `u01_identity` through `u11_operations_e2e` (all 183 application,
 platform, migration, CLI, and E2E files) remain accepted pass evidence across
 subsequent D.5 remediation commits when those units' files are unchanged. Retain
 each unit's artifacts and per-unit cost outside the repository and all worktrees
@@ -64,13 +64,13 @@ To prevent non-application units (`u12_gate`, `u13_governance`,
 runner scripts, markdown documentation, or `uv.lock`, the owner authorized a
 **Hybrid Right-Tool-for-the-Job Gate** to close Slice D.5:
 
-1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 154 files)**:
+1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 183 files)**:
    Verified by `@openai/codex-security` (`gpt-5.6-sol`, high effort) with zero
    blocking findings; owner-accepted pass evidence is preserved.
 2. **Tier 2 — Scanner Gate Runner (`u12_gate`, 2 files: `scripts/d5_security_gate.py`, `tests/security/test_d5_security_gate.py`)**:
    The single High finding from `b56c164` (`fsmonitor` / Git config isolation)
    is remediated in `95c5382`. Verified deterministically via `ruff check`,
-   `ruff format --check`, `mypy --strict` (`scripts/`), and the 278 contract
+   `ruff format --check`, `mypy --strict` (`scripts/`), and the 281 contract
    tests in `tests/security/test_d5_security_gate.py`. No recursive paid LLM
    rescan of the runner script is required.
 3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 22 files)**:

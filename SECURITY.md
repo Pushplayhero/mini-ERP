@@ -45,9 +45,10 @@ deliberate, documented design choice, not an oversight:
   passed to handlers are public API surface for plugin authors; breaking
   changes to either are treated as breaking releases.
 
-## What Phase 2 implemented (ADR-010)
+## What Phase 2 implemented (ADR-010 & ADR-011)
 
-Phase 2 added a deterministic Kahn topological plugin loader (with SemVer range compatibility, entry-point discovery, and dependency declarations), per-company tenant enablement and JSONB configuration governance (/api/v1/plugins, company_plugins), and CI-enforced import-linter contracts ensuring plugins touch only public service/schemas layers rather than internal ORM models or routers. Untrusted code sandboxing remains a deliberate non-goal (plugins are trusted in-process code). See `app/plugins/README.md` for details.
+- **Plugin governance (ADR-010)**: Phase 2 added a deterministic Kahn topological plugin loader (with SemVer range compatibility, entry-point discovery, and dependency declarations), per-company tenant enablement and JSONB configuration governance (`/api/v1/plugins`, `company_plugins`), and CI-enforced import-linter contracts ensuring plugins touch only public service/schemas layers rather than internal ORM models or routers. Untrusted code sandboxing remains a deliberate non-goal (plugins are trusted in-process code). See `app/plugins/README.md` for details.
+- **Custom fields defense-in-depth (ADR-011)**: Tenant-governed custom fields across 8 primary transactional entities (`Customer`, `Product`, `Account`, `AccountingPeriod`, `JournalEntry`, `SalesOrder`, `Invoice`, `Payment`) enforce fail-closed runtime validation (`extra="forbid"` rejects unknown keys with 422), 5 PostgreSQL DDL CHECK constraints on definition schema, tenant root row serialization (`lock_company_unchecked` with `SELECT ... FOR UPDATE`) eliminating TOCTOU race conditions and write-skew under concurrent definition mutations, Banker's Rounding (`ROUND_HALF_EVEN`) to `NUMERIC(20, 6)` precision, and dependency inversion via `app.core.customfields` preventing business modules from importing platform implementations. Automated journal entry postings remain fail-safe and unblocked by manual custom field definitions.
 
 ## Reporting a vulnerability
 
