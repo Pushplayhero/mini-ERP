@@ -337,7 +337,7 @@ forbidden_modules = [
 
 ## Action Items (Week 12 Implementation Sequence)
 
-1. [ ] **Slice A — Core workflow port, Migration 0013, and import-linter contract:**
+1. [x] **Slice A — Core workflow port, Migration 0013, and import-linter contract:**
    - Create `app/core/workflow.py` (`WorkflowEntityType`, `WorkflowTransition`, `WorkflowInstanceStatus`, `WorkflowDecision`, `VALID_ENTITY_TRANSITIONS`, `WorkflowApprovalRequiredError`, `WorkflowApprovalGate`, `WorkflowTargetResolver`, port registration functions).
    - Add Alembic migration `0013_platform_workflow.py` (4 tables, DDL constraints, partial unique index, 3 permissions granted to `admin`).
    - Add Contract 13 to `pyproject.toml` and update protected modules.

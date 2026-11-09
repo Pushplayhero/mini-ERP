@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 210,
+  "expected_total_files": 214,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 210,
+      "expected_total_files": 214,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -41,7 +41,7 @@
       ],
       "units": {
         "u01_identity": {
-          "expected_file_count": 40,
+          "expected_file_count": 41,
           "paths": [
             "app/platform",
             "app/core/authorization.py",
@@ -72,19 +72,21 @@
           ]
         },
         "u03_events_hooks": {
-          "expected_file_count": 11,
+          "expected_file_count": 13,
           "paths": [
             "app/core/customfields.py",
             "app/core/events.py",
             "app/core/hooks.py",
             "app/core/locking.py",
             "app/core/plugins.py",
+            "app/core/workflow.py",
+            "docs/adr/ADR-004-event-bus.md",
             "tests/core/__init__.py",
             "tests/core/test_customfields_port.py",
             "tests/core/test_events.py",
             "tests/core/test_hooks.py",
             "tests/core/test_plugins_port.py",
-            "docs/adr/ADR-004-event-bus.md"
+            "tests/core/test_workflow_port.py"
           ]
         },
         "u04_sales_plugins": {
@@ -157,7 +159,7 @@
           ]
         },
         "u10_migrations": {
-          "expected_file_count": 17,
+          "expected_file_count": 18,
           "paths": [
             "alembic",
             "alembic.ini",
@@ -224,7 +226,7 @@
   "shards": [
     {
       "id": "a_identity_runtime",
-      "expected_file_count": 56,
+      "expected_file_count": 59,
       "max_cost_usd": 11.75,
       "paths": [
         "app/__init__.py",
@@ -274,7 +276,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 50,
+      "expected_file_count": 51,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",

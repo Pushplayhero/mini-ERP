@@ -33,6 +33,7 @@ _BEFORE_MIGRATION_0005 = "a2f5d8e91c47"  # 0005's own down_revision (0004's revi
 _BEFORE_MIGRATION_0008 = "c7d2e6f1a840"  # 0008's own down_revision (0007's revision id)
 _BEFORE_MIGRATION_0011 = "e7b8c9d0a1f2"  # 0011's own down_revision (0010's revision id)
 _BEFORE_MIGRATION_0012 = "b4c5d6e7f8a1"  # 0012's own down_revision (0011's revision id)
+_BEFORE_MIGRATION_0013 = "c5d6e7f8a1b2"  # 0013's own down_revision (0012's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -66,6 +67,11 @@ EXPECTED_TABLES = {
     "company_plugins",
     # ADR-011 / WEEK11 Slice A / migration 0012.
     "custom_field_definitions",
+    # ADR-012 / WEEK12 Slice A / migration 0013.
+    "workflow_definitions",
+    "workflow_steps",
+    "workflow_instances",
+    "workflow_approval_logs",
     "alembic_version",
 }
 
@@ -640,17 +646,17 @@ async def test_migration_0010_and_0011_seed_permissions_and_grant_all_to_admin(
     """
     async with db_engine.connect() as conn:
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012) = 49
+        # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012) + 3 (workflow in 0013) = 52
         assert (
-            perm_count == 49
-        ), f"expected exactly 49 permissions in total catalog, got {perm_count}"
+            perm_count == 52
+        ), f"expected exactly 52 permissions in total catalog, got {perm_count}"
 
         admin_grants = await conn.scalar(
             text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
         )
         assert (
-            admin_grants == 49
-        ), f"expected admin role to have all 49 permissions, got {admin_grants}"
+            admin_grants == 52
+        ), f"expected admin role to have all 52 permissions, got {admin_grants}"
 
 
 @pytest.mark.asyncio
@@ -748,7 +754,7 @@ async def test_migration_0011_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "company_plugins" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 49
+        assert perm_count == 52
 
 
 @pytest.mark.asyncio
@@ -866,4 +872,280 @@ async def test_migration_0012_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "custom_field_definitions" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 49
+        assert perm_count == 52
+
+
+@pytest.mark.asyncio
+async def test_migration_0013_schema_matches_adr_012(db_engine: AsyncEngine) -> None:  # noqa: PLR0915
+    """Assert migration 0013 creates 4 workflow tables with constraints and indexes."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_conn: Connection) -> Any:
+        inspector = inspect(sync_conn)
+
+        def table_info(tbl: str) -> dict[str, Any]:
+            return {
+                "cols": {c["name"]: c for c in inspector.get_columns(tbl)},
+                "fks": inspector.get_foreign_keys(tbl),
+                "uqs": inspector.get_unique_constraints(tbl),
+                "indexes": inspector.get_indexes(tbl),
+                "checks": inspector.get_check_constraints(tbl),
+            }
+
+        return {
+            "defs": table_info("workflow_definitions"),
+            "steps": table_info("workflow_steps"),
+            "insts": table_info("workflow_instances"),
+            "logs": table_info("workflow_approval_logs"),
+        }
+
+    async with db_engine.connect() as conn:
+        schema = await conn.run_sync(_inspect)
+        seeded_perms = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT code FROM permissions "
+                        "WHERE code IN ("
+                        "'platform.workflow.read', "
+                        "'platform.workflow.manage', "
+                        "'platform.workflow.approve'"
+                        ")"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    # 1. workflow_definitions
+    defs = schema["defs"]
+    expected_defs_cols = {
+        "id",
+        "company_id",
+        "entity_type",
+        "transition",
+        "name",
+        "description",
+        "is_active",
+        "allow_self_approval",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_defs_cols.issubset(defs["cols"].keys())
+    assert any(uq["name"] == "uq_workflow_def_company_id" for uq in defs["uqs"])
+    assert any(uq["name"] == "uq_workflow_def_company_entity_transition" for uq in defs["uqs"])
+    defs_checks = {ck["name"] for ck in defs["checks"]}
+    assert "ck_workflow_def_entity_transition_valid" in defs_checks
+    assert "ck_workflow_def_name_nonempty" in defs_checks
+
+    # 2. workflow_steps
+    steps = schema["steps"]
+    expected_steps_cols = {
+        "id",
+        "company_id",
+        "definition_id",
+        "step_order",
+        "step_name",
+        "min_amount",
+        "required_permission",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_steps_cols.issubset(steps["cols"].keys())
+    assert steps["cols"]["min_amount"]["type"].precision == 20
+    assert steps["cols"]["min_amount"]["type"].scale == 6
+    assert any(fk["name"] == "fk_workflow_step_company_def" for fk in steps["fks"])
+    assert any(uq["name"] == "uq_workflow_step_def_order" for uq in steps["uqs"])
+    steps_checks = {ck["name"] for ck in steps["checks"]}
+    assert "ck_workflow_step_order_positive" in steps_checks
+    assert "ck_workflow_step_min_amount_nonnegative" in steps_checks
+    assert "ck_workflow_step_name_nonempty" in steps_checks
+
+    # 3. workflow_instances
+    insts = schema["insts"]
+    expected_insts_cols = {
+        "id",
+        "company_id",
+        "definition_id",
+        "entity_type",
+        "entity_id",
+        "transition",
+        "status",
+        "target_amount",
+        "current_step_order",
+        "steps_snapshot",
+        "requested_by",
+        "consumed_at",
+        "consumed_by",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_insts_cols.issubset(insts["cols"].keys())
+    assert insts["cols"]["target_amount"]["type"].precision == 20
+    assert insts["cols"]["target_amount"]["type"].scale == 6
+    assert any(fk["name"] == "fk_workflow_instance_company_def" for fk in insts["fks"])
+    assert any(uq["name"] == "uq_workflow_instance_company_id" for uq in insts["uqs"])
+    insts_checks = {ck["name"] for ck in insts["checks"]}
+    assert "ck_workflow_instance_entity_transition_valid" in insts_checks
+    assert "ck_workflow_instance_status_valid" in insts_checks
+    assert "ck_workflow_instance_target_amount_nonnegative" in insts_checks
+    assert "ck_workflow_instance_steps_snapshot_is_array" in insts_checks
+    assert "ck_workflow_instance_pending_has_step" in insts_checks
+    assert "ck_workflow_instance_consumed_timestamp" in insts_checks
+    assert any(
+        ix["name"] == "uq_workflow_instance_active" and ix["unique"] is True
+        for ix in insts["indexes"]
+    )
+    assert any(ix["name"] == "ix_workflow_instances_lookup" for ix in insts["indexes"])
+
+    # 4. workflow_approval_logs
+    logs = schema["logs"]
+    expected_logs_cols = {
+        "id",
+        "company_id",
+        "instance_id",
+        "step_order",
+        "step_name",
+        "decision",
+        "actor_id",
+        "comment",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_logs_cols.issubset(logs["cols"].keys())
+    assert any(fk["name"] == "fk_workflow_log_company_instance" for fk in logs["fks"])
+    assert any(uq["name"] == "uq_workflow_log_instance_step" for uq in logs["uqs"])
+    logs_checks = {ck["name"] for ck in logs["checks"]}
+    assert "ck_workflow_log_step_order_positive" in logs_checks
+    assert "ck_workflow_log_step_name_nonempty" in logs_checks
+    assert "ck_workflow_log_decision_valid" in logs_checks
+
+    # 5. Seeded permissions
+    assert set(seeded_perms) == {
+        "platform.workflow.read",
+        "platform.workflow.manage",
+        "platform.workflow.approve",
+    }
+
+
+@pytest.mark.asyncio
+async def test_migration_0013_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEngine) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0013 drops 4 tables (even when populated with
+    steps referencing seeded workflow permissions) and 3 permissions, and upgrade head
+    restores them cleanly.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    workflow_tables = {
+        "workflow_definitions",
+        "workflow_steps",
+        "workflow_instances",
+        "workflow_approval_logs",
+    }
+
+    company_id = "91919191-9191-9191-9191-919191919191"
+    def_id = "92929292-9292-9292-9292-929292929292"
+    step_id = "93939393-9393-9393-9393-939393939393"
+    inst_id = "94949494-9494-9494-9494-949494949494"
+    log_id = "95959595-9595-9595-9595-959595959595"
+    entity_id = "96969696-9696-9696-9696-969696969696"
+    actor_id = "97979797-9797-9797-9797-979797979797"
+
+    # Populate all 4 tables (including workflow_steps referencing 'platform.workflow.approve')
+    # to prove downgrade() drops tables in safe FK dependency order before deleting permissions.
+    async with db_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO companies (id, code, name, functional_currency_code, is_active) "
+                "VALUES (:id, 'WFCO', 'Workflow Test Co', 'TWD', true)"
+            ),
+            {"id": company_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO workflow_definitions "
+                "(id, company_id, entity_type, transition, name) "
+                "VALUES (:id, :company_id, 'sales_order', 'confirm', 'SO Confirm Flow')"
+            ),
+            {"id": def_id, "company_id": company_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO workflow_steps "
+                "(id, company_id, definition_id, step_order, step_name, min_amount, "
+                "required_permission) "
+                "VALUES (:id, :company_id, :def_id, 1, 'Step 1', 100.000000, "
+                "'platform.workflow.approve')"
+            ),
+            {"id": step_id, "company_id": company_id, "def_id": def_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO workflow_instances "
+                "(id, company_id, definition_id, entity_type, entity_id, transition, status, "
+                "target_amount, current_step_order, steps_snapshot, requested_by) "
+                "VALUES (:id, :company_id, :def_id, 'sales_order', :entity_id, 'confirm', "
+                "'PENDING', "
+                "500.000000, 1, '[]'::jsonb, :actor_id)"
+            ),
+            {
+                "id": inst_id,
+                "company_id": company_id,
+                "def_id": def_id,
+                "entity_id": entity_id,
+                "actor_id": actor_id,
+            },
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO workflow_approval_logs "
+                "(id, company_id, instance_id, step_order, step_name, decision, actor_id) "
+                "VALUES (:id, :company_id, :inst_id, 1, 'Step 1', 'APPROVE', :actor_id)"
+            ),
+            {"id": log_id, "company_id": company_id, "inst_id": inst_id, "actor_id": actor_id},
+        )
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0013)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(inspect(sync_conn).get_table_names())
+            )
+            assert not (workflow_tables & table_names)
+
+            perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+            assert perm_count == 49
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        assert workflow_tables.issubset(table_names)
+
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        assert perm_count == 52
