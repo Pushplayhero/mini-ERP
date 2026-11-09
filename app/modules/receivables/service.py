@@ -53,6 +53,7 @@ from sqlalchemy.types import Integer, String
 
 from app.core import events
 from app.core.authorization import require_permission
+from app.core.customfields import CustomFieldEntityType, validate_and_normalize_custom_data
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.tenancy import require_current_company_id
 from app.modules.receivables.events import (
@@ -275,6 +276,13 @@ async def create_invoice(session: AsyncSession, data: InvoiceCreate) -> Invoice:
             f"due_date {due_date} cannot precede invoice_date {invoice_date}"
         )
 
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.INVOICE,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+
     invoice_no = await _allocate_doc_no(session, company_id, invoice_date.year, "invoice")
 
     invoice = Invoice(
@@ -291,6 +299,7 @@ async def create_invoice(session: AsyncSession, data: InvoiceCreate) -> Invoice:
         settled_amount=_ZERO,
         snapshot_customer_code=order.snapshot_customer_code,
         snapshot_customer_name=order.snapshot_customer_name,
+        custom_data=normalized_custom_data,
     )
     session.add(invoice)
     # Flush now (not just at the end): a concurrent double-issue hits
@@ -402,6 +411,13 @@ async def create_payment(session: AsyncSession, data: PaymentCreate) -> Payment:
             f"{_PHASE_1_CURRENCY!r} — receivables is TWD-only in Phase 1 (ADR-008 R12)"
         )
 
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.PAYMENT,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+
     received_at = data.received_at or datetime.now(timezone.utc)  # noqa: UP017
     payment_no = await _allocate_doc_no(session, company_id, received_at.year, "payment")
 
@@ -415,6 +431,7 @@ async def create_payment(session: AsyncSession, data: PaymentCreate) -> Payment:
         amount=data.amount,
         allocated_amount=_ZERO,
         received_at=received_at,
+        custom_data=normalized_custom_data,
     )
     session.add(payment)
     await session.flush()

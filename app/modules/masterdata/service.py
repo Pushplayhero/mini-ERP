@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import require_current_actor, require_permission
+from app.core.customfields import CustomFieldEntityType, validate_and_normalize_custom_data
 from app.core.exceptions import (
     ConflictError,
     DomainValidationError,
@@ -160,7 +161,16 @@ async def get_company(session: AsyncSession, company_id: uuid.UUID) -> Company:
 
 async def create_customer(session: AsyncSession, data: CustomerCreate) -> Customer:
     require_permission("masterdata.customer.create")
-    customer = Customer(company_id=require_current_company_id(), **data.model_dump())
+    company_id = require_current_company_id()
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.CUSTOMER,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+    payload = data.model_dump()
+    payload["custom_data"] = normalized_custom_data
+    customer = Customer(company_id=company_id, **payload)
     session.add(customer)
     await _commit_or_conflict(session, entity="Customer")
     await session.refresh(customer)
@@ -213,7 +223,19 @@ async def update_customer(
 ) -> Customer:
     require_permission("masterdata.customer.update")
     customer = await load_customer_unchecked(session, customer_id)
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    if "custom_data" in updates:
+        if updates["custom_data"] is not None:
+            updates["custom_data"] = await validate_and_normalize_custom_data(
+                session,
+                entity_type=CustomFieldEntityType.CUSTOMER,
+                raw_custom_data=updates["custom_data"],
+                is_create=False,
+                existing_custom_data=customer.custom_data,
+            )
+        else:
+            updates.pop("custom_data")
+    for field, value in updates.items():
         setattr(customer, field, value)
     await session.commit()
     await session.refresh(customer)
@@ -234,7 +256,16 @@ async def delete_customer(session: AsyncSession, customer_id: uuid.UUID) -> None
 
 async def create_product(session: AsyncSession, data: ProductCreate) -> Product:
     require_permission("masterdata.product.create")
-    product = Product(company_id=require_current_company_id(), **data.model_dump())
+    company_id = require_current_company_id()
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.PRODUCT,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+    payload = data.model_dump()
+    payload["custom_data"] = normalized_custom_data
+    product = Product(company_id=company_id, **payload)
     session.add(product)
     await _commit_or_conflict(session, entity="Product")
     await session.refresh(product, attribute_names=["uom"])
@@ -265,7 +296,19 @@ async def update_product(
 ) -> Product:
     require_permission("masterdata.product.update")
     product = await load_product_unchecked(session, product_id)
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    if "custom_data" in updates:
+        if updates["custom_data"] is not None:
+            updates["custom_data"] = await validate_and_normalize_custom_data(
+                session,
+                entity_type=CustomFieldEntityType.PRODUCT,
+                raw_custom_data=updates["custom_data"],
+                is_create=False,
+                existing_custom_data=product.custom_data,
+            )
+        else:
+            updates.pop("custom_data")
+    for field, value in updates.items():
         setattr(product, field, value)
     await session.commit()
     await session.refresh(product)
@@ -286,7 +329,16 @@ async def delete_product(session: AsyncSession, product_id: uuid.UUID) -> None:
 
 async def create_account(session: AsyncSession, data: AccountCreate) -> Account:
     require_permission("masterdata.account.create")
-    account = Account(company_id=require_current_company_id(), **data.model_dump())
+    company_id = require_current_company_id()
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.ACCOUNT,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+    payload = data.model_dump()
+    payload["custom_data"] = normalized_custom_data
+    account = Account(company_id=company_id, **payload)
     session.add(account)
     await _commit_or_conflict(session, entity="Account")
     await session.refresh(account)
@@ -317,7 +369,19 @@ async def update_account(
 ) -> Account:
     require_permission("masterdata.account.update")
     account = await load_account_unchecked(session, account_id)
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    if "custom_data" in updates:
+        if updates["custom_data"] is not None:
+            updates["custom_data"] = await validate_and_normalize_custom_data(
+                session,
+                entity_type=CustomFieldEntityType.ACCOUNT,
+                raw_custom_data=updates["custom_data"],
+                is_create=False,
+                existing_custom_data=account.custom_data,
+            )
+        else:
+            updates.pop("custom_data")
+    for field, value in updates.items():
         setattr(account, field, value)
     await session.commit()
     await session.refresh(account)

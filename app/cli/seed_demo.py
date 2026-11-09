@@ -83,6 +83,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # keeps that ordering impossible to get wrong by accident.
 import app.main  # noqa: F401  (side effect: composition-root wiring)
 from app.core.authorization import ActorContext, actor_context
+from app.core.customfields import CustomFieldType
 from app.core.db import dispose_engine, get_session_factory
 from app.core.exceptions import ConflictError
 from app.core.settings import get_settings
@@ -108,6 +109,8 @@ from app.modules.receivables.schemas import InvoiceCreate, PaymentAllocationIn, 
 from app.modules.sales import service as sales_service
 from app.modules.sales.models import SalesOrder, SalesOrderStatus
 from app.modules.sales.schemas import SalesOrderCreate, SalesOrderLineCreate
+from app.platform.customfields import service as customfields_service
+from app.platform.customfields.schemas import CustomFieldDefinitionCreate
 
 logger = logging.getLogger("app.cli.seed_demo")
 
@@ -142,6 +145,8 @@ DEMO_SEED_ACTOR = ActorContext(
             "receivables.payment.read",
             "receivables.payment.create",
             "receivables.payment.allocate",
+            "platform.customfield.read",
+            "platform.customfield.manage",
         }
     ),
     is_system_actor=True,
@@ -375,6 +380,24 @@ async def _ensure_chart_and_period(session: AsyncSession) -> None:
         compatible=lambda p: p.status == PeriodStatus.OPEN,
         entity=f"period {today.year}-{today.month:02d}",
     )
+
+
+async def _ensure_custom_fields(session: AsyncSession) -> None:
+    defs = await customfields_service.list_custom_field_definitions(
+        session, entity_type="sales_order"
+    )
+    if not any(d.field_key == "seed_scenario" for d in defs):
+        await customfields_service.create_custom_field_definition(
+            session,
+            CustomFieldDefinitionCreate(
+                entity_type="sales_order",
+                field_key="seed_scenario",
+                label="Seed Scenario",
+                field_type=CustomFieldType.TEXT,
+                is_required=False,
+            ),
+        )
+        await session.commit()
 
 
 async def _ensure_customer_and_product(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -638,6 +661,7 @@ async def seed_demo(
 
             with company_context(company_id):
                 await _ensure_chart_and_period(session)
+                await _ensure_custom_fields(session)
                 customer_id, product_id = await _ensure_customer_and_product(session)
                 await _reconcile_stock(session, product_id)
                 for scenario in SCENARIOS:

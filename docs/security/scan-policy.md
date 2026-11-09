@@ -11,11 +11,11 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **205 tracked files**, assigned exactly once across:
+The current inventory is **208 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
-| `u01_identity` | 38 |
+| `u01_identity` | 39 |
 | `u02_runtime_config` | 13 |
 | `u03_events_hooks` | 11 |
 | `u04_sales_plugins` | 19 |
@@ -25,7 +25,7 @@ The current inventory is **205 tracked files**, assigned exactly once across:
 | `u08_receivables` | 15 |
 | `u09_masterdata` | 13 |
 | `u10_migrations` | 17 |
-| `u11_operations_e2e` | 15 |
+| `u11_operations_e2e` | 17 |
 | `u12_gate` | 2 |
 | `u13_governance` | 22 |
 | `u14_dependencies` | 2 |
@@ -64,7 +64,7 @@ To prevent non-application units (`u12_gate`, `u13_governance`,
 runner scripts, markdown documentation, or `uv.lock`, the owner authorized a
 **Hybrid Right-Tool-for-the-Job Gate** to close Slice D.5:
 
-1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 151 files)**:
+1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 154 files)**:
    Verified by `@openai/codex-security` (`gpt-5.6-sol`, high effort) with zero
    blocking findings; owner-accepted pass evidence is preserved.
 2. **Tier 2 — Scanner Gate Runner (`u12_gate`, 2 files: `scripts/d5_security_gate.py`, `tests/security/test_d5_security_gate.py`)**:

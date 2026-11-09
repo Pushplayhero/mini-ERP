@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import column as sa_column
 from sqlalchemy import func, select
@@ -34,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.authorization import require_permission
+from app.core.customfields import CustomFieldEntityType, validate_and_normalize_custom_data
 from app.core.exceptions import (
     ConflictError,
     DomainValidationError,
@@ -307,12 +309,19 @@ def _build_lines(
 
 async def create_period(session: AsyncSession, data: AccountingPeriodCreate) -> AccountingPeriod:
     require_permission("ledger.period.create")
+    company_id = require_current_company_id()
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.ACCOUNTING_PERIOD,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
     period = AccountingPeriod(
-        company_id=require_current_company_id(),
+        company_id=company_id,
         year=data.year,
         month=data.month,
         status=PeriodStatus.OPEN,
-        custom_data=data.custom_data,
+        custom_data=normalized_custom_data,
     )
     session.add(period)
     await _commit_or_conflict(session, entity="AccountingPeriod")
@@ -399,6 +408,15 @@ async def post_journal_entry(session: AsyncSession, data: JournalEntryCreate) ->
         # meant to move.
         await _reject_control_account_lines(session, company_id, account_ids)
 
+    custom_data: dict[str, Any] = data.custom_data
+    if data.source_type is None or data.custom_data:
+        custom_data = await validate_and_normalize_custom_data(
+            session,
+            entity_type=CustomFieldEntityType.JOURNAL_ENTRY,
+            raw_custom_data=data.custom_data,
+            is_create=True,
+        )
+
     period = await _resolve_and_lock_period(session, company_id, data.entry_date)
     entry_no = await _allocate_entry_no(session, company_id, data.entry_date.year)
 
@@ -410,7 +428,7 @@ async def post_journal_entry(session: AsyncSession, data: JournalEntryCreate) ->
         source_type=data.source_type,
         source_id=data.source_id,
         reversal_of_id=None,
-        custom_data=data.custom_data,
+        custom_data=custom_data,
     )
     entry.lines = _build_lines(company_id, data.lines, entry_date=data.entry_date)
     session.add(entry)

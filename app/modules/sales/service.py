@@ -52,6 +52,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core import events, hooks
 from app.core.authorization import require_permission
+from app.core.customfields import CustomFieldEntityType, validate_and_normalize_custom_data
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.hooks import HookContext
 from app.core.tenancy import require_current_company_id
@@ -234,6 +235,13 @@ async def create_order(session: AsyncSession, data: SalesOrderCreate) -> SalesOr
     products = await _fetch_products(session, company_id, {line.product_id for line in data.lines})
     lines, total = _build_lines(company_id, data.lines, products)
 
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.SALES_ORDER,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+
     order_no = await _allocate_order_no(session, company_id, date.today().year)
 
     order = SalesOrder(
@@ -245,7 +253,7 @@ async def create_order(session: AsyncSession, data: SalesOrderCreate) -> SalesOr
         total=total,
         snapshot_customer_code=customer.code,
         snapshot_customer_name=customer.name,
-        custom_data=data.custom_data,
+        custom_data=normalized_custom_data,
     )
     order.lines = lines
     session.add(order)
@@ -337,7 +345,13 @@ async def update_order(
         order.lines = lines
         order.total = total
     if data.custom_data is not None:
-        order.custom_data = data.custom_data
+        order.custom_data = await validate_and_normalize_custom_data(
+            session,
+            entity_type=CustomFieldEntityType.SALES_ORDER,
+            raw_custom_data=data.custom_data,
+            is_create=False,
+            existing_custom_data=order.custom_data,
+        )
 
     await _commit_or_conflict(session, entity="SalesOrder")
     return await load_order_unchecked(session, order.id)

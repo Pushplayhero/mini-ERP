@@ -217,6 +217,29 @@ async def _ensure_customer_and_product(
     return str(customer["id"]), str(product["id"])
 
 
+async def _ensure_custom_field(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
+    resp = await client.get(
+        f"{API}/custom-fields",
+        params={"entity_type": "sales_order"},
+        headers=headers,
+    )
+    resp.raise_for_status()
+    defs = resp.json()
+    if not any(d["field_key"] == "demo_tag" for d in defs):
+        create_resp = await client.post(
+            f"{API}/custom-fields",
+            json={
+                "entity_type": "sales_order",
+                "field_key": "demo_tag",
+                "label": "Demo Tag",
+                "field_type": "TEXT",
+                "is_required": False,
+            },
+            headers=headers,
+        )
+        create_resp.raise_for_status()
+
+
 async def _find_order(client: httpx.AsyncClient, headers: dict[str, str]) -> dict[str, Any] | None:
     orders_resp = await client.get(f"{API}/sales-orders", headers=headers)
     orders_resp.raise_for_status()
@@ -371,6 +394,7 @@ async def run_demo(client: httpx.AsyncClient | None = None) -> None:
 
         await _ensure_period(client, headers)
         await _ensure_chart(client, headers)
+        await _ensure_custom_field(client, headers)
         customer_id, product_id = await _ensure_customer_and_product(client, headers)
 
         existing_order = await _find_order(client, headers)

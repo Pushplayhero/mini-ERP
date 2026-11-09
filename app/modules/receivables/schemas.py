@@ -41,6 +41,7 @@ class InvoiceCreate(BaseModel):
     # customer.payment_terms_days` respectively (ADR-008 Decision 1).
     invoice_date: date | None = None
     due_date: date | None = None
+    custom_data: dict[str, Any] = Field(default_factory=dict)
 
 
 class InvoiceRead(BaseModel):
@@ -97,6 +98,7 @@ class PaymentCreate(BaseModel):
     # `service.allocate_payment` core as the later /allocations endpoint;
     # inherits this payment's `external_ref` as its own request_ref.
     allocations: list[PaymentAllocationIn] = Field(default_factory=list)
+    custom_data: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("amount")
     @classmethod

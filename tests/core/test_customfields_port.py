@@ -53,14 +53,14 @@ def test_custom_field_entity_type_enums() -> None:
         "payment",
     }
     assert {e.value for e in CustomFieldEntityType} == expected_entities
-    assert CustomFieldEntityType.CUSTOMER == "customer"
-    assert CustomFieldEntityType.PRODUCT == "product"
-    assert CustomFieldEntityType.ACCOUNT == "account"
-    assert CustomFieldEntityType.ACCOUNTING_PERIOD == "accounting_period"
-    assert CustomFieldEntityType.JOURNAL_ENTRY == "journal_entry"
-    assert CustomFieldEntityType.SALES_ORDER == "sales_order"
-    assert CustomFieldEntityType.INVOICE == "invoice"
-    assert CustomFieldEntityType.PAYMENT == "payment"
+    assert CustomFieldEntityType.CUSTOMER.value == "customer"
+    assert CustomFieldEntityType.PRODUCT.value == "product"
+    assert CustomFieldEntityType.ACCOUNT.value == "account"
+    assert CustomFieldEntityType.ACCOUNTING_PERIOD.value == "accounting_period"
+    assert CustomFieldEntityType.JOURNAL_ENTRY.value == "journal_entry"
+    assert CustomFieldEntityType.SALES_ORDER.value == "sales_order"
+    assert CustomFieldEntityType.INVOICE.value == "invoice"
+    assert CustomFieldEntityType.PAYMENT.value == "payment"
 
 
 def test_field_key_pattern_and_port_alias() -> None:
