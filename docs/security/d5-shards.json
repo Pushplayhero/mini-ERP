@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 220,
+  "expected_total_files": 223,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 220,
+      "expected_total_files": 223,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -41,7 +41,7 @@
       ],
       "units": {
         "u01_identity": {
-          "expected_file_count": 47,
+          "expected_file_count": 48,
           "paths": [
             "app/platform",
             "app/core/authorization.py",
@@ -167,7 +167,7 @@
           ]
         },
         "u11_operations_e2e": {
-          "expected_file_count": 17,
+          "expected_file_count": 19,
           "paths": [
             "app/cli/__init__.py",
             "app/cli/demo_o2c.py",
@@ -176,6 +176,7 @@
             "app/cli/manage_companies.py",
             "app/cli/manage_plugins.py",
             "app/cli/manage_custom_fields.py",
+            "app/cli/manage_workflows.py",
             "app/cli/replay_outbox.py",
             "tests/cli",
             "tests/e2e"
@@ -226,7 +227,7 @@
   "shards": [
     {
       "id": "a_identity_runtime",
-      "expected_file_count": 65,
+      "expected_file_count": 66,
       "max_cost_usd": 11.75,
       "paths": [
         "app/__init__.py",
@@ -276,7 +277,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 51,
+      "expected_file_count": 53,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -287,6 +288,7 @@
         "app/cli/manage_companies.py",
         "app/cli/manage_plugins.py",
         "app/cli/manage_custom_fields.py",
+        "app/cli/manage_workflows.py",
         "app/cli/seed_demo.py",
         "tests/masterdata",
         "tests/cli",

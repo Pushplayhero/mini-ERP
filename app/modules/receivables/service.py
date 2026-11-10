@@ -56,6 +56,11 @@ from app.core.authorization import require_permission
 from app.core.customfields import CustomFieldEntityType, validate_and_normalize_custom_data
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.tenancy import require_current_company_id
+from app.core.workflow import (
+    WorkflowEntityType,
+    WorkflowTransition,
+    verify_workflow_approval,
+)
 from app.modules.receivables.events import (
     RECEIVABLES_INVOICE_ISSUED_EVENT_TYPE,
     RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE,
@@ -369,6 +374,14 @@ async def void_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
             "un-allocation is deferred to Phase 2)"
         )
 
+    await verify_workflow_approval(
+        session,
+        entity_type=WorkflowEntityType.INVOICE,
+        entity_id=invoice.id,
+        transition=WorkflowTransition.VOID,
+        amount=invoice.total,
+    )
+
     company_id = require_current_company_id()
     invoice.status = InvoiceStatus.VOIDED
     invoice.voided_at = datetime.now(timezone.utc)  # noqa: UP017 — see sales.service's comment
@@ -526,6 +539,14 @@ async def void_payment(session: AsyncSession, payment_id: uuid.UUID) -> Payment:
             "cannot void a payment with active allocations (ADR-008 Decision 4 — "
             "un-allocation is deferred to Phase 2)"
         )
+
+    await verify_workflow_approval(
+        session,
+        entity_type=WorkflowEntityType.PAYMENT,
+        entity_id=payment.id,
+        transition=WorkflowTransition.VOID,
+        amount=payment.amount,
+    )
 
     company_id = require_current_company_id()
     payment.status = PaymentStatus.VOIDED

@@ -346,7 +346,7 @@ forbidden_modules = [
    - Create `app/platform/workflow/{models,schemas,service,router}.py`.
    - Wire router, approval gate, and target resolver in `app/main.py`.
    - Unit and router tests for definition CRUD, step threshold matching, SoD enforcement, and approval lifecycle (`tests/platform/test_workflow_service.py`, `tests/platform/test_workflow_router.py`).
-3. [ ] **Slice C — Business module gate integration, target resolvers, and CLI tooling:**
+3. [x] **Slice C — Business module gate integration, target resolvers, and CLI tooling:**
    - Wire `verify_workflow_approval` into `sales.confirm_order`, `sales.cancel_order`, `receivables.void_invoice`, `receivables.void_payment`, and `ledger.reverse_journal_entry`.
    - Implement `resolve_workflow_target` for the 5 entity types.
    - Create CLI `app/cli/manage_workflows.py` (`WORKFLOW_ADMIN_ACTOR`, list, submit, approve, reject).

@@ -56,6 +56,11 @@ from app.core.customfields import CustomFieldEntityType, validate_and_normalize_
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.hooks import HookContext
 from app.core.tenancy import require_current_company_id
+from app.core.workflow import (
+    WorkflowEntityType,
+    WorkflowTransition,
+    verify_workflow_approval,
+)
 from app.modules.sales.events import (
     SALES_GOODS_SHIPPED_EVENT_TYPE,
     SALES_ORDER_CONFIRMED_EVENT_TYPE,
@@ -427,6 +432,14 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
     )
     await hooks.run(SALES_ORDER_VALIDATE_CONFIRM, session, context)
 
+    await verify_workflow_approval(
+        session,
+        entity_type=WorkflowEntityType.SALES_ORDER,
+        entity_id=order.id,
+        transition=WorkflowTransition.CONFIRM,
+        amount=order.total,
+    )
+
     order.status = SalesOrderStatus.CONFIRMED
     # `timezone.utc`, not the `datetime.UTC` alias ruff's UP017 would prefer
     # for this project's declared py312 target: this codebase's own
@@ -525,6 +538,14 @@ async def cancel_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrder
             f"SalesOrder {order_id} has already shipped and cannot be cancelled "
             "(ADR-007 Decision 5 — Phase 2+ returns/RMA is the undo mechanism, not cancel)"
         )
+
+    await verify_workflow_approval(
+        session,
+        entity_type=WorkflowEntityType.SALES_ORDER,
+        entity_id=order.id,
+        transition=WorkflowTransition.CANCEL,
+        amount=order.total,
+    )
 
     order.status = SalesOrderStatus.CANCELLED
     order.cancelled_at = datetime.now(timezone.utc)  # noqa: UP017 — see confirm_order's comment

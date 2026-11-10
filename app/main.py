@@ -49,7 +49,7 @@ from app.core.exceptions import (
 from app.core.plugins import set_plugin_runtime_gate
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
-from app.core.workflow import set_workflow_approval_gate
+from app.core.workflow import set_workflow_approval_gate, set_workflow_target_resolver
 from app.modules.inventory import service as inventory_service
 from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
@@ -370,3 +370,4 @@ set_plugin_runtime_gate(plugins_service.execute_with_plugin_gate_unchecked)
 plugins_loader.bootstrap_plugins(BUILTIN_PLUGIN_MANIFESTS)
 set_custom_data_validator(customfields_service.validate_and_normalize_custom_data_unchecked)
 set_workflow_approval_gate(workflow_service.verify_workflow_approval_unchecked)
+set_workflow_target_resolver(workflow_service.resolve_workflow_target_unchecked)

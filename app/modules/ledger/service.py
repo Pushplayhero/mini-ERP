@@ -44,6 +44,11 @@ from app.core.exceptions import (
     ReversalNotAllowedError,
 )
 from app.core.tenancy import require_current_company_id
+from app.core.workflow import (
+    WorkflowEntityType,
+    WorkflowTransition,
+    verify_workflow_approval,
+)
 from app.modules.ledger.models import (
     AccountingPeriod,
     JournalEntry,
@@ -552,6 +557,15 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
     # (source_type-conditional) check.
     await _reject_control_account_lines(
         session, company_id, {line.account_id for line in original.lines}
+    )
+
+    total_debit = sum((line.debit for line in original.lines), Decimal("0"))
+    await verify_workflow_approval(
+        session,
+        entity_type=WorkflowEntityType.JOURNAL_ENTRY,
+        entity_id=original.id,
+        transition=WorkflowTransition.REVERSE,
+        amount=total_debit,
     )
 
     reversal_date = date.today()

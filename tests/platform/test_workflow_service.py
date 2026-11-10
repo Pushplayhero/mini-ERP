@@ -54,6 +54,7 @@ from app.core.workflow import (
     WorkflowEntityType,
     WorkflowInstanceStatus,
     WorkflowTransition,
+    get_workflow_target_resolver,
     set_workflow_target_resolver,
 )
 from app.platform.workflow import service as wf_service
@@ -70,6 +71,7 @@ from tests.platform.permissions._helpers import create_company
 @pytest.fixture
 def target_resolver_mock() -> Any:
     """Mock target resolver returning a configured amount."""
+    orig_resolver = get_workflow_target_resolver()
     mock_store: dict[uuid.UUID, Decimal] = {}
 
     async def _mock_resolver(
@@ -83,7 +85,7 @@ def target_resolver_mock() -> Any:
 
     set_workflow_target_resolver(_mock_resolver)
     yield mock_store
-    set_workflow_target_resolver(None)
+    set_workflow_target_resolver(orig_resolver)
 
 
 @pytest.fixture

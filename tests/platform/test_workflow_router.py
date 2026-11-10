@@ -30,7 +30,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.workflow import set_workflow_target_resolver
+from app.core.workflow import get_workflow_target_resolver, set_workflow_target_resolver
 from tests._auth_helpers import setup_company_with_admin
 from tests.platform.permissions._helpers import (
     create_company,
@@ -41,6 +41,8 @@ from tests.platform.permissions._helpers import (
 
 @pytest.fixture
 def mock_resolver() -> Generator[None, None, None]:
+    orig_resolver = get_workflow_target_resolver()
+
     async def _resolver(
         session: AsyncSession,
         *,
@@ -52,7 +54,7 @@ def mock_resolver() -> Generator[None, None, None]:
 
     set_workflow_target_resolver(_resolver)
     yield
-    set_workflow_target_resolver(None)
+    set_workflow_target_resolver(orig_resolver)
 
 
 @pytest.mark.asyncio
