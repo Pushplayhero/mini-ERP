@@ -49,6 +49,7 @@ from app.core.exceptions import (
 from app.core.plugins import set_plugin_runtime_gate
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
+from app.core.workflow import set_workflow_approval_gate
 from app.modules.inventory import service as inventory_service
 from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
@@ -74,6 +75,8 @@ from app.platform.permissions.router import router as permissions_router
 from app.platform.plugins import loader as plugins_loader
 from app.platform.plugins import service as plugins_service
 from app.platform.plugins.router import router as plugins_router
+from app.platform.workflow import service as workflow_service
+from app.platform.workflow.router import router as workflow_router
 from app.plugins import credit_limit
 
 settings = get_settings()
@@ -266,6 +269,7 @@ app.include_router(receivables_router, prefix="/api/v1")
 app.include_router(permissions_router)
 app.include_router(plugins_router, prefix="/api/v1")
 app.include_router(customfields_router, prefix="/api/v1")
+app.include_router(workflow_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -365,3 +369,4 @@ BUILTIN_PLUGIN_MANIFESTS = (credit_limit.PLUGIN_MANIFEST,)
 set_plugin_runtime_gate(plugins_service.execute_with_plugin_gate_unchecked)
 plugins_loader.bootstrap_plugins(BUILTIN_PLUGIN_MANIFESTS)
 set_custom_data_validator(customfields_service.validate_and_normalize_custom_data_unchecked)
+set_workflow_approval_gate(workflow_service.verify_workflow_approval_unchecked)

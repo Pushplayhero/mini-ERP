@@ -342,7 +342,7 @@ forbidden_modules = [
    - Add Alembic migration `0013_platform_workflow.py` (4 tables, DDL constraints, partial unique index, 3 permissions granted to `admin`).
    - Add Contract 13 to `pyproject.toml` and update protected modules.
    - Unit tests for core port and migration upgrade/downgrade (`tests/core/test_workflow_port.py`, `tests/test_migrations.py`).
-2. [ ] **Slice B — `platform.workflow` models, schemas, service, and administrative API:**
+2. [x] **Slice B — `platform.workflow` models, schemas, service, and administrative API:**
    - Create `app/platform/workflow/{models,schemas,service,router}.py`.
    - Wire router, approval gate, and target resolver in `app/main.py`.
    - Unit and router tests for definition CRUD, step threshold matching, SoD enforcement, and approval lifecycle (`tests/platform/test_workflow_service.py`, `tests/platform/test_workflow_router.py`).

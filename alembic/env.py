@@ -36,6 +36,7 @@ from app.modules.ledger import models as ledger_models  # noqa: E402, F401
 from app.modules.masterdata import models as masterdata_models  # noqa: E402, F401
 from app.platform.customfields import models as customfields_models  # noqa: E402, F401
 from app.platform.plugins import models as plugins_models  # noqa: E402, F401
+from app.platform.workflow import models as workflow_models  # noqa: E402, F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
