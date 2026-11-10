@@ -9,7 +9,7 @@ English | [繁體中文](README.zh-TW.md)
 > hours, and actually trust with their data. Open-source, API-first,
 > plugin-extensible ERP kernel.
 
-**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, & `platform.customfields`) complete.** Five business
+**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, & `platform.workflow` Slices A–C) complete.** Five business
 modules — masterdata, ledger, sales, inventory + shipping, receivables —
 implement a full order-to-cash (O2C) line on top of a real double-entry
 posting engine, each backed by an [architecture decision
@@ -23,7 +23,7 @@ phase implements.
 
 ## Non-Goals
 
-Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), workflow/approval engine, custom fields on line/fact-level tables (`platform.customfields` governs the `custom_data JSONB` column on the 8 primary tenant-scoped business entities — customers, products, accounts, orders, invoices, payments, journal entries, and accounting periods — via `custom_field_definitions`, `/api/v1/custom-fields`, and `app/cli/manage_custom_fields.py` per ADR-011, but not on order lines, journal lines, or stock moves, and there is no admin frontend UI), and any frontend
+Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), arbitrary BPMN workflow scripting or visual workflow engines (platform.workflow provides deterministic, tenant-scoped amount-threshold approval gates with strict Separation of Duties for critical business transitions per ADR-012, not arbitrary BPMN script orchestration or external human-task forms), custom fields on line/fact-level tables (`platform.customfields` governs the `custom_data JSONB` column on the 8 primary tenant-scoped business entities — customers, products, accounts, orders, invoices, payments, journal entries, and accounting periods — via `custom_field_definitions`, `/api/v1/custom-fields`, and `app/cli/manage_custom_fields.py` per ADR-011, but not on order lines, journal lines, or stock moves, and there is no admin frontend UI), and any frontend
 (this is an API-only kernel — `/docs` is the interactive client for now).
 Taiwan-specific tax/e-invoice integration is Phase 4.
 
@@ -388,6 +388,7 @@ substitute — follow the links for the actual reasoning.
 | `platform.permissions` — identity, RBAC, and the authorization port | [ADR-009](docs/adr/ADR-009-platform-permissions.md) |
 | `platform.plugins` — plugin loader, tenant enablement governance, and public-surface isolation | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
 | `platform.customfields` — tenant-governed custom field engine, strong type normalization, and public port isolation | [ADR-011](docs/adr/ADR-011-platform-customfields.md) |
+| `platform.workflow` — state machines, multi-step approvals, SoD, and transition gating | [ADR-012](docs/adr/ADR-012-platform-workflow.md) |
 
 A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
@@ -487,12 +488,27 @@ unknown keys fail closed (`422`), `DECIMAL` fields are Banker's Rounded
 (`ROUND_HALF_EVEN`) to `NUMERIC(20, 6)`, and automated rule-driven journal
 postings bypass manual-entry custom-field requirements.
 
+**Workflows and approvals.** Critical business transitions (`sales_order_confirm`,
+`sales_order_cancel`, `invoice_void`, `payment_void`, and `journal_entry_reverse`)
+are guarded by tenant-scoped workflow definitions (`app/platform/workflow/`) via
+the lightweight core port (`app/core/workflow.py`, ADR-012). Approval definitions
+configure sequential steps with amount-threshold ranges (`min_amount`..`max_amount`),
+specific required permissions, and strict Separation of Duties (`allow_self_approval=False`
+by default — requesters cannot approve their own requests). A server-side authoritative
+target resolver calculates exact financial impact using SQLAlchemy Core queries scoped
+strictly to `company_id`, rejecting client-supplied spoofed amounts. Business
+transitions execute the approval check inside the caller's active database
+transaction (`verify_workflow_approval`), locking the approved instance
+(`SELECT ... FOR UPDATE`), asserting matched target and threshold state, and marking
+it `consumed` atomically to prevent double-spending or replay attacks. Admin operations
+are exposed via `/api/v1/workflows` and `app/cli/manage_workflows.py`.
+
 ## Project layout
 
 ```
 app/
 ├── core/            # settings, async DB session mgmt, tenancy context/filter,
-│                     # event bus, hook registry, customfields/plugins/auth ports, exceptions
+│                     # event bus, hook registry, workflow/customfields/plugins/auth ports, exceptions
 ├── modules/
 │   ├── masterdata/   # companies, customers, products, UoM, accounts, currencies
 │   ├── ledger/       # journal entries, accounting periods, trial balance, posting engine
@@ -502,9 +518,10 @@ app/
 ├── platform/
 │   ├── permissions/  # ADR-009 RBAC models, auth/session service, /auth router
 │   ├── plugins/      # ADR-010 topological loader, company_plugins service, /api/v1/plugins router
-│   └── customfields/ # ADR-011 custom_field_definitions service, runtime validator, /api/v1/custom-fields router
+│   ├── customfields/ # ADR-011 custom_field_definitions service, runtime validator, /api/v1/custom-fields router
+│   └── workflow/     # ADR-012 workflow definitions/instances service, runtime approval gate, /api/v1/workflows router
 ├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
 └── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/

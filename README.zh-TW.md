@@ -8,7 +8,7 @@
 > 取代購買顧問工時來客製、而且真正能信任自己資料的鼎新。開源、
 > API-first、可用 plugin 擴充的 ERP 核心。
 
-**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins` 與 `platform.customfields`）已完成。** 五個業務模組
+**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields` 與 `platform.workflow` Slices A–C）已完成。** 五個業務模組
 ——masterdata、ledger、sales、inventory + shipping、receivables——
 在一個真正的複式簿記過帳引擎（posting engine）之上，實作了完整的
 order-to-cash（O2C，訂單到收款）流程；每一個模組都有對應的
@@ -21,7 +21,7 @@ kernel 藍圖見 `docs/mini-erp-architecture.md`。
 
 ## Non-Goals（刻意不做的事）
 
-目前核心的範疇外：不受信任插件沙箱化（plugin 為管理者安裝的受信任 in-process 程式碼，master-plan §10.3 / ADR-010）、workflow/審批引擎、明細/事實表層級的自訂欄位
+目前核心的範疇外：不受信任插件沙箱化（plugin 為管理者安裝的受信任 in-process 程式碼，master-plan §10.3 / ADR-010）、任意 BPMN 流程圖腳本或外部表單引擎（`platform.workflow` 依據 ADR-012 提供確定性、租戶隔離、基於金額門檻與嚴格職能分工 SoD 的關鍵業務交易審批閘門，而非任意 BPMN 流程腳本或視覺化表單設計器）、明細/事實表層級的自訂欄位
 （`platform.customfields` 已透過中央欄位定義表 `custom_field_definitions`、`/api/v1/custom-fields` 與 `app/cli/manage_custom_fields.py` 治理 8 大主要租戶業務實體——客戶、商品、科目、訂單、發票、付款、傳票、會計期間——的 `custom_data JSONB` 欄位，見 ADR-011；但訂單明細、傳票明細、庫存異動等明細表尚未開放，也沒有前端管理 UI）、以及任何前端（這是一個純 API 的 kernel
 ——現階段 `/docs` 就是互動式的 client）。台灣特有的稅務/電子發票整合是
 Phase 4 的事。
@@ -345,6 +345,7 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 | `platform.permissions` ——身分驗證、RBAC 與授權埠 | [ADR-009](docs/adr/ADR-009-platform-permissions.md) |
 | `platform.plugins` ——插件載入器、租戶啟用治理與公開介面隔離 | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
 | `platform.customfields` ——租戶自訂欄位治理引擎、強型別正規化與公開埠隔離 | [ADR-011](docs/adr/ADR-011-platform-customfields.md) |
+| `platform.workflow` ——狀態機、多階審批、職能分工（SoD）與業務交易把關 | [ADR-012](docs/adr/ADR-012-platform-workflow.md) |
 
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
@@ -435,12 +436,23 @@ TOCTOU 競爭條件；業務模組在建立與更新時僅透過輕量核心埠�
 拒絕（`422`），`DECIMAL` 欄位強制以銀行家捨入法（`ROUND_HALF_EVEN`）正規化至
 `NUMERIC(20, 6)`，且系統事件驅動的自動過帳分錄不受手動傳票自訂必填欄位阻擋。
 
+**審批工作流（Workflows and approvals）。** 關鍵業務交易狀態轉換（`sales_order_confirm`、
+`sales_order_cancel`、`invoice_void`、`payment_void` 及 `journal_entry_reverse`）
+由租戶層級的工作流定義（`app/platform/workflow/`）透過輕量核心埠（`app/core/workflow.py`，ADR-012）
+把關。審批定義支援依金額門檻區間（`min_amount`..`max_amount`）進行多階段路由、指派特定審批權限，
+並落實嚴格的職能分工原則（Separation of Duties，預設 `allow_self_approval=False`，申請者不得核准自己的申請）。
+系統採用權威端點解析器（Server-side authoritative target resolver），以嚴格限定於 `company_id`
+的 SQLAlchemy Core 表格即時重新鎖定並計算實際財務金額，拒絕客戶端偽造的金額。業務交易在呼叫者的 active
+資料庫交易內執行審批驗證（`verify_workflow_approval`），悲觀鎖定已核准實例（`SELECT ... FOR UPDATE`），
+比對目標實體與門檻狀態無誤後原子性標記為 `consumed`，杜絕重複使用（double-spending）與重放攻擊（anti-replay）。
+管理端點由 `/api/v1/workflows` 與 `app/cli/manage_workflows.py` 提供。
+
 ## 專案目錄結構
 
 ```
 app/
 ├── core/            # 設定、async DB session 管理、租戶 context/過濾器、
-│                     # event bus、hook registry、customfields/plugins/auth 公開埠、例外
+│                     # event bus、hook registry、workflow/customfields/plugins/auth 公開埠、例外
 ├── modules/
 │   ├── masterdata/   # 公司、客戶、商品、UoM、科目、幣別
 │   ├── ledger/       # 傳票、會計期間、試算表、過帳引擎
@@ -450,9 +462,10 @@ app/
 ├── platform/
 │   ├── permissions/  # ADR-009 RBAC 模型、認證/session 服務、/auth router
 │   ├── plugins/      # ADR-010 拓撲載入器、company_plugins 服務、/api/v1/plugins router
-│   └── customfields/ # ADR-011 custom_field_definitions 服務、執行期驗證器、/api/v1/custom-fields router
+│   ├── customfields/ # ADR-011 custom_field_definitions 服務、執行期驗證器、/api/v1/custom-fields router
+│   └── workflow/     # ADR-012 workflow 定義/實例服務、執行期審批閘門、/api/v1/workflows router
 ├── plugins/          # credit_limit.py ——內建客戶信用額度把關 manifest
-├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
 └── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
 docs/
