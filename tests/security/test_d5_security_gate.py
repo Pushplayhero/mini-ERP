@@ -1420,7 +1420,7 @@ def test_micro_plan_unit_is_offline_and_deterministic(monkeypatch: pytest.Monkey
     preview = gate.plan_unit(repo, "u03_events_hooks", profile="micro-v2")
     assert preview["profile"] == "micro-v2"
     assert preview["unit"] == "u03_events_hooks"
-    assert preview["file_count"] == 13
+    assert preview["file_count"] == 15
     assert preview["capacity"] == 3
     assert preview["worker_slots"] == 2
     assert preview["output_dir"] == "<external-results>/<sha>/u03_events_hooks"

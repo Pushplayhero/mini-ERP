@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import socket
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -23,9 +24,21 @@ async def test_manage_integrations_webhooks_cli(
 ) -> None:
     await create_company(db_session, "CLI_INT_CO")
 
+    real_getaddrinfo = socket.getaddrinfo
     fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
-    with patch("socket.getaddrinfo", return_value=fake_addrinfo):
-        # 1. webhooks add
+
+    def _scoped_getaddrinfo(
+        host: bytes | str | None,
+        port: bytes | str | int | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if host == "api.clihook.com":
+            return fake_addrinfo
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    # 1. webhooks add (DNS mock scoped to target host so DB hosts like localhost still resolve)
+    with patch("socket.getaddrinfo", side_effect=_scoped_getaddrinfo):
         rc = await manage_integrations._amain(
             [
                 "webhooks",
@@ -38,30 +51,33 @@ async def test_manage_integrations_webhooks_cli(
                 "https://api.clihook.com/callback",
                 "--events",
                 "sales.order_confirmed",
-            ]
+            ],
+            dispose=False,
         )
-        assert rc == 0
-        captured = capsys.readouterr().out
-        assert "Endpoint created successfully:" in captured
-        assert "Signing Secret (SAVE NOW):" in captured
+    assert rc == 0
+    captured = capsys.readouterr().out
+    assert "Endpoint created successfully:" in captured
+    assert "Signing Secret (SAVE NOW):" in captured
 
-        # 2. webhooks list
-        rc_list = await manage_integrations._amain(
-            ["webhooks", "list", "--company-code", "CLI_INT_CO"]
-        )
-        assert rc_list == 0
-        captured_list = capsys.readouterr().out
-        assert "CLI Hook" in captured_list
-        assert "https://api.clihook.com/callback" in captured_list
+    # 2. webhooks list
+    rc_list = await manage_integrations._amain(
+        ["webhooks", "list", "--company-code", "CLI_INT_CO"],
+        dispose=False,
+    )
+    assert rc_list == 0
+    captured_list = capsys.readouterr().out
+    assert "CLI Hook" in captured_list
+    assert "https://api.clihook.com/callback" in captured_list
 
-        # 3. webhooks delete (soft deactivation)
-        ep_id_line = next(line for line in captured_list.splitlines() if "ID:" in line)
-        ep_id_str = ep_id_line.split("|")[0].replace("ID:", "").strip()
-        rc_del = await manage_integrations._amain(
-            ["webhooks", "delete", "--company-code", "CLI_INT_CO", "--endpoint-id", ep_id_str]
-        )
-        assert rc_del == 0
-        assert f"Deactivated endpoint: {ep_id_str}" in capsys.readouterr().out
+    # 3. webhooks delete (soft deactivation)
+    ep_id_line = next(line for line in captured_list.splitlines() if "ID:" in line)
+    ep_id_str = ep_id_line.split("|")[0].replace("ID:", "").strip()
+    rc_del = await manage_integrations._amain(
+        ["webhooks", "delete", "--company-code", "CLI_INT_CO", "--endpoint-id", ep_id_str],
+        dispose=False,
+    )
+    assert rc_del == 0
+    assert f"Deactivated endpoint: {ep_id_str}" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -90,7 +106,8 @@ async def test_manage_integrations_batch_cli(
             "customer",
             "--file",
             str(csv_file),
-        ]
+        ],
+        dispose=False,
     )
     assert rc_imp == 0
     cap_imp = capsys.readouterr().out
@@ -109,7 +126,8 @@ async def test_manage_integrations_batch_cli(
             "customer",
             "--output",
             str(out_file),
-        ]
+        ],
+        dispose=False,
     )
     assert rc_exp == 0
     cap_exp = capsys.readouterr().out

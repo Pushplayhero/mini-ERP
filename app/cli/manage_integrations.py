@@ -256,7 +256,7 @@ async def _handle_batch(session: AsyncSession, args: argparse.Namespace) -> int:
     return 1
 
 
-async def _amain(argv: list[str] | None = None) -> int:
+async def _amain(argv: list[str] | None = None, *, dispose: bool = True) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -278,7 +278,8 @@ async def _amain(argv: list[str] | None = None) -> int:
 
         return 0
     finally:
-        await dispose_engine()
+        if dispose:
+            await dispose_engine()
 
 
 def main() -> None:
