@@ -94,6 +94,99 @@ def _normalize_entity_type(entity_type: WorkflowEntityType | str) -> str:
         raise DomainValidationError(f"Invalid workflow entity_type: {entity_type!r}") from exc
 
 
+async def _load_definition_for_share(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    transition: str,
+) -> WorkflowDefinition | None:
+    """Load a workflow definition for `(entity_type, transition)` under `FOR SHARE`."""
+    stmt = (
+        select(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.entity_type == entity_type,
+            WorkflowDefinition.transition == transition,
+        )
+        .options(selectinload(WorkflowDefinition.steps))
+        .with_for_update(read=True, of=WorkflowDefinition)
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def _cancel_active_instances_where(
+    session: AsyncSession,
+    *predicates: sa.ColumnElement[bool],
+    actor_id: uuid.UUID,
+) -> None:
+    """Cancel all PENDING or APPROVED instances matching `predicates`."""
+    stmt = (
+        select(WorkflowInstance)
+        .where(
+            *predicates,
+            WorkflowInstance.status.in_(
+                [WorkflowInstanceStatus.PENDING.value, WorkflowInstanceStatus.APPROVED.value]
+            ),
+        )
+        .with_for_update()
+    )
+    active_instances = (await session.execute(stmt)).scalars().all()
+    for inst in active_instances:
+        inst.status = WorkflowInstanceStatus.CANCELLED.value
+        inst.current_step_order = None
+        inst.updated_by = actor_id
+    if active_instances:
+        await session.flush()
+
+
+def _verify_approved_instance_matches_policy(
+    instance: WorkflowInstance,
+    definition: WorkflowDefinition,
+    matching_steps: list[WorkflowStep],
+    *,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    transition: str,
+    quantized_amount: Decimal,
+) -> None:
+    """Enforce amount, step snapshot structural parity, and current SoD policy."""
+    if instance.target_amount != quantized_amount:
+        raise WorkflowApprovalRequiredError(
+            f"Workflow approval amount mismatch for {entity_type} {entity_id} "
+            f"transition {transition!r}: approved for {instance.target_amount}, "
+            f"but current document total is {quantized_amount}. "
+            "Document must be re-submitted for approval."
+        )
+    if not instance.steps_snapshot:
+        raise WorkflowApprovalRequiredError(
+            f"Workflow approval step mismatch for {entity_type} {entity_id} "
+            f"transition {transition!r}: instance was auto-approved with zero steps, "
+            "but current workflow definition requires approval steps. "
+            "Document must be re-submitted for approval."
+        )
+
+    snapshot_signature = [
+        (int(str(s["step_order"])), str(s["required_permission"]))
+        for s in sorted(instance.steps_snapshot, key=lambda x: int(str(x["step_order"])))
+    ]
+    current_signature = [(step.step_order, step.required_permission) for step in matching_steps]
+    if snapshot_signature != current_signature:
+        raise WorkflowApprovalRequiredError(
+            f"Workflow approval step mismatch for {entity_type} {entity_id} "
+            f"transition {transition!r}: workflow definition steps or permissions have "
+            "changed since approval. Document must be re-submitted for approval."
+        )
+
+    if not definition.allow_self_approval and any(
+        log.decision == WorkflowDecision.APPROVE.value and log.actor_id == instance.requested_by
+        for log in instance.logs
+    ):
+        raise WorkflowApprovalRequiredError(
+            f"Workflow approval SoD mismatch for {entity_type} {entity_id} "
+            f"transition {transition!r}: self-approval is no longer permitted by the "
+            "current workflow definition. Document must be re-submitted for approval."
+        )
+
+
 def _normalize_transition(transition: WorkflowTransition | str) -> str:
     try:
         return WorkflowTransition(transition).value
@@ -304,6 +397,13 @@ async def update_workflow_definition(
         ]
         row.steps = new_steps
 
+    if not row.is_active:
+        await _cancel_active_instances_where(
+            session,
+            WorkflowInstance.definition_id == row.id,
+            actor_id=actor.user_id,
+        )
+
     row.updated_by = actor.user_id
 
     try:
@@ -339,6 +439,11 @@ async def deactivate_workflow_definition(
 
     row.is_active = False
     row.updated_by = actor.user_id
+    await _cancel_active_instances_where(
+        session,
+        WorkflowInstance.definition_id == row.id,
+        actor_id=actor.user_id,
+    )
 
     try:
         await session.commit()
@@ -440,18 +545,13 @@ async def submit_workflow_instance(
     )
     quantized_amount = parse_and_quantize_amount(authoritative_amount, "target_amount")
 
-    # 2. Find active definition
-    stmt_def = (
-        select(WorkflowDefinition)
-        .where(
-            WorkflowDefinition.entity_type == data.entity_type.value,
-            WorkflowDefinition.transition == data.transition.value,
-            WorkflowDefinition.is_active.is_(True),
-        )
-        .options(selectinload(WorkflowDefinition.steps))
+    # 2. Find active definition under FOR SHARE lock to serialize against definition mutations
+    definition = await _load_definition_for_share(
+        session,
+        entity_type=data.entity_type.value,
+        transition=data.transition.value,
     )
-    definition = (await session.execute(stmt_def)).scalars().first()
-    if definition is None:
+    if definition is None or not definition.is_active:
         raise NotFoundError(
             "WorkflowDefinition",
             f"({data.entity_type.value}, {data.transition.value})",
@@ -568,6 +668,11 @@ async def approve_workflow_instance(
             f"Workflow instance {instance_id} is in status {instance.status!r}; "
             "only PENDING instances can be approved"
         )
+    if not instance.definition.is_active:
+        raise ConflictError(
+            f"Workflow definition {instance.definition_id} is inactive; "
+            "cannot approve instances for a deactivated workflow definition"
+        )
 
     # Find current step in snapshot
     steps = instance.steps_snapshot
@@ -661,6 +766,11 @@ async def reject_workflow_instance(
         raise ConflictError(
             f"Workflow instance {instance_id} is in status {instance.status!r}; "
             "only PENDING instances can be rejected"
+        )
+    if not instance.definition.is_active:
+        raise ConflictError(
+            f"Workflow definition {instance.definition_id} is inactive; "
+            "cannot reject instances for a deactivated workflow definition"
         )
 
     steps = instance.steps_snapshot
@@ -782,24 +892,30 @@ async def verify_workflow_approval_unchecked(
     require_current_company_id()
     actor = require_current_actor()
 
-    # 1. Check for active definition
-    stmt_def = (
-        select(WorkflowDefinition)
-        .where(
-            WorkflowDefinition.entity_type == entity_type,
-            WorkflowDefinition.transition == transition,
-            WorkflowDefinition.is_active.is_(True),
-        )
-        .options(selectinload(WorkflowDefinition.steps))
+    # 1. Check definition under FOR SHARE lock (eliminates READ COMMITTED definition-drift race)
+    definition = await _load_definition_for_share(
+        session,
+        entity_type=entity_type,
+        transition=transition,
     )
-    definition = (await session.execute(stmt_def)).scalars().first()
-    if definition is None:
+    if definition is None or not definition.is_active:
+        if definition is not None:
+            await _cancel_active_instances_where(
+                session,
+                WorkflowInstance.entity_type == entity_type,
+                WorkflowInstance.entity_id == entity_id,
+                WorkflowInstance.transition == transition,
+                actor_id=actor.user_id,
+            )
         return
 
     quantized_amount = parse_and_quantize_amount(amount, "amount")
 
     # 2. Check matching steps
-    matching_steps = [s for s in definition.steps if s.min_amount <= quantized_amount]
+    matching_steps = sorted(
+        (s for s in definition.steps if s.min_amount <= quantized_amount),
+        key=lambda s: s.step_order,
+    )
     if not matching_steps:
         # Amount is below all step thresholds, direct transition allowed.
         # Consume a matching APPROVED instance, or cancel any stale PENDING/mismatched instance.
@@ -829,7 +945,7 @@ async def verify_workflow_approval_unchecked(
             await session.flush()
         return
 
-    # 3. Matching steps exist: must have an APPROVED instance matching quantized_amount
+    # 3. Matching steps exist: must have an APPROVED instance matching quantized_amount & policy
     stmt_inst = (
         select(WorkflowInstance)
         .where(
@@ -838,6 +954,7 @@ async def verify_workflow_approval_unchecked(
             WorkflowInstance.transition == transition,
             WorkflowInstance.status.in_(["PENDING", "APPROVED"]),
         )
+        .options(selectinload(WorkflowInstance.logs))
         .with_for_update()
     )
     instance = (await session.execute(stmt_inst)).scalars().first()
@@ -856,13 +973,15 @@ async def verify_workflow_approval_unchecked(
         )
 
     if instance.status == WorkflowInstanceStatus.APPROVED.value:
-        if instance.target_amount != quantized_amount:
-            raise WorkflowApprovalRequiredError(
-                f"Workflow approval amount mismatch for {entity_type} {entity_id} "
-                f"transition {transition!r}: approved for {instance.target_amount}, "
-                f"but current document total is {quantized_amount}. "
-                "Document must be re-submitted for approval."
-            )
+        _verify_approved_instance_matches_policy(
+            instance,
+            definition,
+            matching_steps,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            transition=transition,
+            quantized_amount=quantized_amount,
+        )
 
         # Atomically consume
         instance.status = WorkflowInstanceStatus.CONSUMED.value
@@ -1018,9 +1137,9 @@ async def resolve_workflow_target_unchecked(  # noqa: PLR0915
                     f"invalid or missing product {line.product_id}"
                 )
             if line.unit_price_is_override:
-                new_total += line.amount
+                new_total += parse_and_quantize_amount(line.amount, "line_amount")
             else:
-                new_total += line.qty * line.list_price
+                new_total += parse_and_quantize_amount(line.qty * line.list_price, "line_amount")
 
         if new_total <= 0:
             raise DomainValidationError(

@@ -66,7 +66,12 @@ from app.modules.sales.events import (
     SALES_ORDER_CONFIRMED_EVENT_TYPE,
 )
 from app.modules.sales.models import SalesOrder, SalesOrderLine, SalesOrderStatus, SalesSequence
-from app.modules.sales.schemas import SalesOrderCreate, SalesOrderLineCreate, SalesOrderUpdate
+from app.modules.sales.schemas import (
+    SalesOrderCreate,
+    SalesOrderLineCreate,
+    SalesOrderUpdate,
+    _round_half_even_6dp,
+)
 
 # One hook point this week (ADR-006 Decision 1): owned here, not in
 # `app.core.hooks`, mirroring how `ledger.posting` (not `app.core.events`)
@@ -173,7 +178,7 @@ def _build_lines(
         # logically identical at runtime.
         unit_price = line_in.unit_price if line_in.unit_price is not None else product.list_price
         uom_id = line_in.uom_id if line_in.uom_id is not None else product.uom_id
-        amount = line_in.qty * unit_price
+        amount = _round_half_even_6dp(line_in.qty * unit_price)
         built.append(
             SalesOrderLine(
                 company_id=company_id,
@@ -189,7 +194,7 @@ def _build_lines(
             )
         )
         total += amount
-    return built, total
+    return built, _round_half_even_6dp(total)
 
 
 # ---------------------------------------------------------------------------
@@ -402,9 +407,11 @@ async def confirm_order(session: AsyncSession, order_id: uuid.UUID) -> SalesOrde
         line.snapshot_product_name = product.name
         if not line.unit_price_is_override:
             line.unit_price = product.list_price
-            line.amount = line.qty * product.list_price
+            line.amount = _round_half_even_6dp(line.qty * product.list_price)
+        else:
+            line.amount = _round_half_even_6dp(line.amount)
         new_total += line.amount
-    order.total = new_total
+    order.total = _round_half_even_6dp(new_total)
 
     # Diff-review fix: the "positive total" half of R2 must be checked
     # *after* repricing, against the just-recomputed `order.total` — not

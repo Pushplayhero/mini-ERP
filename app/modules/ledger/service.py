@@ -469,12 +469,20 @@ async def create_journal_entry(session: AsyncSession, data: JournalEntryCreate) 
     return entry
 
 
-async def load_journal_entry_unchecked(session: AsyncSession, entry_id: uuid.UUID) -> JournalEntry:
-    result = await session.execute(
+async def load_journal_entry_unchecked(
+    session: AsyncSession,
+    entry_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> JournalEntry:
+    stmt = (
         select(JournalEntry)
         .where(JournalEntry.id == entry_id)
         .options(selectinload(JournalEntry.lines))
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     entry = result.scalar_one_or_none()
     if entry is None:
         raise NotFoundError("JournalEntry", entry_id)
@@ -533,7 +541,7 @@ async def _post_reversal(session: AsyncSession, entry_id: uuid.UUID) -> JournalE
     non-event-sourced entries).
     """
     company_id = require_current_company_id()
-    original = await load_journal_entry_unchecked(session, entry_id)
+    original = await load_journal_entry_unchecked(session, entry_id, for_update=True)
 
     if original.reversal_of_id is not None:
         raise ReversalNotAllowedError(

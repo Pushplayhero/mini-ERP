@@ -430,7 +430,7 @@ async def test_workflow_approval_sod_and_rejection(
                     WorkflowDecisionInput(comment="Self approval attempt"),
                 )
 
-        # 3. Manager has sales.order.confirm but lacks accounting.journal.post
+        # 3. Manager has sales.order.confirm but lacks ledger.journal_entry.reverse
         with actor_context(manager_actor):
             # Step 1 succeeds
             step1_res = await wf_service.approve_workflow_instance(

@@ -1,6 +1,6 @@
 # mini-ERP Security Threat Model
 
-Status: Slice D.5 baseline draft; reviewed 2026-08-24. This document is scan context, not a certification.
+Status: Slice D.5 baseline (reconciled through Week 12 Slice D / ADR-012). This document is scan context, not a certification.
 
 ## System and assets
 
@@ -22,12 +22,13 @@ Status: Slice D.5 baseline draft; reviewed 2026-08-24. This document is scan con
 
 ## Security invariants
 
-- SI-001 route classification is exactly `4 Public / 2 Authenticated / 55 RequiresPermission / 0 invalid` (after Slice E moved 5 masterdata write endpoints to CLI, ADR-010 Slice B added 3 plugin governance endpoints, and ADR-011 Slice B added 5 custom-field governance endpoints).
-- SI-002 permission catalog parity is `49 migration (48 active + 1 retained session.manage) / 43 HTTP routes + 5 CLI-only / 48 services`.
+- SI-001 route classification is exactly `4 Public / 2 Authenticated / 66 RequiresPermission / 0 invalid` (after Slice E moved 5 masterdata write endpoints to CLI, ADR-010 Slice B added 3 plugin governance endpoints, ADR-011 Slice B added 5 custom-field governance endpoints, and ADR-012 Slice B added 11 workflow governance endpoints across 72 application `APIRoute`s).
+- SI-002 permission catalog parity is `52 migration (51 active + 1 retained session.manage)` (including `platform.plugin.{read,manage}`, `platform.customfield.{read,manage}`, and `platform.workflow.{read,manage,approve}`).
 - SI-003 Public means bearer authentication is optional; it does not make input or data unrestricted.
 - SI-004 Authenticated lifecycle operations require the current actor and owned current session.
 - SI-005 Cross-company reads and writes fail closed; target-company access is re-authorized on switch.
 - SI-006 Missing actor, session, ownership, entitlement, or permission context never falls back to allow.
+- SI-007 Critical business state transitions (`sales_order.confirm`, `sales_order.cancel`, `invoice.void`, `payment.void`, `journal_entry.reverse`) require a matching, unconsumed `APPROVED` workflow instance when an active workflow definition has matching step thresholds; `submit_workflow_instance` resolves target amounts strictly server-side from locked Core tables scoped to `company_id`, `approve_workflow_instance` enforces active definitions, step RBAC, and Separation of Duties (`allow_self_approval=False`), `submit` and `verify` serialize against definition edits via `FOR SHARE`, deactivating a definition cancels bound active instances, and `verify_workflow_approval_unchecked` validates amount, snapshot step/permission parity, and SoD logs before transitioning instances to `CONSUMED` atomically inside the caller transaction under `SELECT ... FOR UPDATE`.
 
 ## Abuse cases and evidence
 
@@ -37,6 +38,7 @@ Status: Slice D.5 baseline draft; reviewed 2026-08-24. This document is scan con
 - AB-004 caller reaches a high-impact mutation without a permission; control: route/service defense in depth; evidence: authorization and module tests.
 - AB-005 disabled or unauthenticated caller reaches protected data; control: authentication and route markers; evidence: smoke/auth tests.
 - AB-006 repeated public login attempts consume API resources; controls: a 16 KiB request-body cap, a 1,024-character password cap, a process-local per-peer limit of 10 schema-valid attempts per 60 seconds, no more than four concurrent login service/Argon2 executions per process, and Argon2 verification offloaded from the async event loop; evidence: permissions router and service tests.
+- AB-007 requester self-approves, spoofs document amounts, races concurrent approvals, modifies order prices or tightens workflow steps/SoD policy after approval, reactivates a deactivated definition to resurrect stale approvals, or replays a consumed approval instance; controls: SoD enforcement (`403`), server-side `WorkflowTargetResolver` under target row lock, `WorkflowDefinition` `FOR SHARE` / `WorkflowInstance` `SELECT ... FOR UPDATE` and `uq_workflow_instance_active`, active-instance cancellation on deactivation, post-approval `target_amount`, `steps_snapshot` signature, and SoD log verification (`409`), and single-transaction `CONSUMED` transition; evidence: workflow service, business integration, and concurrency/anti-replay tests (`tests/platform/test_workflow_concurrency.py`).
 
 ## Gaps and accepted risks
 

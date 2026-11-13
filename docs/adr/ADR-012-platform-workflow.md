@@ -95,7 +95,7 @@ When a document is submitted for approval with authoritative amount $A$:
 #### 3.2 Actor authority and Separation of Duties (SoD)
 When approving (`POST /api/v1/workflows/instances/{id}/approve`) or rejecting:
 1. The caller must have `platform.workflow.approve` permission.
-2. The caller must also possess the active step's `required_permission` (e.g. `sales.order.confirm` or `accounting.journal.post`).
+2. The caller must also possess the active step's `required_permission` (e.g. `sales.order.confirm` or `ledger.journal_entry.reverse`).
 3. **Separation of Duties:** `requested_by` is strictly `NOT NULL` (stamped from `require_current_actor().user_id` upon submission). If `definition.allow_self_approval` is `False` (the default), and `actor.user_id == instance.requested_by`, approval is rejected with `ActionDeniedError(403)`. A requester cannot approve their own document; multi-step tier separation across distinct roles is governed by each step's `required_permission`.
 
 ---
@@ -351,7 +351,7 @@ forbidden_modules = [
    - Implement `resolve_workflow_target` for the 5 entity types.
    - Create CLI `app/cli/manage_workflows.py` (`WORKFLOW_ADMIN_ACTOR`, list, submit, approve, reject).
    - Cross-module integration tests verifying business transitions fail-closed (409) without approval and succeed once approved (`tests/platform/test_workflow_business_integration.py`, `tests/cli/test_manage_workflows.py`).
-4. [ ] **Slice D — Multi-tenant concurrency tests, anti-replay proof, and documentation closure:**
-   - Concurrency tests: dual-manager approval race serialization (`FOR UPDATE`), duplicate submission rejection (partial unique index), tenant root locking on definition changes, and post-approval price modification rejection.
-   - Anti-replay test verifying `CONSUMED` instances cannot be reused.
-   - Update `threat-model.md`, `README.md`, `README.zh-TW.md`, `SECURITY.md`, `HANDOFF.md`, and D.5 security gate manifest.
+4. [x] **Slice D — Multi-tenant concurrency tests, anti-replay proof, and documentation closure:**
+   - Concurrency tests: dual-manager approval race serialization (`FOR UPDATE`), duplicate submission rejection (partial unique index), tenant root locking on definition changes, and post-approval price modification & zero-step policy-tightening rejection (`tests/platform/test_workflow_concurrency.py`).
+   - Anti-replay test verifying `CONSUMED` instances cannot be reused under concurrent requests.
+   - Update `threat-model.md`, `README.md`, `README.zh-TW.md`, `SECURITY.md`, `HANDOFF.md`, and D.5 security gate manifest (224 tracked files).

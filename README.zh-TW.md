@@ -8,7 +8,7 @@
 > 取代購買顧問工時來客製、而且真正能信任自己資料的鼎新。開源、
 > API-first、可用 plugin 擴充的 ERP 核心。
 
-**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields` 與 `platform.workflow` Slices A–C）已完成。** 五個業務模組
+**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields` 與 `platform.workflow`）已完成。** 五個業務模組
 ——masterdata、ledger、sales、inventory + shipping、receivables——
 在一個真正的複式簿記過帳引擎（posting engine）之上，實作了完整的
 order-to-cash（O2C，訂單到收款）流程；每一個模組都有對應的
@@ -439,7 +439,7 @@ TOCTOU 競爭條件；業務模組在建立與更新時僅透過輕量核心埠�
 **審批工作流（Workflows and approvals）。** 關鍵業務交易狀態轉換（`sales_order_confirm`、
 `sales_order_cancel`、`invoice_void`、`payment_void` 及 `journal_entry_reverse`）
 由租戶層級的工作流定義（`app/platform/workflow/`）透過輕量核心埠（`app/core/workflow.py`，ADR-012）
-把關。審批定義支援依金額門檻區間（`min_amount`..`max_amount`）進行多階段路由、指派特定審批權限，
+把關。審批定義支援依金額門檻下限（`min_amount`）進行多階段路由、指派特定審批權限，
 並落實嚴格的職能分工原則（Separation of Duties，預設 `allow_self_approval=False`，申請者不得核准自己的申請）。
 系統採用權威端點解析器（Server-side authoritative target resolver），以嚴格限定於 `company_id`
 的 SQLAlchemy Core 表格即時重新鎖定並計算實際財務金額，拒絕客戶端偽造的金額。業務交易在呼叫者的 active

@@ -9,7 +9,7 @@ English | [繁體中文](README.zh-TW.md)
 > hours, and actually trust with their data. Open-source, API-first,
 > plugin-extensible ERP kernel.
 
-**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, & `platform.workflow` Slices A–C) complete.** Five business
+**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, & `platform.workflow`) complete.** Five business
 modules — masterdata, ledger, sales, inventory + shipping, receivables —
 implement a full order-to-cash (O2C) line on top of a real double-entry
 posting engine, each backed by an [architecture decision
@@ -492,7 +492,7 @@ postings bypass manual-entry custom-field requirements.
 `sales_order_cancel`, `invoice_void`, `payment_void`, and `journal_entry_reverse`)
 are guarded by tenant-scoped workflow definitions (`app/platform/workflow/`) via
 the lightweight core port (`app/core/workflow.py`, ADR-012). Approval definitions
-configure sequential steps with amount-threshold ranges (`min_amount`..`max_amount`),
+configure sequential steps with minimum amount thresholds (`min_amount`),
 specific required permissions, and strict Separation of Duties (`allow_self_approval=False`
 by default — requesters cannot approve their own requests). A server-side authoritative
 target resolver calculates exact financial impact using SQLAlchemy Core queries scoped

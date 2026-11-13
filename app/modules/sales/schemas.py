@@ -56,6 +56,14 @@ class SalesOrderLineCreate(BaseModel):
     # Omit to have the service fill it from the product's own `uom_id`.
     uom_id: uuid.UUID | None = None
 
+    @field_validator("qty")
+    @classmethod
+    def _round_qty(cls, value: Decimal) -> Decimal:
+        rounded = _round_half_even_6dp(value)
+        if rounded <= 0:
+            raise ValueError("qty must be greater than 0 after rounding to 6 decimal places")
+        return rounded
+
     @field_validator("unit_price")
     @classmethod
     def _round_unit_price(cls, value: Decimal | None) -> Decimal | None:
