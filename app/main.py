@@ -21,12 +21,16 @@ classification. See `docs/adr/ADR-009-platform-permissions.md`.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.routing import Match
 
 from app.core import events
@@ -46,6 +50,7 @@ from app.core.exceptions import (
     NotFoundError,
     TenancyContextError,
 )
+from app.core.integration import BatchEntityType, register_export_provider
 from app.core.plugins import set_plugin_runtime_gate
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
@@ -61,6 +66,7 @@ from app.modules.sales import events as sales_events
 from app.modules.sales.router import router as sales_router
 from app.platform.customfields import service as customfields_service
 from app.platform.customfields.router import router as customfields_router
+from app.platform.integration.router import router as integration_router
 from app.platform.permissions import service as permissions_service
 from app.platform.permissions.context import (
     reset_current_session_id,
@@ -270,6 +276,7 @@ app.include_router(permissions_router)
 app.include_router(plugins_router, prefix="/api/v1")
 app.include_router(customfields_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
+app.include_router(integration_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -371,3 +378,179 @@ plugins_loader.bootstrap_plugins(BUILTIN_PLUGIN_MANIFESTS)
 set_custom_data_validator(customfields_service.validate_and_normalize_custom_data_unchecked)
 set_workflow_approval_gate(workflow_service.verify_workflow_approval_unchecked)
 set_workflow_target_resolver(workflow_service.resolve_workflow_target_unchecked)
+
+
+# ---------------------------------------------------------------------------
+# Batch Export Provider Registrations (ADR-013 / Week 13 Slice C)
+# ---------------------------------------------------------------------------
+
+
+async def _export_customers(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.masterdata.models import Customer
+
+    stmt = select(Customer).where(Customer.company_id == company_id).order_by(Customer.code)
+    customers = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(c.id),
+            "code": c.code,
+            "name": c.name,
+            "credit_limit": str(c.credit_limit),
+            "currency_code": c.currency_code,
+            "payment_terms_days": c.payment_terms_days,
+            "is_active": c.is_active,
+        }
+        for c in customers
+    ]
+
+
+async def _export_products(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.masterdata.models import Product
+
+    stmt = select(Product).where(Product.company_id == company_id).order_by(Product.sku)
+    products = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(p.id),
+            "sku": p.sku,
+            "name": p.name,
+            "uom_id": str(p.uom_id),
+            "list_price": str(p.list_price),
+            "standard_cost": str(p.standard_cost),
+            "is_active": p.is_active,
+        }
+        for p in products
+    ]
+
+
+async def _export_accounts(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.masterdata.models import Account
+
+    stmt = select(Account).where(Account.company_id == company_id).order_by(Account.code)
+    accounts = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(a.id),
+            "code": a.code,
+            "name": a.name,
+            "type": a.type.value if hasattr(a.type, "value") else str(a.type),
+            "is_control": a.is_control,
+            "is_active": a.is_active,
+        }
+        for a in accounts
+    ]
+
+
+async def _export_sales_orders(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.sales.models import SalesOrder
+
+    stmt = (
+        select(SalesOrder).where(SalesOrder.company_id == company_id).order_by(SalesOrder.order_no)
+    )
+    orders = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(o.id),
+            "order_no": o.order_no,
+            "customer_id": str(o.customer_id),
+            "total": str(o.total),
+            "currency_code": o.currency_code,
+            "status": str(o.status.value if hasattr(o.status, "value") else o.status),
+        }
+        for o in orders
+    ]
+
+
+async def _export_invoices(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.receivables.models import Invoice
+
+    stmt = select(Invoice).where(Invoice.company_id == company_id).order_by(Invoice.invoice_no)
+    invoices = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(i.id),
+            "invoice_no": i.invoice_no,
+            "customer_id": str(i.customer_id),
+            "total": str(i.total),
+            "settled_amount": str(i.settled_amount),
+            "status": str(i.status.value if hasattr(i.status, "value") else i.status),
+            "invoice_date": str(i.invoice_date),
+            "due_date": str(i.due_date),
+        }
+        for i in invoices
+    ]
+
+
+async def _export_payments(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.receivables.models import Payment
+
+    stmt = select(Payment).where(Payment.company_id == company_id).order_by(Payment.payment_no)
+    payments = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(p.id),
+            "payment_no": p.payment_no,
+            "customer_id": str(p.customer_id),
+            "amount": str(p.amount),
+            "allocated_amount": str(p.allocated_amount),
+            "status": str(p.status.value if hasattr(p.status, "value") else p.status),
+        }
+        for p in payments
+    ]
+
+
+async def _export_journal_entries(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.ledger.models import JournalEntry
+
+    stmt = (
+        select(JournalEntry)
+        .where(JournalEntry.company_id == company_id)
+        .order_by(JournalEntry.entry_no)
+    )
+    entries = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(e.id),
+            "entry_no": e.entry_no,
+            "entry_date": str(e.entry_date),
+        }
+        for e in entries
+    ]
+
+
+async def _export_stock_summary(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.inventory.models import StockSummary
+
+    stmt = (
+        select(StockSummary)
+        .where(StockSummary.company_id == company_id)
+        .order_by(StockSummary.product_id)
+    )
+    items = (await session.scalars(stmt)).all()
+    return [
+        {
+            "product_id": str(s.product_id),
+            "on_hand": str(s.on_hand),
+        }
+        for s in items
+    ]
+
+
+def register_default_export_providers() -> None:
+    register_export_provider(BatchEntityType.CUSTOMER, _export_customers)
+    register_export_provider(BatchEntityType.PRODUCT, _export_products)
+    register_export_provider(BatchEntityType.ACCOUNT, _export_accounts)
+    register_export_provider(BatchEntityType.SALES_ORDER, _export_sales_orders)
+    register_export_provider(BatchEntityType.INVOICE, _export_invoices)
+    register_export_provider(BatchEntityType.PAYMENT, _export_payments)
+    register_export_provider(BatchEntityType.JOURNAL_ENTRY, _export_journal_entries)
+    register_export_provider(BatchEntityType.STOCK_SUMMARY, _export_stock_summary)
+
+
+register_default_export_providers()

@@ -9,7 +9,7 @@ English | [繁體中文](README.zh-TW.md)
 > hours, and actually trust with their data. Open-source, API-first,
 > plugin-extensible ERP kernel.
 
-**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, & `platform.workflow`) complete.** Five business
+**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, `platform.workflow`, & `platform.integration`) complete.** Five business
 modules — masterdata, ledger, sales, inventory + shipping, receivables —
 implement a full order-to-cash (O2C) line on top of a real double-entry
 posting engine, each backed by an [architecture decision
@@ -389,6 +389,7 @@ substitute — follow the links for the actual reasoning.
 | `platform.plugins` — plugin loader, tenant enablement governance, and public-surface isolation | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
 | `platform.customfields` — tenant-governed custom field engine, strong type normalization, and public port isolation | [ADR-011](docs/adr/ADR-011-platform-customfields.md) |
 | `platform.workflow` — state machines, multi-step approvals, SoD, and transition gating | [ADR-012](docs/adr/ADR-012-platform-workflow.md) |
+| `platform.integration` — webhooks, outbox worker, batch import/export, and SSRF defense | [ADR-013](docs/adr/ADR-013-platform-integration.md) |
 
 A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
@@ -503,6 +504,8 @@ transaction (`verify_workflow_approval`), locking the approved instance
 it `consumed` atomically to prevent double-spending or replay attacks. Admin operations
 are exposed via `/api/v1/workflows` and `app/cli/manage_workflows.py`.
 
+**External integrations & batch exchange.** Outbound webhook subscriptions (`app/platform/integration/`) deliver committed `outbox` events through a standalone PostgreSQL `SKIP LOCKED` outbox worker (`app/cli/run_outbox_worker.py`), protected by scheme/port allowlists, IP-pinned TCP connections against DNS rebinding (`_PinnedIPNetworkBackend`), bounded raw response streams, `asyncio.timeout` guards, and HMAC-SHA256 `X-Webhook-Signature: t=...,v1=...` signatures with dual-secret rotation overlap (`ADR-013`). Synchronous CSV/JSON master-data imports and business-entity exports execute through the Core integration port (`app/core/integration.py`) with custom-field validation, literal text preservation, and hardened export CSV formula-injection neutralization, managed via `/api/v1/integrations` and `app/cli/manage_integrations.py`.
+
 ## Project layout
 
 ```
@@ -519,9 +522,10 @@ app/
 │   ├── permissions/  # ADR-009 RBAC models, auth/session service, /auth router
 │   ├── plugins/      # ADR-010 topological loader, company_plugins service, /api/v1/plugins router
 │   ├── customfields/ # ADR-011 custom_field_definitions service, runtime validator, /api/v1/custom-fields router
-│   └── workflow/     # ADR-012 workflow definitions/instances service, runtime approval gate, /api/v1/workflows router
+│   ├── workflow/     # ADR-012 workflow definitions/instances service, runtime approval gate, /api/v1/workflows router
+│   └── integration/  # ADR-013 webhooks, outbox worker, batch engine, /api/v1/integrations router
 ├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, run_outbox_worker, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
 └── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/

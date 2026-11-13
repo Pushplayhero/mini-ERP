@@ -61,6 +61,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ADR-013 / WEEK13 Slice A: platform.integration settings
+    webhook_allow_insecure_http: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "MINI_ERP_WEBHOOK_ALLOW_INSECURE_HTTP",
+            "WEBHOOK_ALLOW_INSECURE_HTTP",
+            "webhook_allow_insecure_http",
+        ),
+    )
+    webhook_timeout_seconds: float = 10.0
+    webhook_max_response_bytes: int = 65536
+    webhook_lease_seconds: int = 60
+    batch_import_max_rows: int = 2000
+    batch_import_max_bytes: int = 1_048_576
+
 
 @lru_cache
 def get_settings() -> Settings:

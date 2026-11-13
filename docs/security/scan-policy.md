@@ -11,23 +11,23 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **224 tracked files**, assigned exactly once across:
+The current inventory is **245 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
-| `u01_identity` | 49 |
+| `u01_identity` | 63 |
 | `u02_runtime_config` | 13 |
-| `u03_events_hooks` | 13 |
+| `u03_events_hooks` | 15 |
 | `u04_sales_plugins` | 19 |
 | `u05_inventory` | 14 |
 | `u06_ledger_engine` | 16 |
 | `u07_ledger_api` | 8 |
 | `u08_receivables` | 15 |
 | `u09_masterdata` | 13 |
-| `u10_migrations` | 18 |
-| `u11_operations_e2e` | 19 |
+| `u10_migrations` | 19 |
+| `u11_operations_e2e` | 22 |
 | `u12_gate` | 2 |
-| `u13_governance` | 23 |
+| `u13_governance` | 24 |
 | `u14_dependencies` | 2 |
 
 Every real unit scan still requires an external owner authorization and an
@@ -53,7 +53,7 @@ fresh exact-SHA review.
 Per explicit owner decision (2026-10-12 / 2026-10-22), completed `micro-v2`
 unit scans for `u01_identity` through `u11_operations_e2e` (all 183 application,
 platform, migration, CLI, and E2E files at the 2026-10-22 baseline; expanded
-through Week 12 Slice D to **197 files**) remain accepted pass evidence when
+through Week 13 Slice D to **217 files**) remain accepted pass evidence when
 unmodified units' files are unchanged; post-baseline additions and modifications
 in `u01_identity` and business/CLI units are covered by deterministic verification
 (`pytest`, `mypy --strict`, `ruff`, `import-linter`, and D.5 manifest checks).
@@ -67,17 +67,17 @@ To prevent non-application units (`u12_gate`, `u13_governance`,
 runner scripts, markdown documentation, or `uv.lock`, the owner authorized a
 **Hybrid Right-Tool-for-the-Job Gate** to close Slice D.5:
 
-1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 183 files at 2026-10-22 baseline / 197 files current)**:
+1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 183 files at 2026-10-22 baseline / 217 files current)**:
    Verified by `@openai/codex-security` (`gpt-5.6-sol`, high effort) with zero
    blocking findings; owner-accepted baseline pass evidence is preserved, with
-   subsequent Week 10–12 additions/changes verified deterministically.
+   subsequent Week 10–13 additions/changes verified deterministically.
 2. **Tier 2 — Scanner Gate Runner (`u12_gate`, 2 files: `scripts/d5_security_gate.py`, `tests/security/test_d5_security_gate.py`)**:
    The single High finding from `b56c164` (`fsmonitor` / Git config isolation)
    is remediated in `95c5382`. Verified deterministically via `ruff check`,
    `ruff format --check`, `mypy --strict` (`scripts/`), and the 281 contract
    tests in `tests/security/test_d5_security_gate.py`. No recursive paid LLM
    rescan of the runner script is required.
-3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 22 files at 2026-10-22 baseline / 23 files current)**:
+3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 22 files at 2026-10-22 baseline / 24 files current)**:
    All four findings from `454b2e7` (predictable quick-start passwords,
    password exposure in shell history / `curl` arguments, mutable GitHub Action
    tags, and coverage test execution under `contents: write`) are remediated in

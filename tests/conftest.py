@@ -214,6 +214,8 @@ async def _clean_tenant_tables(
                 "accounting_periods, stock_moves, stock_summary, "
                 "payment_allocations, payment_allocation_commands, payments, "
                 "invoices, receivables_sequences, "
+                "webhook_deliveries, integration_outbox_receipts, "
+                "webhook_endpoints, integration_batch_jobs, "
                 "sales_order_lines, sales_orders, sales_sequences, "
                 "customers, products, accounts, outbox, company_plugins, "
                 "custom_field_definitions, "
@@ -297,6 +299,9 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "platform.workflow.read",
         "platform.workflow.manage",
         "platform.workflow.approve",
+        "platform.integration.read",
+        "platform.integration.manage",
+        "platform.integration.import",
     }
 )
 

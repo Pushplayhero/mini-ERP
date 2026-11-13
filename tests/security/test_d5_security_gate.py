@@ -1306,14 +1306,14 @@ def _micro_budget_ledger(root: Path, sha: str, units: tuple[str, ...], destinati
     return ledger
 
 
-def test_manifest_assigns_exactly_224_current_tracked_files() -> None:
+def test_manifest_assigns_exactly_245_current_tracked_files() -> None:
     repo = Path(__file__).resolve().parents[2]
     assignments = gate.validate_manifest(repo)
-    assert [len(assignments[shard]) for shard in gate.SHARD_IDS] == [67, 38, 41, 53, 25]
-    assert sum(map(len, assignments.values())) == 224
+    assert [len(assignments[shard]) for shard in gate.SHARD_IDS] == [83, 38, 41, 57, 26]
+    assert sum(map(len, assignments.values())) == 245
 
 
-def test_micro_profile_assigns_all_224_current_files_once() -> None:
+def test_micro_profile_assigns_all_245_current_files_once() -> None:
     repo = Path(__file__).resolve().parents[2]
     assignments = gate.validate_manifest(repo, profile="micro-v2")
     config = gate._profile_config("micro-v2")
@@ -1322,22 +1322,22 @@ def test_micro_profile_assigns_all_224_current_files_once() -> None:
     assert config["operational_ceiling_usd"] is None
     assert list(assignments) == list(gate.MICRO_UNIT_IDS)
     assert [len(assignments[unit]) for unit in gate.MICRO_UNIT_IDS] == [
-        49,
+        63,
         13,
-        13,
+        15,
         19,
         14,
         16,
         8,
         15,
         13,
-        18,
         19,
+        22,
         2,
-        23,
+        24,
         2,
     ]
-    assert sum(map(len, assignments.values())) == 224
+    assert sum(map(len, assignments.values())) == 245
     assert {"scripts/d5_security_gate.py"}.issubset(assignments["u12_gate"])
     assert {"tests/security/test_d5_security_gate.py"}.issubset(assignments["u12_gate"])
     assert {"docs/security/d5-shards.json"}.issubset(assignments["u13_governance"])

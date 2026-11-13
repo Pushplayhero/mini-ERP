@@ -34,6 +34,7 @@ _BEFORE_MIGRATION_0008 = "c7d2e6f1a840"  # 0008's own down_revision (0007's revi
 _BEFORE_MIGRATION_0011 = "e7b8c9d0a1f2"  # 0011's own down_revision (0010's revision id)
 _BEFORE_MIGRATION_0012 = "b4c5d6e7f8a1"  # 0012's own down_revision (0011's revision id)
 _BEFORE_MIGRATION_0013 = "c5d6e7f8a1b2"  # 0013's own down_revision (0012's revision id)
+_BEFORE_MIGRATION_0014 = "d6e7f8a1b2c3"  # 0014's own down_revision (0013's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -646,17 +647,18 @@ async def test_migration_0010_and_0011_seed_permissions_and_grant_all_to_admin(
     """
     async with db_engine.connect() as conn:
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012) + 3 (workflow in 0013) = 52
+        # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012)
+        # + 3 (workflow in 0013) + 3 (integration in 0014) = 55
         assert (
-            perm_count == 52
-        ), f"expected exactly 52 permissions in total catalog, got {perm_count}"
+            perm_count == 55
+        ), f"expected exactly 55 permissions in total catalog, got {perm_count}"
 
         admin_grants = await conn.scalar(
             text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
         )
         assert (
-            admin_grants == 52
-        ), f"expected admin role to have all 52 permissions, got {admin_grants}"
+            admin_grants == 55
+        ), f"expected admin role to have all 55 permissions, got {admin_grants}"
 
 
 @pytest.mark.asyncio
@@ -754,7 +756,7 @@ async def test_migration_0011_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "company_plugins" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 52
+        assert perm_count == 55
 
 
 @pytest.mark.asyncio
@@ -872,7 +874,7 @@ async def test_migration_0012_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "custom_field_definitions" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 52
+        assert perm_count == 55
 
 
 @pytest.mark.asyncio
@@ -1148,4 +1150,263 @@ async def test_migration_0013_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert workflow_tables.issubset(table_names)
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 52
+        assert perm_count == 55
+
+
+@pytest.mark.asyncio
+async def test_migration_0014_schema_matches_adr_013(db_engine: AsyncEngine) -> None:
+    """Assert migration 0014 creates 4 integration tables with constraints and indexes."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_conn: Connection) -> Any:
+        inspector = inspect(sync_conn)
+
+        def table_info(tbl: str) -> dict[str, Any]:
+            return {
+                "cols": {c["name"]: c for c in inspector.get_columns(tbl)},
+                "fks": inspector.get_foreign_keys(tbl),
+                "uqs": inspector.get_unique_constraints(tbl),
+                "indexes": inspector.get_indexes(tbl),
+                "checks": inspector.get_check_constraints(tbl),
+            }
+
+        return {
+            "endpoints": table_info("webhook_endpoints"),
+            "receipts": table_info("integration_outbox_receipts"),
+            "deliveries": table_info("webhook_deliveries"),
+            "jobs": table_info("integration_batch_jobs"),
+        }
+
+    async with db_engine.connect() as conn:
+        schema = await conn.run_sync(_inspect)
+        seeded_perms = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT code FROM permissions "
+                        "WHERE code IN ("
+                        "'platform.integration.read', "
+                        "'platform.integration.manage', "
+                        "'platform.integration.import'"
+                        ")"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    # 1. Permissions
+    assert set(seeded_perms) == {
+        "platform.integration.read",
+        "platform.integration.manage",
+        "platform.integration.import",
+    }
+
+    # 2. webhook_endpoints
+    ep = schema["endpoints"]
+    expected_ep_cols = {
+        "id",
+        "company_id",
+        "name",
+        "url",
+        "signing_secret",
+        "previous_signing_secret",
+        "previous_secret_expires_at",
+        "secret_prefix",
+        "event_types",
+        "is_active",
+        "timeout_seconds",
+        "max_attempts",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_ep_cols.issubset(ep["cols"].keys())
+    assert any(uq["name"] == "uq_webhook_endpoints_company_id" for uq in ep["uqs"])
+    assert any(uq["name"] == "uq_webhook_endpoints_company_name" for uq in ep["uqs"])
+    ep_checks = {ck["name"] for ck in ep["checks"]}
+    assert "ck_webhook_endpoints_name_nonempty" in ep_checks
+    assert "ck_webhook_endpoints_url_nonempty" in ep_checks
+    assert "ck_webhook_endpoints_timeout" in ep_checks
+    assert "ck_webhook_endpoints_max_attempts" in ep_checks
+
+    # 3. integration_outbox_receipts
+    rc = schema["receipts"]
+    assert {"outbox_id", "processed_at"}.issubset(rc["cols"].keys())
+    assert any(fk["referred_table"] == "outbox" for fk in rc["fks"])
+
+    # 4. webhook_deliveries
+    deliv = schema["deliveries"]
+    expected_deliv_cols = {
+        "id",
+        "company_id",
+        "endpoint_id",
+        "outbox_event_id",
+        "event_type",
+        "payload",
+        "status",
+        "attempts",
+        "max_attempts",
+        "next_attempt_at",
+        "lease_until",
+        "last_http_status",
+        "last_error",
+        "delivered_at",
+        "created_at",
+        "updated_at",
+    }
+    assert expected_deliv_cols.issubset(deliv["cols"].keys())
+    assert any(uq["name"] == "uq_webhook_deliveries_idempotency" for uq in deliv["uqs"])
+    assert any(
+        fk["referred_table"] == "webhook_endpoints"
+        and set(fk["constrained_columns"]) == {"company_id", "endpoint_id"}
+        for fk in deliv["fks"]
+    )
+    assert any(
+        fk["referred_table"] == "outbox" and fk["constrained_columns"] == ["outbox_event_id"]
+        for fk in deliv["fks"]
+    )
+    assert any(idx["name"] == "ix_webhook_deliveries_due" for idx in deliv["indexes"])
+    assert any(idx["name"] == "ix_webhook_deliveries_endpoint" for idx in deliv["indexes"])
+    deliv_checks = {ck["name"] for ck in deliv["checks"]}
+    assert "ck_webhook_deliveries_status" in deliv_checks
+
+    # 5. integration_batch_jobs
+    jobs = schema["jobs"]
+    expected_jobs_cols = {
+        "id",
+        "company_id",
+        "job_type",
+        "entity_type",
+        "format",
+        "status",
+        "dry_run",
+        "total_rows",
+        "succeeded_rows",
+        "failed_rows",
+        "error_summary",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+    assert expected_jobs_cols.issubset(jobs["cols"].keys())
+    jobs_checks = {ck["name"] for ck in jobs["checks"]}
+    assert "ck_integration_batch_jobs_type" in jobs_checks
+    assert "ck_integration_batch_jobs_format" in jobs_checks
+    assert "ck_integration_batch_jobs_status" in jobs_checks
+
+
+@pytest.mark.asyncio
+async def test_migration_0014_idempotent_downgrade_and_upgrade(
+    db_engine: AsyncEngine,
+) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0014 drops 4 tables and 3 permissions,
+    and upgrade re-creates them cleanly.
+    """
+    import uuid
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    integration_tables = {
+        "webhook_endpoints",
+        "integration_outbox_receipts",
+        "webhook_deliveries",
+        "integration_batch_jobs",
+    }
+
+    company_id = uuid.uuid4()
+    endpoint_id = uuid.uuid4()
+    outbox_id = uuid.uuid4()
+    delivery_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+
+    async with db_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO companies (id, code, name, functional_currency_code, is_active) "
+                "VALUES (:id, :code, :name, 'TWD', true)"
+            ),
+            {"id": company_id, "code": f"C_{company_id.hex[:6]}", "name": "Integration Co"},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO outbox (id, event_type, payload, occurred_at) "
+                "VALUES (:id, 'sales.order_confirmed', "
+                f'\'{{"company_id":"{company_id}"}}\'::jsonb, now())'
+            ),
+            {"id": outbox_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO webhook_endpoints "
+                "(id, company_id, name, url, signing_secret, secret_prefix, event_types) "
+                "VALUES (:id, :company_id, 'Test Webhook', 'https://example.com/wh', "
+                "'whsec_secret', 'whsec_sec', '[\"sales.order_confirmed\"]'::jsonb)"
+            ),
+            {"id": endpoint_id, "company_id": company_id},
+        )
+        await conn.execute(
+            text("INSERT INTO integration_outbox_receipts (outbox_id) VALUES (:outbox_id)"),
+            {"outbox_id": outbox_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO webhook_deliveries "
+                "(id, company_id, endpoint_id, outbox_event_id, event_type, payload, status) "
+                "VALUES (:id, :company_id, :endpoint_id, :outbox_event_id, "
+                "'sales.order_confirmed', '{}'::jsonb, 'PENDING')"
+            ),
+            {
+                "id": delivery_id,
+                "company_id": company_id,
+                "endpoint_id": endpoint_id,
+                "outbox_event_id": outbox_id,
+            },
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO integration_batch_jobs "
+                "(id, company_id, job_type, entity_type, format, status) "
+                "VALUES (:id, :company_id, 'IMPORT', 'customer', 'CSV', 'COMPLETED')"
+            ),
+            {"id": job_id, "company_id": company_id},
+        )
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0014)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(inspect(sync_conn).get_table_names())
+            )
+            assert not (integration_tables & table_names)
+
+            perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+            assert perm_count == 52
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        assert integration_tables.issubset(table_names)
+
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        assert perm_count == 55

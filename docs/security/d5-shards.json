@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 224,
+  "expected_total_files": 245,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 224,
+      "expected_total_files": 245,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -41,7 +41,7 @@
       ],
       "units": {
         "u01_identity": {
-          "expected_file_count": 49,
+          "expected_file_count": 63,
           "paths": [
             "app/platform",
             "app/core/authorization.py",
@@ -72,11 +72,12 @@
           ]
         },
         "u03_events_hooks": {
-          "expected_file_count": 13,
+          "expected_file_count": 15,
           "paths": [
             "app/core/customfields.py",
             "app/core/events.py",
             "app/core/hooks.py",
+            "app/core/integration.py",
             "app/core/locking.py",
             "app/core/plugins.py",
             "app/core/workflow.py",
@@ -85,6 +86,7 @@
             "tests/core/test_customfields_port.py",
             "tests/core/test_events.py",
             "tests/core/test_hooks.py",
+            "tests/core/test_integration_port.py",
             "tests/core/test_plugins_port.py",
             "tests/core/test_workflow_port.py"
           ]
@@ -159,7 +161,7 @@
           ]
         },
         "u10_migrations": {
-          "expected_file_count": 18,
+          "expected_file_count": 19,
           "paths": [
             "alembic",
             "alembic.ini",
@@ -167,7 +169,7 @@
           ]
         },
         "u11_operations_e2e": {
-          "expected_file_count": 19,
+          "expected_file_count": 22,
           "paths": [
             "app/cli/__init__.py",
             "app/cli/demo_o2c.py",
@@ -177,6 +179,8 @@
             "app/cli/manage_plugins.py",
             "app/cli/manage_custom_fields.py",
             "app/cli/manage_workflows.py",
+            "app/cli/manage_integrations.py",
+            "app/cli/run_outbox_worker.py",
             "app/cli/replay_outbox.py",
             "tests/cli",
             "tests/e2e"
@@ -190,7 +194,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 23,
+          "expected_file_count": 24,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -203,6 +207,7 @@
             "docs/adr/ADR-010-platform-plugins.md",
             "docs/adr/ADR-011-platform-customfields.md",
             "docs/adr/ADR-012-platform-workflow.md",
+            "docs/adr/ADR-013-platform-integration.md",
             "docs/adr/PHASE2-platform-architecture-overview.md",
             "docs/adr/README.md",
             "docs/adr/WEEK7-phase1-hardening-brief.md",
@@ -227,7 +232,7 @@
   "shards": [
     {
       "id": "a_identity_runtime",
-      "expected_file_count": 67,
+      "expected_file_count": 83,
       "max_cost_usd": 11.75,
       "paths": [
         "app/__init__.py",
@@ -277,7 +282,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 53,
+      "expected_file_count": 57,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -289,6 +294,8 @@
         "app/cli/manage_plugins.py",
         "app/cli/manage_custom_fields.py",
         "app/cli/manage_workflows.py",
+        "app/cli/manage_integrations.py",
+        "app/cli/run_outbox_worker.py",
         "app/cli/seed_demo.py",
         "tests/masterdata",
         "tests/cli",
@@ -308,7 +315,7 @@
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 25,
+      "expected_file_count": 26,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",
@@ -324,6 +331,7 @@
         "docs/adr/ADR-010-platform-plugins.md",
         "docs/adr/ADR-011-platform-customfields.md",
         "docs/adr/ADR-012-platform-workflow.md",
+        "docs/adr/ADR-013-platform-integration.md",
         "docs/adr/PHASE2-platform-architecture-overview.md",
         "docs/adr/README.md",
         "docs/adr/WEEK7-phase1-hardening-brief.md",

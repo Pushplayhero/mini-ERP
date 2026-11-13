@@ -16,13 +16,13 @@ dependencies = [
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.6,<3",
     "argon2-cffi>=23.1,<24",
+    "httpx>=0.27,<0.28",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.24,<0.25",
-    "httpx>=0.27,<0.28",
     "ruff>=0.7,<0.8",
     "mypy>=1.13,<1.14",
     "import-linter>=2.1,<3",
@@ -282,6 +282,25 @@ forbidden_modules = [
     "app.cli",
 ]
 
+# ADR-013 Decision 7: platform.integration dependency contract
+[[tool.importlinter.contracts]]
+name = "platform.integration may depend on core and masterdata only"
+type = "forbidden"
+source_modules = ["app.platform.integration"]
+forbidden_modules = [
+    "app.modules.sales",
+    "app.modules.inventory",
+    "app.modules.receivables",
+    "app.modules.ledger",
+    "app.plugins",
+    "app.platform.permissions",
+    "app.platform.plugins",
+    "app.platform.customfields",
+    "app.platform.workflow",
+    "app.main",
+    "app.cli",
+]
+
 
 # ADR-010 Decision 6: plugins public-surface-only boundary
 [[tool.importlinter.contracts]]
@@ -353,6 +372,7 @@ protected_modules = [
     "app.platform.plugins",
     "app.platform.customfields",
     "app.platform.workflow",
+    "app.platform.integration",
     "app.plugins",
 ]
 allowed_importers = []

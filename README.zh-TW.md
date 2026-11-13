@@ -8,7 +8,7 @@
 > 取代購買顧問工時來客製、而且真正能信任自己資料的鼎新。開源、
 > API-first、可用 plugin 擴充的 ERP 核心。
 
-**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields` 與 `platform.workflow`）已完成。** 五個業務模組
+**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields`、`platform.workflow` 與 `platform.integration`）已完成。** 五個業務模組
 ——masterdata、ledger、sales、inventory + shipping、receivables——
 在一個真正的複式簿記過帳引擎（posting engine）之上，實作了完整的
 order-to-cash（O2C，訂單到收款）流程；每一個模組都有對應的
@@ -346,6 +346,7 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 | `platform.plugins` ——插件載入器、租戶啟用治理與公開介面隔離 | [ADR-010](docs/adr/ADR-010-platform-plugins.md) |
 | `platform.customfields` ——租戶自訂欄位治理引擎、強型別正規化與公開埠隔離 | [ADR-011](docs/adr/ADR-011-platform-customfields.md) |
 | `platform.workflow` ——狀態機、多階審批、職能分工（SoD）與業務交易把關 | [ADR-012](docs/adr/ADR-012-platform-workflow.md) |
+| `platform.integration` ——Webhooks、Outbox Worker、批次匯入/匯出與 SSRF 防護 | [ADR-013](docs/adr/ADR-013-platform-integration.md) |
 
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
@@ -447,6 +448,8 @@ TOCTOU 競爭條件；業務模組在建立與更新時僅透過輕量核心埠�
 比對目標實體與門檻狀態無誤後原子性標記為 `consumed`，杜絕重複使用（double-spending）與重放攻擊（anti-replay）。
 管理端點由 `/api/v1/workflows` 與 `app/cli/manage_workflows.py` 提供。
 
+**外部整合與批次資料交換（Integrations & batch exchange）。** 外部 Webhook 訂閱（`app/platform/integration/`）透過獨立的 PostgreSQL `SKIP LOCKED` Outbox Worker（`app/cli/run_outbox_worker.py`）派送已提交之 `outbox` 領域事件，並搭配協定與埠號白名單、IP 鎖定 TCP 連線（`_PinnedIPNetworkBackend` 防範 DNS rebinding TOCTOU）、位元組上限串流讀取、`asyncio.timeout` 時限保護，以及支援金鑰輪換重疊窗口的 HMAC-SHA256 `X-Webhook-Signature: t=...,v1=...` 簽章（見 ADR-013）。同步 CSV/JSON 主檔匯入與業務單據匯出透過核心整合埠（`app/core/integration.py`）執行，具備自訂欄位型別驗證、純文字原樣保留與僅於 CSV 匯出端套用的強化型公式注入防護，由 `/api/v1/integrations` 與 `app/cli/manage_integrations.py` 提供管理介面。
+
 ## 專案目錄結構
 
 ```
@@ -463,9 +466,10 @@ app/
 │   ├── permissions/  # ADR-009 RBAC 模型、認證/session 服務、/auth router
 │   ├── plugins/      # ADR-010 拓撲載入器、company_plugins 服務、/api/v1/plugins router
 │   ├── customfields/ # ADR-011 custom_field_definitions 服務、執行期驗證器、/api/v1/custom-fields router
-│   └── workflow/     # ADR-012 workflow 定義/實例服務、執行期審批閘門、/api/v1/workflows router
+│   ├── workflow/     # ADR-012 workflow 定義/實例服務、執行期審批閘門、/api/v1/workflows router
+│   └── integration/  # ADR-013 webhooks、outbox worker、批次引擎、/api/v1/integrations router
 ├── plugins/          # credit_limit.py ——內建客戶信用額度把關 manifest
-├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、run_outbox_worker、seed_demo、demo_o2c、replay_outbox、rebuild_ar_balances、rebuild_stock_summary
 └── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
 docs/
