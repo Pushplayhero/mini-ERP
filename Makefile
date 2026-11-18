@@ -4,10 +4,11 @@
 #   make up        # docker compose up, blocks until the app is healthy
 #   make bootstrap # create initial admin user & company (Rule 10b)
 #   make seed      # populate a realistic demo dataset (idempotent, opt-in)
-#   make demo      # walk one order through the live API, print the ledger
-#   make check     # the same ruff/mypy/lint-imports/pytest sequence CI runs
+#   make demo          # walk one order through the live API, print the ledger
+#   make demo-platform # walk Phase 2 plugins, customfields, and SoD workflows
+#   make check         # the same ruff/mypy/lint-imports/pytest sequence CI runs
 
-.PHONY: up down bootstrap seed demo test check clean
+.PHONY: up down bootstrap seed demo demo-platform test check clean
 
 APP_PORT ?= 8000
 
@@ -46,6 +47,19 @@ demo:
 	BOOTSTRAP_ADMIN_EMAIL="$${BOOTSTRAP_ADMIN_EMAIL:-$${DEMO_ADMIN_EMAIL}}" \
 	BOOTSTRAP_ADMIN_PASSWORD="$${BOOTSTRAP_ADMIN_PASSWORD:-$${DEMO_ADMIN_PASSWORD}}" \
 	uv run python -m app.cli.demo_o2c
+
+# Walks Phase 2 governance capabilities (plugins, customfields, multi-level SoD
+# workflows) + O2C settlement against the live API. Idempotent on reruns and
+# cleanly restores temporary guardrails so `make demo` keeps working.
+demo-platform:
+	@if [ -z "$${BOOTSTRAP_ADMIN_EMAIL:-$$DEMO_ADMIN_EMAIL}" ] || [ -z "$${BOOTSTRAP_ADMIN_PASSWORD:-$$DEMO_ADMIN_PASSWORD}" ]; then \
+		echo "ERROR: BOOTSTRAP_ADMIN_EMAIL/PASSWORD (or DEMO_ADMIN_EMAIL/PASSWORD) must be set." >&2; \
+		exit 1; \
+	fi
+	DEMO_BASE_URL=http://localhost:$(APP_PORT) \
+	BOOTSTRAP_ADMIN_EMAIL="$${BOOTSTRAP_ADMIN_EMAIL:-$${DEMO_ADMIN_EMAIL}}" \
+	BOOTSTRAP_ADMIN_PASSWORD="$${BOOTSTRAP_ADMIN_PASSWORD:-$${DEMO_ADMIN_PASSWORD}}" \
+	uv run python -m app.cli.demo_platform
 
 test:
 	uv run pytest

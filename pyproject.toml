@@ -1,7 +1,7 @@
 [project]
 name = "mini-erp"
-version = "0.1.0"
-description = "A minimal, correctness-obsessed open-source ERP kernel — Order-to-Cash + multi-company/multi-currency/UoM groundwork. Phase 1 (Kernel) of the open-erp master plan."
+version = "0.2.0"
+description = "A minimal, correctness-obsessed open-source ERP kernel — Phase 1 O2C Kernel + Phase 2 Multi-Tenant Platform (permissions, plugins, customfields, workflow, integration)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

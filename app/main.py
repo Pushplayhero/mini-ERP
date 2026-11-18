@@ -163,7 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     application = FastAPI(
         title="mini-ERP",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     application.state.login_rate_limiter = LoginRateLimiter()

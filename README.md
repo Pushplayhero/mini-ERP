@@ -75,12 +75,17 @@ make up
 make bootstrap
 make seed
 make demo
+make demo-platform
 make check
 ```
 
 `make bootstrap` is the first-install command that creates the initial
 administrator user and company. `make seed` populates the demo dataset
-(and is safe to rerun idempotently). `make demo` executes the live O2C walkthrough.
+(and is safe to rerun idempotently). `make demo` executes the live O2C walkthrough,
+and `make demo-platform` demonstrates Phase 2 governance (`credit_limit` plugin
+switching, custom field validation & Banker's Rounding, and multi-level SoD
+approval workflows). See also [CHANGELOG.md](CHANGELOG.md) and the
+[`v0.2.0-platform` release notes](docs/releases/v0.2.0-platform.md).
 
 `make test` runs the full test suite against an ephemeral PostgreSQL
 container (via `testcontainers-postgres` when Docker is running, with
@@ -164,10 +169,11 @@ In terminal 2, run the direct CLI commands:
 uv run python -m app.cli.bootstrap_admin
 uv run python -m app.cli.seed_demo
 DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_o2c
+DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_platform
 ```
 
-`seed_demo` talks directly to PostgreSQL. `demo_o2c` is an HTTP client
-and therefore requires the running uvicorn process.
+`seed_demo` talks directly to PostgreSQL. `demo_o2c` and `demo_platform` are HTTP clients
+and therefore require the running uvicorn process.
 
 ## Architecture
 
@@ -525,7 +531,7 @@ app/
 │   ├── workflow/     # ADR-012 workflow definitions/instances service, runtime approval gate, /api/v1/workflows router
 │   └── integration/  # ADR-013 webhooks, outbox worker, batch engine, /api/v1/integrations router
 ├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, run_outbox_worker, seed_demo, demo_o2c, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, run_outbox_worker, seed_demo, demo_o2c, demo_platform, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
 └── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/
