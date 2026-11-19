@@ -11,23 +11,23 @@ current repository. This explicit authorization promotes `micro-v2` from
 authorize deployment, push, automatic retry, or a D.5 PASS declaration as part
 of this scan task.
 
-The current inventory is **249 tracked files**, assigned exactly once across:
+The current inventory is **264 tracked files**, assigned exactly once across:
 
 | Unit | Files |
 | --- | ---: |
 | `u01_identity` | 63 |
 | `u02_runtime_config` | 13 |
 | `u03_events_hooks` | 15 |
-| `u04_sales_plugins` | 19 |
+| `u04_sales_plugins` | 30 |
 | `u05_inventory` | 14 |
 | `u06_ledger_engine` | 16 |
 | `u07_ledger_api` | 8 |
 | `u08_receivables` | 15 |
-| `u09_masterdata` | 13 |
-| `u10_migrations` | 19 |
+| `u09_masterdata` | 14 |
+| `u10_migrations` | 20 |
 | `u11_operations_e2e` | 24 |
 | `u12_gate` | 2 |
-| `u13_governance` | 26 |
+| `u13_governance` | 28 |
 | `u14_dependencies` | 2 |
 
 Every real unit scan still requires an external owner authorization and an
@@ -53,7 +53,7 @@ fresh exact-SHA review.
 Per explicit owner decision (2026-10-12 / 2026-10-22), completed `micro-v2`
 unit scans for `u01_identity` through `u11_operations_e2e` (all 183 application,
 platform, migration, CLI, and E2E files at the 2026-10-22 baseline; expanded
-through Week 13 Slice D / `v0.2.0-platform` demo readiness to **219 files**) remain accepted pass evidence when
+through Week 14 / `ADR-014` Purchase & Supplier Masterdata to **232 files**) remain accepted pass evidence when
 unmodified units' files are unchanged; post-baseline additions and modifications
 in `u01_identity` and business/CLI units are covered by deterministic verification
 (`pytest`, `mypy --strict`, `ruff`, `import-linter`, and D.5 manifest checks).

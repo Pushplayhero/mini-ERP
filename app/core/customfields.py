@@ -36,11 +36,13 @@ class CustomFieldEntityType(StrEnum):
     """Tenant-scoped business entities supporting custom field extension."""
 
     CUSTOMER = "customer"
+    SUPPLIER = "supplier"
     PRODUCT = "product"
     ACCOUNT = "account"
     ACCOUNTING_PERIOD = "accounting_period"
     JOURNAL_ENTRY = "journal_entry"
     SALES_ORDER = "sales_order"
+    PURCHASE_ORDER = "purchase_order"
     INVOICE = "invoice"
     PAYMENT = "payment"
 

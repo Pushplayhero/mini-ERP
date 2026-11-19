@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 # `stock_moves.source_type` value, which is what makes duplicate delivery
 # detectable via `uq_stock_moves_source`.
 _GOODS_SHIPPED_SOURCE_TYPE = "sales.goods_shipped"
+_GOODS_RECEIVED_SOURCE_TYPE = "purchase.goods_received"
 
 _PRODUCTS = sa_table(
     "products",
@@ -315,6 +316,51 @@ async def handle_goods_shipped(session: AsyncSession, payload: BaseModel) -> Non
             raise
         logger.info(
             "sales.goods_shipped source_id=%s already deducted for company %s; "
+            "skipping duplicate delivery",
+            source_id,
+            company_id,
+        )
+
+
+async def handle_goods_received(session: AsyncSession, payload: BaseModel) -> None:
+    """Receive stock for every line of a purchase order inside one atomic batch (ADR-014).
+
+    Mirrors `handle_goods_shipped`:
+    1. Aggregates `qty` per `product_id` so repeated lines for the same product insert
+       at most one `stock_moves` row matching `uq_stock_moves_source`.
+    2. Iterates `sorted(qty_by_product)` so `get_or_lock_summary` locks rows in
+       deterministic ascending `product_id` order.
+    3. Wraps all moves in one `session.begin_nested()` savepoint for idempotent replay.
+    """
+    company_id = require_current_company_id()
+    payload_dict: dict[str, Any] = payload.model_dump()
+    source_id = uuid.UUID(str(payload_dict["source_id"]))
+    lines: Sequence[dict[str, Any]] = payload_dict["lines"]
+
+    qty_by_product: dict[uuid.UUID, Decimal] = {}
+    for line in lines:
+        product_id = uuid.UUID(str(line["product_id"]))
+        qty = Decimal(str(line["qty"]))
+        qty_by_product[product_id] = qty_by_product.get(product_id, Decimal("0")) + qty
+
+    try:
+        async with session.begin_nested():
+            for product_id in sorted(qty_by_product):
+                qty = qty_by_product[product_id]
+                await apply_stock_move(
+                    session,
+                    company_id,
+                    product_id,
+                    qty,
+                    StockMoveType.RECEIPT,
+                    source_type=_GOODS_RECEIVED_SOURCE_TYPE,
+                    source_id=source_id,
+                )
+    except IntegrityError as exc:
+        if not _is_source_conflict(exc):
+            raise
+        logger.info(
+            "purchase.goods_received source_id=%s already received for company %s; "
             "skipping duplicate delivery",
             source_id,
             company_id,

@@ -60,6 +60,8 @@ from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
 from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
+from app.modules.purchase import events as purchase_events
+from app.modules.purchase.router import router as purchase_router
 from app.modules.receivables import events as receivables_events
 from app.modules.receivables.router import router as receivables_router
 from app.modules.sales import events as sales_events
@@ -267,6 +269,7 @@ async def health() -> dict[str, str]:
 app.include_router(masterdata_router, prefix="/api/v1")
 app.include_router(ledger_router, prefix="/api/v1")
 app.include_router(sales_router, prefix="/api/v1")
+app.include_router(purchase_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
 app.include_router(receivables_router, prefix="/api/v1")
 # ADR-009 / WEEK9 Slice B: `/auth/*`, not under `/api/v1` — matches the ADR's
@@ -363,6 +366,26 @@ events.subscribe(
     ledger_posting.make_posting_handler(receivables_events.RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE),
 )
 
+# ADR-014 (Phase 3 Week 14): purchase order confirmation and goods receipt.
+# Deterministic order for purchase.goods_received: inventory intake MUST run
+# before ledger's GR/IR accrual posting ("move the goods, then account for them").
+events.register_event(
+    purchase_events.PURCHASE_ORDER_CONFIRMED_EVENT_TYPE,
+    purchase_events.PurchaseOrderConfirmedPayload,
+)
+events.register_event(
+    purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE,
+    ledger_posting.GoodsReceivedPayload,
+)
+events.subscribe(
+    purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE,
+    inventory_service.handle_goods_received,
+)
+events.subscribe(
+    purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE),
+)
+
 
 # ---------------------------------------------------------------------------
 # Plugin runtime gate & loader bootstrap (ADR-010 / Week 10 Slice C)
@@ -401,6 +424,24 @@ async def _export_customers(session: AsyncSession, company_id: uuid.UUID) -> lis
             "is_active": c.is_active,
         }
         for c in customers
+    ]
+
+
+async def _export_suppliers(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.masterdata.models import Supplier
+
+    stmt = select(Supplier).where(Supplier.company_id == company_id).order_by(Supplier.code)
+    suppliers = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(s.id),
+            "code": s.code,
+            "name": s.name,
+            "currency_code": s.currency_code,
+            "payment_terms_days": s.payment_terms_days,
+            "is_active": s.is_active,
+        }
+        for s in suppliers
     ]
 
 
@@ -455,6 +496,30 @@ async def _export_sales_orders(
             "id": str(o.id),
             "order_no": o.order_no,
             "customer_id": str(o.customer_id),
+            "total": str(o.total),
+            "currency_code": o.currency_code,
+            "status": str(o.status.value if hasattr(o.status, "value") else o.status),
+        }
+        for o in orders
+    ]
+
+
+async def _export_purchase_orders(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.purchase.models import PurchaseOrder
+
+    stmt = (
+        select(PurchaseOrder)
+        .where(PurchaseOrder.company_id == company_id)
+        .order_by(PurchaseOrder.order_no)
+    )
+    orders = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(o.id),
+            "order_no": o.order_no,
+            "supplier_id": str(o.supplier_id),
             "total": str(o.total),
             "currency_code": o.currency_code,
             "status": str(o.status.value if hasattr(o.status, "value") else o.status),
@@ -544,9 +609,11 @@ async def _export_stock_summary(
 
 def register_default_export_providers() -> None:
     register_export_provider(BatchEntityType.CUSTOMER, _export_customers)
+    register_export_provider(BatchEntityType.SUPPLIER, _export_suppliers)
     register_export_provider(BatchEntityType.PRODUCT, _export_products)
     register_export_provider(BatchEntityType.ACCOUNT, _export_accounts)
     register_export_provider(BatchEntityType.SALES_ORDER, _export_sales_orders)
+    register_export_provider(BatchEntityType.PURCHASE_ORDER, _export_purchase_orders)
     register_export_provider(BatchEntityType.INVOICE, _export_invoices)
     register_export_provider(BatchEntityType.PAYMENT, _export_payments)
     register_export_provider(BatchEntityType.JOURNAL_ENTRY, _export_journal_entries)

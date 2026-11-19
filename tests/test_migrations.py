@@ -35,10 +35,12 @@ _BEFORE_MIGRATION_0011 = "e7b8c9d0a1f2"  # 0011's own down_revision (0010's revi
 _BEFORE_MIGRATION_0012 = "b4c5d6e7f8a1"  # 0012's own down_revision (0011's revision id)
 _BEFORE_MIGRATION_0013 = "c5d6e7f8a1b2"  # 0013's own down_revision (0012's revision id)
 _BEFORE_MIGRATION_0014 = "d6e7f8a1b2c3"  # 0014's own down_revision (0013's revision id)
+_BEFORE_MIGRATION_0015 = "e7f8a1b2c3d4"  # 0015's own down_revision (0014's revision id)
 
 EXPECTED_TABLES = {
     "companies",
     "customers",
+    "suppliers",
     "products",
     "accounts",
     "uom",
@@ -73,6 +75,15 @@ EXPECTED_TABLES = {
     "workflow_steps",
     "workflow_instances",
     "workflow_approval_logs",
+    # ADR-013 / WEEK13 Slice A / migration 0014.
+    "webhook_endpoints",
+    "integration_outbox_receipts",
+    "webhook_deliveries",
+    "integration_batch_jobs",
+    # ADR-014 / WEEK14 / migration 0015.
+    "purchase_sequences",
+    "purchase_orders",
+    "purchase_order_lines",
     "alembic_version",
 }
 
@@ -648,17 +659,17 @@ async def test_migration_0010_and_0011_seed_permissions_and_grant_all_to_admin(
     async with db_engine.connect() as conn:
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
         # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012)
-        # + 3 (workflow in 0013) + 3 (integration in 0014) = 55
+        # + 3 (workflow in 0013) + 3 (integration in 0014) + 10 (purchase/supplier in 0015) = 65
         assert (
-            perm_count == 55
-        ), f"expected exactly 55 permissions in total catalog, got {perm_count}"
+            perm_count == 65
+        ), f"expected exactly 65 permissions in total catalog, got {perm_count}"
 
         admin_grants = await conn.scalar(
             text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
         )
         assert (
-            admin_grants == 55
-        ), f"expected admin role to have all 55 permissions, got {admin_grants}"
+            admin_grants == 65
+        ), f"expected admin role to have all 65 permissions, got {admin_grants}"
 
 
 @pytest.mark.asyncio
@@ -756,7 +767,7 @@ async def test_migration_0011_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "company_plugins" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 55
+        assert perm_count == 65
 
 
 @pytest.mark.asyncio
@@ -874,7 +885,7 @@ async def test_migration_0012_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "custom_field_definitions" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 55
+        assert perm_count == 65
 
 
 @pytest.mark.asyncio
@@ -1150,7 +1161,7 @@ async def test_migration_0013_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert workflow_tables.issubset(table_names)
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 55
+        assert perm_count == 65
 
 
 @pytest.mark.asyncio
@@ -1409,4 +1420,201 @@ async def test_migration_0014_idempotent_downgrade_and_upgrade(
         assert integration_tables.issubset(table_names)
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 55
+        assert perm_count == 65
+
+
+@pytest.mark.asyncio
+async def test_migration_0015_schema_matches_adr_014(db_engine: AsyncEngine) -> None:
+    """Assert migration 0015 creates supplier/purchase tables, constraints, and enum value."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_conn: Connection) -> Any:
+        inspector = inspect(sync_conn)
+
+        def table_info(tbl: str) -> dict[str, Any]:
+            return {
+                "cols": {c["name"]: c for c in inspector.get_columns(tbl)},
+                "fks": inspector.get_foreign_keys(tbl),
+                "uqs": inspector.get_unique_constraints(tbl),
+                "indexes": inspector.get_indexes(tbl),
+                "checks": inspector.get_check_constraints(tbl),
+            }
+
+        return {
+            "suppliers": table_info("suppliers"),
+            "purchase_sequences": table_info("purchase_sequences"),
+            "purchase_orders": table_info("purchase_orders"),
+            "purchase_order_lines": table_info("purchase_order_lines"),
+        }
+
+    expected_new_perms = {
+        "masterdata.supplier.create",
+        "masterdata.supplier.read",
+        "masterdata.supplier.update",
+        "masterdata.supplier.delete",
+        "purchase.order.create",
+        "purchase.order.read",
+        "purchase.order.update",
+        "purchase.order.confirm",
+        "purchase.order.cancel",
+        "purchase.order.receive",
+    }
+
+    async with db_engine.connect() as conn:
+        schema = await conn.run_sync(_inspect)
+        seeded_perms = (
+            (
+                await conn.execute(
+                    text("SELECT code FROM permissions WHERE code = ANY(:codes)"),
+                    {"codes": list(expected_new_perms)},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        stock_move_types = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT enumlabel FROM pg_enum "
+                        "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                        "WHERE pg_type.typname = 'stock_move_type'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        po_statuses = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT enumlabel FROM pg_enum "
+                        "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                        "WHERE pg_type.typname = 'purchase_order_status'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert set(seeded_perms) == expected_new_perms
+    assert "RECEIPT" in stock_move_types
+    assert set(po_statuses) == {"DRAFT", "CONFIRMED", "CANCELLED", "RECEIVED"}
+
+    sup = schema["suppliers"]
+    assert {
+        "id",
+        "company_id",
+        "code",
+        "name",
+        "currency_code",
+        "payment_terms_days",
+        "is_active",
+        "custom_data",
+        "created_at",
+        "updated_at",
+    }.issubset(sup["cols"].keys())
+    assert any(uq["name"] == "uq_suppliers_company_code" for uq in sup["uqs"])
+    assert any(ck["name"] == "ck_suppliers_payment_terms_days_range" for ck in sup["checks"])
+
+    po = schema["purchase_orders"]
+    assert {
+        "id",
+        "company_id",
+        "order_no",
+        "supplier_id",
+        "status",
+        "currency_code",
+        "total",
+        "snapshot_supplier_code",
+        "snapshot_supplier_name",
+        "confirmed_at",
+        "cancelled_at",
+        "received_at",
+        "custom_data",
+    }.issubset(po["cols"].keys())
+    assert any(uq["name"] == "uq_purchase_orders_company_order_no" for uq in po["uqs"])
+    po_checks = {ck["name"] for ck in po["checks"]}
+    assert {
+        "ck_purchase_orders_total_nonneg",
+        "ck_purchase_orders_confirmed_has_snapshot",
+        "ck_purchase_orders_received_has_received_at",
+    }.issubset(po_checks)
+
+    pol = schema["purchase_order_lines"]
+    assert {
+        "id",
+        "company_id",
+        "order_id",
+        "line_no",
+        "product_id",
+        "qty",
+        "uom_id",
+        "unit_cost",
+        "unit_cost_is_override",
+        "snapshot_sku",
+        "snapshot_product_name",
+        "amount",
+    }.issubset(pol["cols"].keys())
+    assert any(uq["name"] == "uq_purchase_order_lines_order_line_no" for uq in pol["uqs"])
+    pol_checks = {ck["name"] for ck in pol["checks"]}
+    assert {
+        "ck_purchase_order_lines_qty_positive",
+        "ck_purchase_order_lines_unit_cost_nonneg",
+        "ck_purchase_order_lines_amount_nonneg",
+    }.issubset(pol_checks)
+
+
+@pytest.mark.asyncio
+async def test_migration_0015_downgrade_upgrade_cycle_is_safe(
+    db_engine: AsyncEngine,
+) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0015 drops purchase/supplier tables & 10 perms,
+    and upgrade head restores them cleanly (including guarded ADD VALUE 'RECEIPT').
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    new_tables = {
+        "suppliers",
+        "purchase_sequences",
+        "purchase_orders",
+        "purchase_order_lines",
+    }
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0015)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(inspect(sync_conn).get_table_names())
+            )
+            assert not (new_tables & table_names)
+
+            perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+            assert perm_count == 55
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        assert new_tables.issubset(table_names)
+
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        assert perm_count == 65

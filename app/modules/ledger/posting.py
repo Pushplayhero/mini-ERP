@@ -135,10 +135,13 @@ class AccountResolutionError(DomainValidationError):
 #                                             and manual reversal.
 #   4000  Revenue             (revenue)   -- receivables.invoice_issued/_voided (ADR-008)
 #   5000  COGS                (expense)   -- sales.goods_shipped (ADR-007)
-#   1300  Inventory           (asset)     -- sales.goods_shipped (ADR-007)
+#   1300  Inventory           (asset)     -- sales.goods_shipped / purchase.goods_received
+#   2000  Accounts Payable    (liability) -- payables bills/payments (Phase 3 / ADR-015)
+#   2110  Accrued Purchases   (liability) -- purchase.goods_received GR/IR clearing (ADR-014)
 # ---------------------------------------------------------------------------
 
 GOODS_SHIPPED_EVENT_TYPE = "sales.goods_shipped"
+GOODS_RECEIVED_EVENT_TYPE = "purchase.goods_received"
 
 # ADR-008: receivables' four posting events. Same "string is the only
 # shared contract" pattern as `GOODS_SHIPPED_EVENT_TYPE` above — these
@@ -175,6 +178,26 @@ class GoodsShippedPayload(BaseModel):
     lines: list[GoodsShippedLine]
     total_cost: Decimal
     shipped_at: datetime
+
+
+class GoodsReceivedLine(BaseModel):
+    """One received PO line's cost detail for `purchase.goods_received` (ADR-014)."""
+
+    product_id: uuid.UUID
+    qty: Decimal
+    unit_cost: Decimal
+
+
+class GoodsReceivedPayload(BaseModel):
+    """Payload contract for `purchase.goods_received` (ADR-014)."""
+
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    order_no: str
+    supplier_id: uuid.UUID
+    lines: list[GoodsReceivedLine]
+    total_cost: Decimal
+    received_at: datetime
 
 
 # ADR-008: receivables' four payload schemas. Defined here rather than in
@@ -236,6 +259,14 @@ POSTING_RULES: dict[str, list[PostingRule]] = {
         PostingRule(
             debit_account_code="5000",
             credit_account_code="1300",
+            amount_field="total_cost",
+        ),
+    ],
+    # ADR-014 Decision 3: two-stage GR/IR goods receipt accrual.
+    GOODS_RECEIVED_EVENT_TYPE: [
+        PostingRule(
+            debit_account_code="1300",
+            credit_account_code="2110",
             amount_field="total_cost",
         ),
     ],
@@ -373,9 +404,9 @@ async def handle_posting_event(session: AsyncSession, event_type: str, payload: 
     # payload shape that supplies neither.
     entry_date = payload_dict.get("event_date")
     if entry_date is None:
-        shipped_at = payload_dict.get("shipped_at")
-        if isinstance(shipped_at, datetime):
-            entry_date = shipped_at.date()
+        occurred_at_dt = payload_dict.get("shipped_at") or payload_dict.get("received_at")
+        if isinstance(occurred_at_dt, datetime):
+            entry_date = occurred_at_dt.date()
     if entry_date is None:
         entry_date = date.today()
     source_id = payload_dict.get("source_id")

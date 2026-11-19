@@ -38,11 +38,12 @@ from app.core.integration import (
 from app.core.settings import get_settings
 from app.core.tenancy import company_context, require_current_company_id
 from app.modules.masterdata import service as masterdata_service
-from app.modules.masterdata.models import Account, Customer, Product, Uom
+from app.modules.masterdata.models import Account, Customer, Product, Supplier, Uom
 from app.modules.masterdata.schemas import (
     AccountCreate,
     CustomerCreate,
     ProductCreate,
+    SupplierCreate,
 )
 from app.platform.integration.models import IntegrationBatchJob
 
@@ -293,6 +294,8 @@ async def import_batch_data(
                 prepared = _extract_custom_data(dict(row_data))
                 if entity_type == BatchEntityType.CUSTOMER:
                     await _import_customer_row(session, company_id, prepared)
+                elif entity_type == BatchEntityType.SUPPLIER:
+                    await _import_supplier_row(session, company_id, prepared)
                 elif entity_type == BatchEntityType.PRODUCT:
                     await _import_product_row(session, company_id, prepared)
                 elif entity_type == BatchEntityType.ACCOUNT:
@@ -357,6 +360,34 @@ async def _import_customer_row(
         custom_data=normalized_custom_data,
     )
     session.add(customer)
+    await session.flush()
+
+
+async def _import_supplier_row(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    data: dict[str, Any],
+) -> None:
+    if "currency_code" not in data or not data["currency_code"]:
+        data["currency_code"] = "TWD"
+
+    payload = SupplierCreate(**data)
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.SUPPLIER,
+        raw_custom_data=payload.custom_data,
+        is_create=True,
+    )
+    supplier = Supplier(
+        company_id=company_id,
+        code=payload.code,
+        name=payload.name,
+        currency_code=payload.currency_code,
+        payment_terms_days=payload.payment_terms_days,
+        is_active=payload.is_active,
+        custom_data=normalized_custom_data,
+    )
+    session.add(supplier)
     await session.flush()
 
 

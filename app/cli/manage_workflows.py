@@ -86,6 +86,8 @@ WORKFLOW_ADMIN_ACTOR = ActorContext(
             "platform.workflow.approve",
             "sales.order.confirm",
             "sales.order.cancel",
+            "purchase.order.confirm",
+            "purchase.order.cancel",
             "receivables.invoice.void",
             "receivables.payment.void",
             "ledger.journal_entry.reverse",

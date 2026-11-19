@@ -101,6 +101,7 @@ from app.modules.masterdata.schemas import (
     CurrencyCreate,
     CustomerCreate,
     ProductCreate,
+    SupplierCreate,
     UomCreate,
 )
 from app.modules.receivables import service as receivables_service
@@ -126,6 +127,8 @@ DEMO_SEED_ACTOR = ActorContext(
             "masterdata.company.create",
             "masterdata.customer.read",
             "masterdata.customer.create",
+            "masterdata.supplier.read",
+            "masterdata.supplier.create",
             "masterdata.product.read",
             "masterdata.product.create",
             "masterdata.account.read",
@@ -160,11 +163,14 @@ T = TypeVar("T")
 
 COMPANY_CODE = "DEMOCO"
 CUSTOMER_CODE = "DEMOCUST"
+SUPPLIER_CODE = "DEMOSUP"
 PRODUCT_SKU = "DEMO-SKU"
 _STANDARD_CHART = (
     ("1000", "Cash", AccountType.ASSET),
     ("1100", "Accounts Receivable", AccountType.ASSET),
     ("1300", "Inventory", AccountType.ASSET),
+    ("2000", "Accounts Payable", AccountType.LIABILITY),
+    ("2110", "Accrued Purchases", AccountType.LIABILITY),
     ("4000", "Revenue", AccountType.REVENUE),
     ("5000", "COGS", AccountType.EXPENSE),
 )
@@ -445,6 +451,25 @@ async def _ensure_customer_and_product(session: AsyncSession) -> tuple[uuid.UUID
     return customer.id, product.id
 
 
+async def _ensure_supplier(session: AsyncSession) -> uuid.UUID:
+    supplier = await _get_or_create(
+        session,
+        list_fn=masterdata_service.list_suppliers,
+        create_fn=lambda s: masterdata_service.create_supplier(
+            s,
+            SupplierCreate(
+                code=SUPPLIER_CODE,
+                name="Demo Supplier Co.",
+                currency_code="TWD",
+            ),
+        ),
+        match=lambda sup: sup.code == SUPPLIER_CODE,
+        compatible=lambda sup: sup.currency_code == "TWD",
+        entity="supplier",
+    )
+    return supplier.id
+
+
 # ---------------------------------------------------------------------------
 # Stock: remaining-work-aware reconciliation (see module docstring)
 # ---------------------------------------------------------------------------
@@ -663,6 +688,7 @@ async def seed_demo(
                 await _ensure_chart_and_period(session)
                 await _ensure_custom_fields(session)
                 customer_id, product_id = await _ensure_customer_and_product(session)
+                await _ensure_supplier(session)
                 await _reconcile_stock(session, product_id)
                 for scenario in SCENARIOS:
                     await _resume_scenario(session, scenario, customer_id, product_id, summary)

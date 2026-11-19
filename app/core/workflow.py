@@ -28,6 +28,7 @@ class WorkflowEntityType(StrEnum):
     """Tenant-scoped business entities supporting approval workflow gating."""
 
     SALES_ORDER = "sales_order"
+    PURCHASE_ORDER = "purchase_order"
     INVOICE = "invoice"
     PAYMENT = "payment"
     JOURNAL_ENTRY = "journal_entry"
@@ -63,6 +64,8 @@ VALID_ENTITY_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         (WorkflowEntityType.SALES_ORDER.value, WorkflowTransition.CONFIRM.value),
         (WorkflowEntityType.SALES_ORDER.value, WorkflowTransition.CANCEL.value),
+        (WorkflowEntityType.PURCHASE_ORDER.value, WorkflowTransition.CONFIRM.value),
+        (WorkflowEntityType.PURCHASE_ORDER.value, WorkflowTransition.CANCEL.value),
         (WorkflowEntityType.INVOICE.value, WorkflowTransition.VOID.value),
         (WorkflowEntityType.PAYMENT.value, WorkflowTransition.VOID.value),
         (WorkflowEntityType.JOURNAL_ENTRY.value, WorkflowTransition.REVERSE.value),

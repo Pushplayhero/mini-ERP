@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -1024,6 +1025,26 @@ _PRODUCTS = sa.table(
     sa.column("id"),
     sa.column("company_id"),
     sa.column("list_price"),
+    sa.column("standard_cost"),
+)
+
+_PURCHASE_ORDERS = sa.table(
+    "purchase_orders",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("status"),
+    sa.column("total"),
+)
+
+_PURCHASE_ORDER_LINES = sa.table(
+    "purchase_order_lines",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("order_id"),
+    sa.column("product_id"),
+    sa.column("qty"),
+    sa.column("amount"),
+    sa.column("unit_cost_is_override"),
 )
 
 _ACCOUNTS = sa.table(
@@ -1069,218 +1090,289 @@ _JOURNAL_LINES = sa.table(
 )
 
 
-async def resolve_workflow_target_unchecked(  # noqa: PLR0915
+async def _resolve_order_confirm(
+    session: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    entity_label: str,
+    order_table: Any,
+    line_table: Any,
+    override_col: Any,
+    price_col: Any,
+) -> Decimal:
+    stmt_order = (
+        select(order_table.c.id, order_table.c.status)
+        .where(order_table.c.id == entity_id, order_table.c.company_id == company_id)
+        .with_for_update()
+    )
+    res_order = (await session.execute(stmt_order)).first()
+    if res_order is None:
+        raise NotFoundError(entity_label, str(entity_id))
+    if str(res_order.status).lower() != "draft":
+        raise ConflictError(
+            f"{entity_label} {entity_id} is in status {res_order.status!r}; "
+            "only draft orders can be submitted for confirm workflow"
+        )
+
+    stmt_lines = (
+        select(
+            line_table.c.id,
+            line_table.c.product_id,
+            line_table.c.qty,
+            line_table.c.amount,
+            override_col.label("is_override"),
+            price_col.label("current_price"),
+        )
+        .select_from(
+            line_table.outerjoin(
+                _PRODUCTS,
+                sa.and_(
+                    _PRODUCTS.c.id == line_table.c.product_id,
+                    _PRODUCTS.c.company_id == company_id,
+                ),
+            )
+        )
+        .where(line_table.c.order_id == entity_id, line_table.c.company_id == company_id)
+    )
+    lines = (await session.execute(stmt_lines)).all()
+    if not lines:
+        raise DomainValidationError(
+            f"{entity_label} {entity_id} has no lines; cannot be submitted for confirmation"
+        )
+
+    new_total = Decimal("0")
+    for line in lines:
+        if line.current_price is None:
+            raise DomainValidationError(
+                f"{entity_label} {entity_id} line references "
+                f"invalid or missing product {line.product_id}"
+            )
+        if line.is_override:
+            new_total += parse_and_quantize_amount(line.amount, "line_amount")
+        else:
+            new_total += parse_and_quantize_amount(line.qty * line.current_price, "line_amount")
+
+    if new_total <= 0:
+        raise DomainValidationError(
+            f"{entity_label} {entity_id} recomputed total {new_total} is not positive"
+        )
+    return parse_and_quantize_amount(new_total, "recomputed_total")
+
+
+async def _resolve_order_cancel(
+    session: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    entity_label: str,
+    order_table: Any,
+    terminal_status: str,
+    terminal_verb: str,
+) -> Decimal:
+    stmt_order = (
+        select(order_table.c.id, order_table.c.status, order_table.c.total)
+        .where(order_table.c.id == entity_id, order_table.c.company_id == company_id)
+        .with_for_update()
+    )
+    res_order = (await session.execute(stmt_order)).first()
+    if res_order is None:
+        raise NotFoundError(entity_label, str(entity_id))
+    status_str = str(res_order.status).lower()
+    if status_str == "cancelled":
+        raise ConflictError(f"{entity_label} {entity_id} is already cancelled")
+    if status_str == terminal_status:
+        raise ConflictError(
+            f"{entity_label} {entity_id} has already {terminal_verb} and cannot be cancelled"
+        )
+    return parse_and_quantize_amount(res_order.total, "order_total")
+
+
+async def _resolve_invoice_void(
+    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+) -> Decimal:
+    stmt_inv = (
+        select(
+            _INVOICES.c.id,
+            _INVOICES.c.status,
+            _INVOICES.c.total,
+            _INVOICES.c.settled_amount,
+        )
+        .where(_INVOICES.c.id == entity_id, _INVOICES.c.company_id == company_id)
+        .with_for_update()
+    )
+    res_inv = (await session.execute(stmt_inv)).first()
+    if res_inv is None:
+        raise NotFoundError("Invoice", str(entity_id))
+    if str(res_inv.status).lower() == "voided":
+        raise ConflictError(f"Invoice {entity_id} is already voided")
+    if res_inv.settled_amount != 0:
+        raise ConflictError(
+            f"Invoice {entity_id} has settled_amount={res_inv.settled_amount} != 0; "
+            "cannot void a partially or fully settled invoice"
+        )
+    return parse_and_quantize_amount(res_inv.total, "invoice_total")
+
+
+async def _resolve_payment_void(
+    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+) -> Decimal:
+    stmt_pay = (
+        select(
+            _PAYMENTS.c.id,
+            _PAYMENTS.c.status,
+            _PAYMENTS.c.amount,
+            _PAYMENTS.c.allocated_amount,
+        )
+        .where(_PAYMENTS.c.id == entity_id, _PAYMENTS.c.company_id == company_id)
+        .with_for_update()
+    )
+    res_pay = (await session.execute(stmt_pay)).first()
+    if res_pay is None:
+        raise NotFoundError("Payment", str(entity_id))
+    if str(res_pay.status).lower() == "voided":
+        raise ConflictError(f"Payment {entity_id} is already voided")
+    if res_pay.allocated_amount != 0:
+        raise ConflictError(
+            f"Payment {entity_id} has allocated_amount={res_pay.allocated_amount} != 0; "
+            "cannot void a payment with active allocations"
+        )
+    return parse_and_quantize_amount(res_pay.amount, "payment_amount")
+
+
+async def _resolve_journal_entry_reverse(
+    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+) -> Decimal:
+    stmt_je = (
+        select(_JOURNAL_ENTRIES.c.id, _JOURNAL_ENTRIES.c.reversal_of_id)
+        .where(
+            _JOURNAL_ENTRIES.c.id == entity_id,
+            _JOURNAL_ENTRIES.c.company_id == company_id,
+        )
+        .with_for_update()
+    )
+    res_je = (await session.execute(stmt_je)).first()
+    if res_je is None:
+        raise NotFoundError("JournalEntry", str(entity_id))
+    if res_je.reversal_of_id is not None:
+        raise ReversalNotAllowedError(
+            f"JournalEntry {entity_id} is itself a reversal entry and cannot be reversed"
+        )
+
+    stmt_already = select(_JOURNAL_ENTRIES.c.id).where(
+        _JOURNAL_ENTRIES.c.reversal_of_id == entity_id,
+        _JOURNAL_ENTRIES.c.company_id == company_id,
+    )
+    if (await session.execute(stmt_already)).scalar_one_or_none() is not None:
+        raise ReversalNotAllowedError(f"JournalEntry {entity_id} has already been reversed")
+
+    stmt_ctrl = (
+        select(_ACCOUNTS.c.code)
+        .select_from(
+            _JOURNAL_LINES.join(
+                _ACCOUNTS,
+                sa.and_(
+                    _ACCOUNTS.c.id == _JOURNAL_LINES.c.account_id,
+                    _ACCOUNTS.c.company_id == company_id,
+                ),
+            )
+        )
+        .where(
+            _JOURNAL_LINES.c.entry_id == entity_id,
+            _JOURNAL_LINES.c.company_id == company_id,
+            ((_ACCOUNTS.c.is_control.is_(True)) | (_ACCOUNTS.c.code.in_(["1100"]))),
+        )
+    )
+    ctrl_code = (await session.execute(stmt_ctrl)).scalar_one_or_none()
+    if ctrl_code is not None:
+        raise DomainValidationError(
+            f"JournalEntry {entity_id} touches control account '{ctrl_code}'; "
+            "reversal is forbidden (ADR-008 R16)"
+        )
+
+    stmt_sum = select(
+        sa.func.coalesce(sa.func.sum(_JOURNAL_LINES.c.debit), 0),
+        sa.func.count(_JOURNAL_LINES.c.id),
+    ).where(
+        _JOURNAL_LINES.c.entry_id == entity_id,
+        _JOURNAL_LINES.c.company_id == company_id,
+    )
+    res_sum = (await session.execute(stmt_sum)).first()
+    total_debit = Decimal(str(res_sum[0])) if res_sum else Decimal("0")
+    line_count = res_sum[1] if res_sum else 0
+    if line_count == 0 or total_debit <= 0:
+        raise DomainValidationError(
+            f"JournalEntry {entity_id} has no lines or non-positive debit total ({total_debit})"
+        )
+    return parse_and_quantize_amount(total_debit, "total_debit")
+
+
+async def resolve_workflow_target_unchecked(
     session: AsyncSession,
     *,
     entity_type: str,
     entity_id: uuid.UUID,
     transition: str,
 ) -> Decimal:
-    """Resolve authoritative server-side amount for target entity (ADR-012 §2).
+    """Resolve authoritative server-side amount for target entity (ADR-012 / ADR-014).
 
     Uses SQLAlchemy Core tables with explicit company_id scoping (Contract 13 compliant).
     """
     company_id = require_current_company_id()
     e_type, t_type = validate_entity_transition(entity_type, transition)
 
-    # 1. ("sales_order", "confirm")
+    resolved: Decimal | None = None
     if e_type is WorkflowEntityType.SALES_ORDER and t_type is WorkflowTransition.CONFIRM:
-        stmt_order = (
-            select(_SALES_ORDERS.c.id, _SALES_ORDERS.c.status)
-            .where(_SALES_ORDERS.c.id == entity_id, _SALES_ORDERS.c.company_id == company_id)
-            .with_for_update()
+        resolved = await _resolve_order_confirm(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="SalesOrder",
+            order_table=_SALES_ORDERS,
+            line_table=_SALES_ORDER_LINES,
+            override_col=_SALES_ORDER_LINES.c.unit_price_is_override,
+            price_col=_PRODUCTS.c.list_price,
         )
-        res_order = (await session.execute(stmt_order)).first()
-        if res_order is None:
-            raise NotFoundError("SalesOrder", str(entity_id))
-        if str(res_order.status).lower() != "draft":
-            raise ConflictError(
-                f"SalesOrder {entity_id} is in status {res_order.status!r}; "
-                "only draft orders can be submitted for confirm workflow"
-            )
-
-        # Reprice lines against products list_price unless unit_price_is_override is True
-        stmt_lines = (
-            select(
-                _SALES_ORDER_LINES.c.id,
-                _SALES_ORDER_LINES.c.product_id,
-                _SALES_ORDER_LINES.c.qty,
-                _SALES_ORDER_LINES.c.amount,
-                _SALES_ORDER_LINES.c.unit_price_is_override,
-                _PRODUCTS.c.list_price,
-            )
-            .select_from(
-                _SALES_ORDER_LINES.outerjoin(
-                    _PRODUCTS,
-                    sa.and_(
-                        _PRODUCTS.c.id == _SALES_ORDER_LINES.c.product_id,
-                        _PRODUCTS.c.company_id == company_id,
-                    ),
-                )
-            )
-            .where(
-                _SALES_ORDER_LINES.c.order_id == entity_id,
-                _SALES_ORDER_LINES.c.company_id == company_id,
-            )
+    elif e_type is WorkflowEntityType.SALES_ORDER and t_type is WorkflowTransition.CANCEL:
+        resolved = await _resolve_order_cancel(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="SalesOrder",
+            order_table=_SALES_ORDERS,
+            terminal_status="shipped",
+            terminal_verb="shipped",
         )
-        lines = (await session.execute(stmt_lines)).all()
-        if not lines:
-            raise DomainValidationError(
-                f"SalesOrder {entity_id} has no lines; cannot be submitted for confirmation"
-            )
-
-        new_total = Decimal("0")
-        for line in lines:
-            if line.list_price is None:
-                raise DomainValidationError(
-                    f"SalesOrder {entity_id} line references "
-                    f"invalid or missing product {line.product_id}"
-                )
-            if line.unit_price_is_override:
-                new_total += parse_and_quantize_amount(line.amount, "line_amount")
-            else:
-                new_total += parse_and_quantize_amount(line.qty * line.list_price, "line_amount")
-
-        if new_total <= 0:
-            raise DomainValidationError(
-                f"SalesOrder {entity_id} recomputed total {new_total} is not positive"
-            )
-        return parse_and_quantize_amount(new_total, "recomputed_total")
-
-    # 2. ("sales_order", "cancel")
-    if e_type is WorkflowEntityType.SALES_ORDER and t_type is WorkflowTransition.CANCEL:
-        stmt_order = (
-            select(_SALES_ORDERS.c.id, _SALES_ORDERS.c.status, _SALES_ORDERS.c.total)
-            .where(_SALES_ORDERS.c.id == entity_id, _SALES_ORDERS.c.company_id == company_id)
-            .with_for_update()
+    elif e_type is WorkflowEntityType.PURCHASE_ORDER and t_type is WorkflowTransition.CONFIRM:
+        resolved = await _resolve_order_confirm(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="PurchaseOrder",
+            order_table=_PURCHASE_ORDERS,
+            line_table=_PURCHASE_ORDER_LINES,
+            override_col=_PURCHASE_ORDER_LINES.c.unit_cost_is_override,
+            price_col=_PRODUCTS.c.standard_cost,
         )
-        res_order = (await session.execute(stmt_order)).first()
-        if res_order is None:
-            raise NotFoundError("SalesOrder", str(entity_id))
-        status_str = str(res_order.status).lower()
-        if status_str == "cancelled":
-            raise ConflictError(f"SalesOrder {entity_id} is already cancelled")
-        if status_str == "shipped":
-            raise ConflictError(
-                f"SalesOrder {entity_id} has already shipped and cannot be cancelled"
-            )
-        return parse_and_quantize_amount(res_order.total, "order_total")
-
-    # 3. ("invoice", "void")
-    if e_type is WorkflowEntityType.INVOICE and t_type is WorkflowTransition.VOID:
-        stmt_inv = (
-            select(
-                _INVOICES.c.id,
-                _INVOICES.c.status,
-                _INVOICES.c.total,
-                _INVOICES.c.settled_amount,
-            )
-            .where(_INVOICES.c.id == entity_id, _INVOICES.c.company_id == company_id)
-            .with_for_update()
+    elif e_type is WorkflowEntityType.PURCHASE_ORDER and t_type is WorkflowTransition.CANCEL:
+        resolved = await _resolve_order_cancel(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="PurchaseOrder",
+            order_table=_PURCHASE_ORDERS,
+            terminal_status="received",
+            terminal_verb="received goods",
         )
-        res_inv = (await session.execute(stmt_inv)).first()
-        if res_inv is None:
-            raise NotFoundError("Invoice", str(entity_id))
-        if str(res_inv.status).lower() == "voided":
-            raise ConflictError(f"Invoice {entity_id} is already voided")
-        if res_inv.settled_amount != 0:
-            raise ConflictError(
-                f"Invoice {entity_id} has settled_amount={res_inv.settled_amount} != 0; "
-                "cannot void a partially or fully settled invoice"
-            )
-        return parse_and_quantize_amount(res_inv.total, "invoice_total")
+    elif e_type is WorkflowEntityType.INVOICE and t_type is WorkflowTransition.VOID:
+        resolved = await _resolve_invoice_void(session, company_id, entity_id)
+    elif e_type is WorkflowEntityType.PAYMENT and t_type is WorkflowTransition.VOID:
+        resolved = await _resolve_payment_void(session, company_id, entity_id)
+    elif e_type is WorkflowEntityType.JOURNAL_ENTRY and t_type is WorkflowTransition.REVERSE:
+        resolved = await _resolve_journal_entry_reverse(session, company_id, entity_id)
 
-    # 4. ("payment", "void")
-    if e_type is WorkflowEntityType.PAYMENT and t_type is WorkflowTransition.VOID:
-        stmt_pay = (
-            select(
-                _PAYMENTS.c.id,
-                _PAYMENTS.c.status,
-                _PAYMENTS.c.amount,
-                _PAYMENTS.c.allocated_amount,
-            )
-            .where(_PAYMENTS.c.id == entity_id, _PAYMENTS.c.company_id == company_id)
-            .with_for_update()
+    if resolved is None:
+        raise DomainValidationError(
+            f"Unsupported entity transition target resolution: ({entity_type}, {transition})"
         )
-        res_pay = (await session.execute(stmt_pay)).first()
-        if res_pay is None:
-            raise NotFoundError("Payment", str(entity_id))
-        if str(res_pay.status).lower() == "voided":
-            raise ConflictError(f"Payment {entity_id} is already voided")
-        if res_pay.allocated_amount != 0:
-            raise ConflictError(
-                f"Payment {entity_id} has allocated_amount={res_pay.allocated_amount} != 0; "
-                "cannot void a payment with active allocations"
-            )
-        return parse_and_quantize_amount(res_pay.amount, "payment_amount")
-
-    # 5. ("journal_entry", "reverse")
-    if e_type is WorkflowEntityType.JOURNAL_ENTRY and t_type is WorkflowTransition.REVERSE:
-        stmt_je = (
-            select(_JOURNAL_ENTRIES.c.id, _JOURNAL_ENTRIES.c.reversal_of_id)
-            .where(
-                _JOURNAL_ENTRIES.c.id == entity_id,
-                _JOURNAL_ENTRIES.c.company_id == company_id,
-            )
-            .with_for_update()
-        )
-        res_je = (await session.execute(stmt_je)).first()
-        if res_je is None:
-            raise NotFoundError("JournalEntry", str(entity_id))
-        if res_je.reversal_of_id is not None:
-            raise ReversalNotAllowedError(
-                f"JournalEntry {entity_id} is itself a reversal entry and cannot be reversed"
-            )
-
-        # Check if already reversed
-        stmt_already = select(_JOURNAL_ENTRIES.c.id).where(
-            _JOURNAL_ENTRIES.c.reversal_of_id == entity_id,
-            _JOURNAL_ENTRIES.c.company_id == company_id,
-        )
-        if (await session.execute(stmt_already)).scalar_one_or_none() is not None:
-            raise ReversalNotAllowedError(f"JournalEntry {entity_id} has already been reversed")
-
-        # Check control accounts (ADR-008 R16 / fail-fast)
-        stmt_ctrl = (
-            select(_ACCOUNTS.c.code)
-            .select_from(
-                _JOURNAL_LINES.join(
-                    _ACCOUNTS,
-                    sa.and_(
-                        _ACCOUNTS.c.id == _JOURNAL_LINES.c.account_id,
-                        _ACCOUNTS.c.company_id == company_id,
-                    ),
-                )
-            )
-            .where(
-                _JOURNAL_LINES.c.entry_id == entity_id,
-                _JOURNAL_LINES.c.company_id == company_id,
-                ((_ACCOUNTS.c.is_control.is_(True)) | (_ACCOUNTS.c.code.in_(["1100"]))),
-            )
-        )
-        ctrl_code = (await session.execute(stmt_ctrl)).scalar_one_or_none()
-        if ctrl_code is not None:
-            raise DomainValidationError(
-                f"JournalEntry {entity_id} touches control account '{ctrl_code}'; "
-                "reversal is forbidden (ADR-008 R16)"
-            )
-
-        stmt_sum = select(
-            sa.func.coalesce(sa.func.sum(_JOURNAL_LINES.c.debit), 0),
-            sa.func.count(_JOURNAL_LINES.c.id),
-        ).where(
-            _JOURNAL_LINES.c.entry_id == entity_id,
-            _JOURNAL_LINES.c.company_id == company_id,
-        )
-        res_sum = (await session.execute(stmt_sum)).first()
-        total_debit = Decimal(str(res_sum[0])) if res_sum else Decimal("0")
-        line_count = res_sum[1] if res_sum else 0
-        if line_count == 0 or total_debit <= 0:
-            raise DomainValidationError(
-                f"JournalEntry {entity_id} has no lines or non-positive debit total ({total_debit})"
-            )
-        return parse_and_quantize_amount(total_debit, "total_debit")
-
-    raise DomainValidationError(
-        f"Unsupported entity transition target resolution: ({entity_type}, {transition})"
-    )
+    return resolved

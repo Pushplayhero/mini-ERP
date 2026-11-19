@@ -36,6 +36,7 @@ from app.modules.masterdata.models import (
     Customer,
     ExchangeRate,
     Product,
+    Supplier,
     Uom,
     UomConversion,
 )
@@ -49,6 +50,8 @@ from app.modules.masterdata.schemas import (
     ExchangeRateCreate,
     ProductCreate,
     ProductUpdate,
+    SupplierCreate,
+    SupplierUpdate,
     UomConversionCreate,
     UomCreate,
 )
@@ -247,6 +250,79 @@ async def delete_customer(session: AsyncSession, customer_id: uuid.UUID) -> None
     customer = await load_customer_unchecked(session, customer_id)
     await session.delete(customer)
     await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Supplier (ADR-014)
+# ---------------------------------------------------------------------------
+
+
+async def create_supplier(session: AsyncSession, data: SupplierCreate) -> Supplier:
+    require_permission("masterdata.supplier.create")
+    company_id = require_current_company_id()
+    normalized_custom_data = await validate_and_normalize_custom_data(
+        session,
+        entity_type=CustomFieldEntityType.SUPPLIER,
+        raw_custom_data=data.custom_data,
+        is_create=True,
+    )
+    payload = data.model_dump()
+    payload["custom_data"] = normalized_custom_data
+    supplier = Supplier(company_id=company_id, **payload)
+    session.add(supplier)
+    await _commit_or_conflict(session, entity="Supplier")
+    await session.refresh(supplier)
+    return supplier
+
+
+async def list_suppliers(session: AsyncSession) -> Sequence[Supplier]:
+    require_permission("masterdata.supplier.read")
+    result = await session.execute(select(Supplier).order_by(Supplier.code))
+    return result.scalars().all()
+
+
+async def load_supplier_unchecked(session: AsyncSession, supplier_id: uuid.UUID) -> Supplier:
+    result = await session.execute(select(Supplier).where(Supplier.id == supplier_id))
+    supplier = result.scalars().first()
+    if supplier is None:
+        raise NotFoundError("Supplier", supplier_id)
+    return supplier
+
+
+async def get_supplier(session: AsyncSession, supplier_id: uuid.UUID) -> Supplier:
+    require_permission("masterdata.supplier.read")
+    return await load_supplier_unchecked(session, supplier_id)
+
+
+async def update_supplier(
+    session: AsyncSession, supplier_id: uuid.UUID, data: SupplierUpdate
+) -> Supplier:
+    require_permission("masterdata.supplier.update")
+    supplier = await load_supplier_unchecked(session, supplier_id)
+    updates = data.model_dump(exclude_unset=True)
+    if "custom_data" in updates:
+        if updates["custom_data"] is not None:
+            updates["custom_data"] = await validate_and_normalize_custom_data(
+                session,
+                entity_type=CustomFieldEntityType.SUPPLIER,
+                raw_custom_data=updates["custom_data"],
+                is_create=False,
+                existing_custom_data=supplier.custom_data,
+            )
+        else:
+            updates.pop("custom_data")
+    for field, value in updates.items():
+        setattr(supplier, field, value)
+    await _commit_or_conflict(session, entity="Supplier")
+    await session.refresh(supplier)
+    return supplier
+
+
+async def delete_supplier(session: AsyncSession, supplier_id: uuid.UUID) -> None:
+    require_permission("masterdata.supplier.delete")
+    supplier = await load_supplier_unchecked(session, supplier_id)
+    await session.delete(supplier)
+    await _commit_or_conflict(session, entity="Supplier")
 
 
 # ---------------------------------------------------------------------------

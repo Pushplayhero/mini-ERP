@@ -508,3 +508,71 @@ async def test_batch_export_uses_company_context_and_omits_bom_by_default(
             int_port.register_export_provider(BatchEntityType.SALES_ORDER, orig_provider)
         else:
             int_port._export_providers.pop(BatchEntityType.SALES_ORDER.value, None)
+
+
+@pytest.mark.asyncio
+async def test_batch_import_and_export_supplier_and_purchase_order(
+    db_session: AsyncSession,
+) -> None:
+    import app.main as _app_main  # noqa: F401  (ensures export providers are registered)
+    from app.modules.masterdata.models import Supplier
+    from app.modules.purchase.models import PurchaseOrder, PurchaseOrderStatus
+
+    co_id = await create_company(db_session, "BATCH_SUP_CO")
+    actor = ActorContext(
+        user_id=uuid.uuid4(),
+        permission_codes=frozenset({"platform.integration.import", "platform.integration.read"}),
+    )
+
+    csv_data = (
+        "code,name,currency_code,payment_terms_days\n"
+        "SUP01,Alpha Vendor,TWD,30\n"
+        "SUP02,=EvilVendor,TWD,45\n"
+    )
+
+    with company_context(co_id), actor_context(actor):
+        job, errors = await batch.import_batch_data(
+            db_session,
+            BatchEntityType.SUPPLIER,
+            csv_data,
+            data_format=BatchDataFormat.CSV,
+            dry_run=False,
+        )
+        assert job.status == "COMPLETED"
+        assert job.succeeded_rows == 2
+        assert not errors
+
+        csv_sup, exp_sup_job = await batch.export_batch_data(
+            db_session,
+            BatchEntityType.SUPPLIER,
+            data_format=BatchDataFormat.CSV,
+        )
+        assert exp_sup_job.status == "COMPLETED"
+        assert exp_sup_job.total_rows == 2
+        assert "SUP01,Alpha Vendor,TWD,30" in csv_sup
+        assert "'=EvilVendor" in csv_sup
+
+        sup1 = (
+            await db_session.scalars(
+                select(Supplier).where(Supplier.company_id == co_id, Supplier.code == "SUP01")
+            )
+        ).one()
+        po = PurchaseOrder(
+            company_id=co_id,
+            order_no="PO-2026-000001",
+            supplier_id=sup1.id,
+            status=PurchaseOrderStatus.DRAFT,
+            currency_code="TWD",
+            total=Decimal("150.000000"),
+        )
+        db_session.add(po)
+        await db_session.commit()
+
+        json_po, exp_po_job = await batch.export_batch_data(
+            db_session,
+            BatchEntityType.PURCHASE_ORDER,
+            data_format=BatchDataFormat.JSON,
+        )
+        assert exp_po_job.status == "COMPLETED"
+        assert exp_po_job.total_rows == 1
+        assert "PO-2026-000001" in json_po

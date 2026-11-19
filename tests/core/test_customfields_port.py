@@ -44,21 +44,25 @@ def test_custom_field_type_enums() -> None:
 def test_custom_field_entity_type_enums() -> None:
     expected_entities = {
         "customer",
+        "supplier",
         "product",
         "account",
         "accounting_period",
         "journal_entry",
         "sales_order",
+        "purchase_order",
         "invoice",
         "payment",
     }
     assert {e.value for e in CustomFieldEntityType} == expected_entities
     assert CustomFieldEntityType.CUSTOMER.value == "customer"
+    assert CustomFieldEntityType.SUPPLIER.value == "supplier"
     assert CustomFieldEntityType.PRODUCT.value == "product"
     assert CustomFieldEntityType.ACCOUNT.value == "account"
     assert CustomFieldEntityType.ACCOUNTING_PERIOD.value == "accounting_period"
     assert CustomFieldEntityType.JOURNAL_ENTRY.value == "journal_entry"
     assert CustomFieldEntityType.SALES_ORDER.value == "sales_order"
+    assert CustomFieldEntityType.PURCHASE_ORDER.value == "purchase_order"
     assert CustomFieldEntityType.INVOICE.value == "invoice"
     assert CustomFieldEntityType.PAYMENT.value == "payment"
 

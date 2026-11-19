@@ -80,6 +80,7 @@ class HookContext:
     order_no: str | None
     customer_id: uuid.UUID
     total: Decimal
+    supplier_id: uuid.UUID | None = None
 
 
 HookHandler = Callable[[AsyncSession, HookContext], Awaitable[None]]

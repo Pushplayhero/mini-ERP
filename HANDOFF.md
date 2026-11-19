@@ -1,12 +1,19 @@
-# HANDOFF — mini-erp (WEEK9, WEEK10, WEEK11, WEEK12, WEEK13 Complete (100%) — 2026-11-13)
+# HANDOFF — mini-erp (Phase 2 `v0.2.0-platform` Released + Phase 3 Week 14 `ADR-014` Complete — 2026-11-18)
 
-Updated 2026-11-13. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
+Updated 2026-11-18. This is the current handoff status; the dated sections below are retained as historical project context and may describe earlier repository states.
 
-## Product and repository status — 2026-11-13
+## Product and repository status — 2026-11-18
 
 ### Product
 
-mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. The implemented Phase 1 order-to-cash flow covers master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting. It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries.
+mini-ERP is an API-only, self-hostable modular ERP kernel for Taiwanese SMEs. Phase 1 covers order-to-cash (master data, sales orders, shipping and inventory, receivables, payments, and double-entry ledger posting); Phase 2 (`v0.2.0-platform`) delivers the 5 platform capabilities (`permissions`, `plugins`, `customfields`, `workflow`, `integration`); Phase 3 begins the P2P / Suites expansion with Week 14 (`ADR-014`: `masterdata.Supplier` + `app.modules.purchase` POs and two-stage GR/IR goods receiving). It uses Python 3.12, FastAPI, async SQLAlchemy/asyncpg, PostgreSQL 16, and Alembic. Tenant isolation is fail-closed; posted financial state and stock movements use append-only/auditable patterns; domain events connect business modules while import-linter enforces module boundaries.
+
+Phase 3 Suites capabilities implemented to date:
+- **Phase 3 Blueprint (`docs/adr/PHASE3-suites-architecture-overview.md`)**: Establishes the P2P -> Costing -> MRP expansion roadmap (`purchase` -> `payables` -> `costing` -> `mrp`) and two-stage GR/IR (`Dr 1300 Inventory / Cr 2110 Accrued Purchases`, settled later in `payables`) architecture.
+- **ADR-014 (`masterdata.Supplier` & `app.modules.purchase`, WEEK14 Slices A–D Complete)**:
+  - **Slice A**: Core ports extended (`HookContext.supplier_id`, `CustomFieldEntityType.SUPPLIER` & `PURCHASE_ORDER`, `WorkflowEntityType.PURCHASE_ORDER` with `confirm` & `cancel`, `BatchEntityType.SUPPLIER` & `PURCHASE_ORDER` with CSV/JSON import for suppliers and export for both); Alembic migration `0015_purchase_and_suppliers.py` (`suppliers`, `purchase_sequences`, `purchase_orders`, `purchase_order_lines` tables, updated customfield/workflow DDL CHECK constraints, `StockMoveType.RECEIPT`, and 10 new RBAC permissions expanding the catalog from 55 to 65); `pyproject.toml` updated so all 14 `import-linter` contracts include `app.modules.purchase`.
+  - **Slice B & C**: `masterdata.Supplier` CRUD (`/api/v1/suppliers`, TWD & `payment_terms_days` 0..365 guards, `custom_data`); `app.modules.purchase` (`/api/v1/purchase-orders` CRUD, `PO-{YYYY}-{NNNNNN}` numbering, `purchase.order.validate_confirm` hook, confirm-time `standard_cost` repricing, `6dp` `ROUND_HALF_EVEN` Banker's Rounding, workflow gating for `confirm`/`cancel`, and `receive_order` using frozen PO costs); `inventory.handle_goods_received` (`StockMoveType.RECEIPT`, sorted `product_id` lock ordering, savepoint idempotency); `ledger.posting` (`purchase.goods_received` -> `Dr 1300 Inventory / Cr 2110 Accrued Purchases`, using `received_at` for period fallback); `platform.workflow` PO confirm/cancel target resolution; `platform.integration` supplier import & supplier/PO export adapters; `seed_demo` updates (`2000`, `2110`, `DEMOSUP`).
+  - **Slice D**: Test coverage across `tests/masterdata/test_suppliers_api.py`, `tests/masterdata/test_cross_company_isolation.py`, `tests/purchase/{test_orders_api,test_receiving,test_confirm_concurrency}.py`, `tests/platform/test_integration_batch.py`, `tests/core/test_*_port.py`, and `tests/test_migrations.py` (`0015` schema & downgrade/upgrade cycle); documentation closure (`README.md`, `README.zh-TW.md`, `HANDOFF.md`) and D.5 Security Gate reconciliation to **264 tracked files**.
 
 Phase 2 platform capabilities implemented to date:
 - **ADR-009 (`platform.permissions`, WEEK9 Slices A–F Complete)**: Fail-closed Bearer session authentication, RBAC permission catalog, startup route classification (`_classify_routes_or_crash`), Slice D.5 Hybrid Security Gate, and Slice E CLI-only reference-data/company provisioning are fully implemented and verified.
@@ -76,8 +83,11 @@ Per the owner's 2026-10-22 decision, Slice D.5 is closed under the **Hybrid Righ
    - Slice B: `platform.integration` models, schemas, anti-SSRF, HMAC signing, service, and `/api/v1/integrations` router (**DONE**).
    - Slice C: Standalone Outbox Worker, Batch Import/Export Engine, 8 entity export adapters, CLI (`manage_integrations.py`, `run_outbox_worker.py`), and test suites (**DONE**).
    - Slice D: Dual-worker SKIP LOCKED & cross-tenant fair claim concurrency proof, lease recovery, red-team adversarial review & hardening (IP-pinned DNS rebinding defense, strict port allowlist, `Accept-Encoding: identity` & `aiter_raw()` byte caps, `asyncio.timeout`, dual-secret overlap rotation, Alibaba/CGNAT/benchmark blocks, hardened export-only CSV injection defense, `custom_data` validation, service RBAC, `VULN-06` Accepted Risk documented in `threat-model.md`), test suite (`tests/platform/test_integration_concurrency.py`), docs closure, and D.5 manifest alignment to 245 tracked files (**DONE**).
-6. **Phase 2 Platform Milestones Complete**: All 5 core platform modules (`permissions`, `plugins`, `customfields`, `workflow`, `integration`) are implemented, hardened, and verified under strict engineering gates.
-7. **Proceed to Phase 3**: Business Suite expansions (Purchasing, Fixed Assets, Manufacturing, and Taiwan e-invoicing/GUI localization).
+6. **Phase 2 Platform Milestones Complete (`v0.2.0-platform`)**: All 5 core platform modules (`permissions`, `plugins`, `customfields`, `workflow`, `integration`) are implemented, hardened, and released at `v0.2.0-platform` (`816ff40`).
+7. **WEEK14 (`ADR-014` Purchase & Supplier Masterdata) is 100% complete** across Slices A–D:
+   - Core ports extended (`HookContext.supplier_id`, `CustomFieldEntityType.SUPPLIER` / `PURCHASE_ORDER`, `WorkflowEntityType.PURCHASE_ORDER`, `BatchEntityType.SUPPLIER` / `PURCHASE_ORDER`); Alembic migration `0015` (65 catalog permissions, `suppliers`, `purchase_*` tables, `RECEIPT` enum); 14 `import-linter` contracts enforced.
+   - `masterdata.Supplier`, `app.modules.purchase` PO lifecycle & hooks/workflows/customfields, `inventory.handle_goods_received`, `ledger.posting` two-stage GR/IR accrual (`Dr 1300 / Cr 2110`), batch import/export adapters, and full test/doc/D.5 reconciliation (264 tracked files).
+8. **Proceed to Phase 3 Week 15**: `app.modules.payables` (Supplier Bills / Invoices, GR/IR `2110 -> 2000` clearing, Outgoing Payments, AP Aging).
 
 ---
 

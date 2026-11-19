@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 249,
+  "expected_total_files": 264,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 249,
+      "expected_total_files": 264,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -92,12 +92,14 @@
           ]
         },
         "u04_sales_plugins": {
-          "expected_file_count": 19,
+          "expected_file_count": 30,
           "paths": [
             "app/modules/__init__.py",
             "app/modules/sales",
+            "app/modules/purchase",
             "app/plugins",
             "tests/sales",
+            "tests/purchase",
             "docs/adr/ADR-006-sales-and-hook-registry.md"
           ]
         },
@@ -154,14 +156,14 @@
           ]
         },
         "u09_masterdata": {
-          "expected_file_count": 13,
+          "expected_file_count": 14,
           "paths": [
             "app/modules/masterdata",
             "tests/masterdata"
           ]
         },
         "u10_migrations": {
-          "expected_file_count": 19,
+          "expected_file_count": 20,
           "paths": [
             "alembic",
             "alembic.ini",
@@ -195,7 +197,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 26,
+          "expected_file_count": 28,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -210,7 +212,9 @@
             "docs/adr/ADR-011-platform-customfields.md",
             "docs/adr/ADR-012-platform-workflow.md",
             "docs/adr/ADR-013-platform-integration.md",
+            "docs/adr/ADR-014-purchase-and-supplier-masterdata.md",
             "docs/adr/PHASE2-platform-architecture-overview.md",
+            "docs/adr/PHASE3-suites-architecture-overview.md",
             "docs/adr/README.md",
             "docs/adr/WEEK7-phase1-hardening-brief.md",
             "docs/adr/WEEK8-phase1-polish-brief.md",
@@ -251,14 +255,16 @@
     },
     {
       "id": "b_sales_inventory_plugins",
-      "expected_file_count": 39,
+      "expected_file_count": 50,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/__init__.py",
         "app/modules/sales",
+        "app/modules/purchase",
         "app/modules/inventory",
         "app/plugins",
         "tests/sales",
+        "tests/purchase",
         "tests/inventory",
         "tests/e2e",
         "docs/adr/ADR-006-sales-and-hook-registry.md",
@@ -285,7 +291,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 58,
+      "expected_file_count": 60,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -319,7 +325,7 @@
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 28,
+      "expected_file_count": 30,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",
@@ -337,7 +343,9 @@
         "docs/adr/ADR-011-platform-customfields.md",
         "docs/adr/ADR-012-platform-workflow.md",
         "docs/adr/ADR-013-platform-integration.md",
+        "docs/adr/ADR-014-purchase-and-supplier-masterdata.md",
         "docs/adr/PHASE2-platform-architecture-overview.md",
+        "docs/adr/PHASE3-suites-architecture-overview.md",
         "docs/adr/README.md",
         "docs/adr/WEEK7-phase1-hardening-brief.md",
         "docs/adr/WEEK8-phase1-polish-brief.md",

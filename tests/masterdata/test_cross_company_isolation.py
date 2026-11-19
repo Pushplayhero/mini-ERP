@@ -225,11 +225,59 @@ async def test_account_cross_company_get_patch_delete_are_404(client: AsyncClien
 async def test_all_tenant_endpoints_reject_missing_company_context(client: AsyncClient) -> None:
     for method, path in [
         ("GET", "/api/v1/customers"),
+        ("GET", "/api/v1/suppliers"),
         ("GET", "/api/v1/products"),
         ("GET", "/api/v1/accounts"),
     ]:
         response = await client.request(method, path)
         assert response.status_code == 401, f"{method} {path} did not fail-closed"
+
+
+# ---------------------------------------------------------------------------
+# suppliers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_supplier_cross_company_get_patch_delete_and_list_isolation(
+    client: AsyncClient,
+) -> None:
+    company_a = await _create_company(client, "ISOSUPA")
+    company_b = await _create_company(client, "ISOSUPB")
+
+    create_response = await client.post(
+        "/api/v1/suppliers",
+        json={"code": "SUP-SECRET", "name": "Secret Supplier", "currency_code": "TWD"},
+        headers=company_headers(company_a),
+    )
+    assert create_response.status_code == 201
+    supplier_id = create_response.json()["id"]
+
+    own_read = await client.get(
+        f"/api/v1/suppliers/{supplier_id}", headers=company_headers(company_a)
+    )
+    assert own_read.status_code == 200
+
+    cross_read = await client.get(
+        f"/api/v1/suppliers/{supplier_id}", headers=company_headers(company_b)
+    )
+    assert cross_read.status_code == 404
+
+    cross_patch = await client.patch(
+        f"/api/v1/suppliers/{supplier_id}",
+        json={"name": "Hijacked"},
+        headers=company_headers(company_b),
+    )
+    assert cross_patch.status_code == 404
+
+    cross_delete = await client.delete(
+        f"/api/v1/suppliers/{supplier_id}", headers=company_headers(company_b)
+    )
+    assert cross_delete.status_code == 404
+
+    list_b = await client.get("/api/v1/suppliers", headers=company_headers(company_b))
+    assert list_b.status_code == 200
+    assert list_b.json() == []
 
 
 # ---------------------------------------------------------------------------

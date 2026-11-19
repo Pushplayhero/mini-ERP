@@ -116,6 +116,28 @@ class Customer(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     is_active: Mapped[bool] = mapped_column(SQLBoolean, nullable=False, default=True)
 
 
+class Supplier(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
+    __tablename__ = "suppliers"
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_suppliers_company_code"),
+        CheckConstraint(
+            "payment_terms_days BETWEEN 0 AND 365",
+            name="ck_suppliers_payment_terms_days_range",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    code: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    currency_code: Mapped[str] = mapped_column(
+        String(3), ForeignKey("currencies.code"), nullable=False
+    )
+    payment_terms_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="30")
+    is_active: Mapped[bool] = mapped_column(SQLBoolean, nullable=False, default=True)
+
+
 class Product(Base, TenantScopedMixin, TimestampAuditMixin, CustomDataMixin):
     __tablename__ = "products"
     __table_args__ = (

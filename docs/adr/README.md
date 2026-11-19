@@ -15,6 +15,11 @@
 | [ADR-011](ADR-011-platform-customfields.md) | `platform.customfields` — tenant-governed custom field engine, strong type normalization, and public port isolation | Accepted |
 | [ADR-012](ADR-012-platform-workflow.md) | `platform.workflow` — configurable approval chains, amount-threshold routing, and state-transition gate | Accepted |
 | [ADR-013](ADR-013-platform-integration.md) | `platform.integration` — webhooks, outbox worker, batch import/export, and SSRF defense | Accepted |
+| [ADR-014](ADR-014-purchase-and-supplier-masterdata.md) | `purchase` + `masterdata.Supplier` — procurement lifecycle, goods receipt intake, and two-stage GR/IR accrual | Accepted |
+
+See also:
+- [Phase 2 Architecture Overview](PHASE2-platform-architecture-overview.md)
+- [Phase 3 Suites Architecture Overview](PHASE3-suites-architecture-overview.md)
 
 ADR-003 through ADR-008 each passed a real `codex` CLI architecture
 consensus review before implementation (see each ADR's "Consensus

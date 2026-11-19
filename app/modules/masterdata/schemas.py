@@ -176,6 +176,64 @@ class CustomerRead(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Supplier (ADR-014)
+# ---------------------------------------------------------------------------
+
+
+class SupplierCreate(BaseModel):
+    code: str = Field(max_length=32)
+    name: str = Field(max_length=255)
+    currency_code: str = Field(min_length=3, max_length=3)
+    payment_terms_days: int = Field(default=30, ge=0, le=365)
+    is_active: bool = True
+    custom_data: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("currency_code")
+    @classmethod
+    def _currency_is_phase_1_supported(cls, value: str) -> str:
+        if value != _PHASE_1_FUNCTIONAL_CURRENCY:
+            raise ValueError(
+                f"currency_code must be {_PHASE_1_FUNCTIONAL_CURRENCY!r} (got {value!r}) "
+                "— ADR-014: real multi-currency AP/invoicing is deferred until multi-currency "
+                "ledger settlement is introduced"
+            )
+        return value
+
+
+class SupplierUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    currency_code: str | None = Field(default=None, min_length=3, max_length=3)
+    payment_terms_days: int | None = Field(default=None, ge=0, le=365)
+    is_active: bool | None = None
+    custom_data: dict[str, Any] | None = None
+
+    @field_validator("currency_code")
+    @classmethod
+    def _currency_is_phase_1_supported(cls, value: str | None) -> str | None:
+        if value is not None and value != _PHASE_1_FUNCTIONAL_CURRENCY:
+            raise ValueError(
+                f"currency_code must be {_PHASE_1_FUNCTIONAL_CURRENCY!r} (got {value!r}) "
+                "— see SupplierCreate's validator (ADR-014)"
+            )
+        return value
+
+
+class SupplierRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    company_id: uuid.UUID
+    code: str
+    name: str
+    currency_code: str
+    payment_terms_days: int
+    is_active: bool
+    custom_data: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # Product
 # ---------------------------------------------------------------------------
 

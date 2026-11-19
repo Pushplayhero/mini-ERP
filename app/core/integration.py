@@ -23,9 +23,11 @@ class BatchEntityType(StrEnum):
     """Business entities supporting batch import and/or export."""
 
     CUSTOMER = "customer"
+    SUPPLIER = "supplier"
     PRODUCT = "product"
     ACCOUNT = "account"
     SALES_ORDER = "sales_order"
+    PURCHASE_ORDER = "purchase_order"
     INVOICE = "invoice"
     PAYMENT = "payment"
     JOURNAL_ENTRY = "journal_entry"
@@ -42,6 +44,7 @@ class BatchDataFormat(StrEnum):
 IMPORT_SUPPORTED_ENTITIES: frozenset[BatchEntityType] = frozenset(
     {
         BatchEntityType.CUSTOMER,
+        BatchEntityType.SUPPLIER,
         BatchEntityType.PRODUCT,
         BatchEntityType.ACCOUNT,
     }

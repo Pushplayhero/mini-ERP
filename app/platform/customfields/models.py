@@ -35,8 +35,8 @@ class CustomFieldDefinition(Base, TenantScopedMixin, TimestampAuditMixin):
             name="ck_custom_field_key_format",
         ),
         CheckConstraint(
-            "entity_type IN ('customer', 'product', 'account', 'accounting_period', "
-            "'journal_entry', 'sales_order', 'invoice', 'payment')",
+            "entity_type IN ('customer', 'supplier', 'product', 'account', 'accounting_period', "
+            "'journal_entry', 'sales_order', 'purchase_order', 'invoice', 'payment')",
             name="ck_custom_field_entity_type_valid",
         ),
         CheckConstraint(

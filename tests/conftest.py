@@ -217,7 +217,8 @@ async def _clean_tenant_tables(
                 "webhook_deliveries, integration_outbox_receipts, "
                 "webhook_endpoints, integration_batch_jobs, "
                 "sales_order_lines, sales_orders, sales_sequences, "
-                "customers, products, accounts, outbox, company_plugins, "
+                "purchase_order_lines, purchase_orders, purchase_sequences, "
+                "customers, suppliers, products, accounts, outbox, company_plugins, "
                 "custom_field_definitions, "
                 "workflow_approval_logs, workflow_instances, workflow_steps, workflow_definitions, "
                 "companies, "
@@ -254,6 +255,10 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "masterdata.customer.read",
         "masterdata.customer.update",
         "masterdata.customer.delete",
+        "masterdata.supplier.create",
+        "masterdata.supplier.read",
+        "masterdata.supplier.update",
+        "masterdata.supplier.delete",
         "masterdata.product.create",
         "masterdata.product.read",
         "masterdata.product.update",
@@ -274,6 +279,12 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "sales.order.confirm",
         "sales.order.cancel",
         "sales.order.ship",
+        "purchase.order.create",
+        "purchase.order.read",
+        "purchase.order.update",
+        "purchase.order.confirm",
+        "purchase.order.cancel",
+        "purchase.order.receive",
         "ledger.period.create",
         "ledger.period.read",
         "ledger.period.close",

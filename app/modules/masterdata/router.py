@@ -37,6 +37,9 @@ from app.modules.masterdata.schemas import (
     ProductCreate,
     ProductRead,
     ProductUpdate,
+    SupplierCreate,
+    SupplierRead,
+    SupplierUpdate,
     UomConversionRead,
     UomRead,
 )
@@ -126,6 +129,64 @@ async def update_customer(
 )
 async def delete_customer(customer_id: uuid.UUID, session: DbSession) -> None:
     await service.delete_customer(session, customer_id)
+
+
+# ---------------------------------------------------------------------------
+# Suppliers (ADR-014)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/suppliers",
+    response_model=SupplierRead,
+    status_code=201,
+    dependencies=[Depends(RequiresPermission("masterdata.supplier.create"))],
+)
+async def create_supplier(payload: SupplierCreate, session: DbSession) -> SupplierRead:
+    supplier = await service.create_supplier(session, payload)
+    return SupplierRead.model_validate(supplier)
+
+
+@router.get(
+    "/suppliers",
+    response_model=list[SupplierRead],
+    dependencies=[Depends(RequiresPermission("masterdata.supplier.read"))],
+)
+async def list_suppliers(session: DbSession) -> list[SupplierRead]:
+    suppliers = await service.list_suppliers(session)
+    return [SupplierRead.model_validate(s) for s in suppliers]
+
+
+@router.get(
+    "/suppliers/{supplier_id}",
+    response_model=SupplierRead,
+    dependencies=[Depends(RequiresPermission("masterdata.supplier.read"))],
+)
+async def get_supplier(supplier_id: uuid.UUID, session: DbSession) -> SupplierRead:
+    supplier = await service.get_supplier(session, supplier_id)
+    return SupplierRead.model_validate(supplier)
+
+
+@router.patch(
+    "/suppliers/{supplier_id}",
+    response_model=SupplierRead,
+    dependencies=[Depends(RequiresPermission("masterdata.supplier.update"))],
+)
+async def update_supplier(
+    supplier_id: uuid.UUID, payload: SupplierUpdate, session: DbSession
+) -> SupplierRead:
+    supplier = await service.update_supplier(session, supplier_id, payload)
+    return SupplierRead.model_validate(supplier)
+
+
+@router.delete(
+    "/suppliers/{supplier_id}",
+    status_code=204,
+    response_model=None,
+    dependencies=[Depends(RequiresPermission("masterdata.supplier.delete"))],
+)
+async def delete_supplier(supplier_id: uuid.UUID, session: DbSession) -> None:
+    await service.delete_supplier(session, supplier_id)
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,7 @@ AMOUNT = Numeric(20, 6)
 class StockMoveType(str, enum.Enum):
     SHIPMENT = "shipment"
     ADJUSTMENT = "adjustment"
+    RECEIPT = "receipt"
 
 
 class StockMove(Base, TenantScopedMixin):

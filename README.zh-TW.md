@@ -8,10 +8,10 @@
 > 取代購買顧問工時來客製、而且真正能信任自己資料的鼎新。開源、
 > API-first、可用 plugin 擴充的 ERP 核心。
 
-**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields`、`platform.workflow` 與 `platform.integration`）已完成。** 五個業務模組
-——masterdata、ledger、sales、inventory + shipping、receivables——
+**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields`、`platform.workflow` 與 `platform.integration`）已完成 + Phase 3 Suites 推進中（Week 14 / ADR-014 採購模組與供應商主檔已完成）。** 六個業務模組
+——masterdata（含供應商）、ledger、sales、purchase、inventory + 出貨/收貨、receivables——
 在一個真正的複式簿記過帳引擎（posting engine）之上，實作了完整的
-order-to-cash（O2C，訂單到收款）流程；每一個模組都有對應的
+order-to-cash（O2C，訂單到收款）流程以及 procure-to-pay（P2P）前半段（採購單 → GR/IR 驗收入庫）；每一個模組都有對應的
 [架構決策紀錄（ADR）](docs/adr/README.md)——ADR-003 到 ADR-008 在實作
 之前都經過真正的 `codex` CLI 共識審查（consensus review），ADR-001/
 ADR-002 記錄的則是 Week 1-2 就已經拍板並上線的決策（兩者的差別見下方
@@ -151,8 +151,9 @@ graph TB
         MW["AuthenticationMiddleware<br/>驗證 Bearer Token & 綁定 Session Context"]
 
         subgraph Modules["業務模組 — 互相獨立，不跨模組 import（CI 強制檢查）"]
-            MD["masterdata<br/>公司 · 客戶 · 商品 · UoM · 科目"]
+            MD["masterdata<br/>公司 · 客戶 · 供應商 · 商品 · UoM · 科目"]
             SA["sales<br/>訂單：draft → confirmed → shipped"]
+            PU["purchase<br/>採購單：draft → confirmed → received"]
             IN["inventory<br/>append-only stock_moves + stock_summary"]
             RE["receivables<br/>發票 · 收款 · 帳齡"]
         end
@@ -165,13 +166,15 @@ graph TB
     PG[("PostgreSQL 16<br/>append-only 事實表，ADR-002")]
 
     Client -->|"HTTP + Authorization: Bearer <token>"| MW
-    MW --> MD & SA & IN & RE
+    MW --> MD & SA & PU & IN & RE
     SA -->|"sales.order.validate_confirm hook"| PL
-    SA -->|"發布事件：order_confirmed（目前沒有訂閱者）、goods_shipped"| EB
+    PU -->|"purchase.order.validate_confirm hook"| PL
+    SA -->|"發布事件：order_confirmed、goods_shipped"| EB
+    PU -->|"發布事件：order_confirmed、goods_received"| EB
     RE -->|"發布事件：invoice_issued/voided、payment_received/voided"| EB
-    EB -->|"goods_shipped 的訂閱者，第一個執行：扣庫存"| IN
-    EB -->|"goods_shipped 的訂閱者（第二個執行）+ 全部 4 個 receivables 事件：過一筆平衡的傳票"| LE
-    MD & SA & IN & RE & LE --> PG
+    EB -->|"goods_shipped / goods_received（第一個執行）：扣減/入庫庫存"| IN
+    EB -->|"goods_shipped / goods_received（第二個執行）+ 4 個 receivables 事件：過一筆平衡傳票"| LE
+    MD & SA & PU & IN & RE & LE --> PG
 ```
 
 每一個進入*租戶範圍（tenant-scoped）*操作的箭頭，在任何查詢真正執行
@@ -349,6 +352,8 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 | `platform.customfields` ——租戶自訂欄位治理引擎、強型別正規化與公開埠隔離 | [ADR-011](docs/adr/ADR-011-platform-customfields.md) |
 | `platform.workflow` ——狀態機、多階審批、職能分工（SoD）與業務交易把關 | [ADR-012](docs/adr/ADR-012-platform-workflow.md) |
 | `platform.integration` ——Webhooks、Outbox Worker、批次匯入/匯出與 SSRF 防護 | [ADR-013](docs/adr/ADR-013-platform-integration.md) |
+| Phase 3 Suites 藍圖（P2P / GR/IR / Costing / MRP 路線圖） | [Phase 3 Overview](docs/adr/PHASE3-suites-architecture-overview.md) |
+| 採購模組與供應商主檔（PO、驗收入庫、GR/IR 暫估入帳） | [ADR-014](docs/adr/ADR-014-purchase-and-supplier-masterdata.md) |
 
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
@@ -383,7 +388,7 @@ round-half-even（銀行家捨入法），不是丟給 DB 隱含轉型：傳票�
 `Customer.credit_limit`、`Product.list_price`/`standard_cost`
 （`masterdata.schemas`）、`SalesOrderLineCreate.unit_price`
 （`sales.schemas`）則是從 Week 8 Decision 0 開始。每個模組各自擁有
-一份私有的 round-half-even 輔助函式（masterdata/sales/receivables 與
+一份私有的 round-half-even 輔助函式（masterdata/sales/purchase/receivables 與
 `plugins.credit_limit` 裡叫 `_round_half_even_6dp`；ledger 裡叫
 `_round_half_even_to_6dp`）——依照 import-linter 的模組獨立性契約，
 從不跨模組 import——而不是共用 `app/core/` 底下的一份。`credit_limit`
@@ -403,20 +408,19 @@ ADR-002，說明這是刻意的、逐領域決定的取捨，跟同樣有維護�
 `publish()` 會先驗證 payload 符合已註冊的 schema、在呼叫者自己的
 交易內寫一列到 `outbox`，然後依序同步呼叫每一個訂閱的 handler——
 任何一個 handler 拋出例外都會讓整個交易一起 rollback。不是每一個
-已註冊的事件都有訂閱者：`sales.order_confirmed` 有註冊（讓
-`publish()`/replay 依然能驗證它的 schema、依然會產生一筆 outbox
-紀錄）但刻意沒有任何訂閱者（ADR-006 Decision 4）——沒有任何東西會對
-「confirmed」這件事本身有反應。`app/modules/ledger/posting.py`
-訂閱了 `sales.goods_shipped` 跟全部 4 個 `receivables.*` 事件，透過一張
+已註冊的事件都有訂閱者：`sales.order_confirmed` 與 `purchase.order_confirmed`
+均有註冊（讓 `publish()`/replay 依然能驗證其 schema、依然會產生一筆 outbox 紀錄）
+但刻意不綁定副作用訂閱者（ADR-006 Decision 4、ADR-014 Decision 4）——沒有任何東西會對
+「confirmed」這件事本身自動記帳。`app/modules/ledger/posting.py`
+訂閱了 `sales.goods_shipped`、`purchase.goods_received` 跟全部 4 個 `receivables.*` 事件，透過一張
 宣告式規則表，把每一個都轉成一筆平衡的傳票。
-`app/modules/inventory/service.py` 的 `handle_goods_shipped` **也**
-訂閱了 `sales.goods_shipped`，用來扣庫存——`goods_shipped` 是目前唯一
-有兩個訂閱者的已註冊事件（每一個 `receivables.*` 事件都只有
-`ledger.posting` 這一個訂閱者），而對它來說，**訂閱順序是規範性的、
-不是隨意的**（ADR-007 Decision 1）：inventory 的扣庫存 handler 會先於
-ledger 的過帳 handler 執行，「先搬貨、再記帳」。兩者都在跟 publish
-同一個交易裡執行，所以不管順序為何都會一起 commit 或一起
-rollback；順序只影響 `ship` 失敗時，是哪個 handler 的例外被歸咎為
+`app/modules/inventory/service.py` 的 `handle_goods_shipped` 與 `handle_goods_received` **也**
+分別訂閱了 `sales.goods_shipped` 與 `purchase.goods_received`，用來扣減或增加庫存——
+對這兩類實體貨物流轉事件來說，**訂閱順序是規範性的、不是隨意的**（ADR-007 Decision 1、ADR-014 Decision 4）：
+inventory 的移動 handler 會先於 ledger 的過帳 handler 執行（出貨過 `Dr 5000 COGS / Cr 1300 Inventory`，
+驗收入庫過 `Dr 1300 Inventory / Cr 2110 Accrued Purchases` GR/IR 暫估分錄），「先搬貨、再記帳」。
+兩者都在跟 publish 同一個交易裡執行，所以不管順序為何都會一起 commit 或一起
+rollback；順序只影響 `ship` 或 `receive` 失敗時，是哪個 handler 的例外被歸咎為
 失敗原因。`app.cli.replay_outbox` 會把任何 `dispatched_at IS NULL`
 的 `outbox` 列，直接重新分派給它的 handler。
 
@@ -429,8 +433,8 @@ rollback；順序只影響 `ship` 失敗時，是哪個 handler 的例外被歸�
 並在業務交易執行時由 `PluginRuntimeGate` 強制把關。Import-linter 嚴格限制插件只能引用模組的
 公開 `service` 與 `schemas` 層，禁止直接 import 內部 ORM model 或 router（ADR-010）。
 
-**Custom fields（自訂欄位）。** 8 大主要租戶範圍交易實體（`Customer`、`Product`、
-`Account`、`AccountingPeriod`、`JournalEntry`、`SalesOrder`、`Invoice`、`Payment`）
+**Custom fields（自訂欄位）。** 10 大主要租戶範圍交易實體（`Customer`、`Supplier`、`Product`、
+`Account`、`AccountingPeriod`、`JournalEntry`、`SalesOrder`、`PurchaseOrder`、`Invoice`、`Payment`）
 皆具備 `custom_data JSONB` 欄位，由各公司於 `custom_field_definitions` 表透過
 `/api/v1/custom-fields`（及 `app/cli/manage_custom_fields.py`）獨立治理（ADR-011）。
 欄位定義異動一律透過 `lock_company_unchecked`（`SELECT ... FOR UPDATE`）序列化以防範
@@ -440,7 +444,8 @@ TOCTOU 競爭條件；業務模組在建立與更新時僅透過輕量核心埠�
 `NUMERIC(20, 6)`，且系統事件驅動的自動過帳分錄不受手動傳票自訂必填欄位阻擋。
 
 **審批工作流（Workflows and approvals）。** 關鍵業務交易狀態轉換（`sales_order_confirm`、
-`sales_order_cancel`、`invoice_void`、`payment_void` 及 `journal_entry_reverse`）
+`sales_order_cancel`、`purchase_order_confirm`、`purchase_order_cancel`、`invoice_void`、
+`payment_void` 及 `journal_entry_reverse`）
 由租戶層級的工作流定義（`app/platform/workflow/`）透過輕量核心埠（`app/core/workflow.py`，ADR-012）
 把關。審批定義支援依金額門檻下限（`min_amount`）進行多階段路由、指派特定審批權限，
 並落實嚴格的職能分工原則（Separation of Duties，預設 `allow_self_approval=False`，申請者不得核准自己的申請）。
@@ -459,10 +464,11 @@ app/
 ├── core/            # 設定、async DB session 管理、租戶 context/過濾器、
 │                     # event bus、hook registry、workflow/customfields/plugins/auth 公開埠、例外
 ├── modules/
-│   ├── masterdata/   # 公司、客戶、商品、UoM、科目、幣別
+│   ├── masterdata/   # 公司、客戶、供應商、商品、UoM、科目、幣別
 │   ├── ledger/       # 傳票、會計期間、試算表、過帳引擎
 │   ├── sales/        # 訂單：draft → confirmed → shipped，hook registry 的使用者
-│   ├── inventory/    # stock_moves（append-only）+ stock_summary，goods_shipped 的訂閱者
+│   ├── purchase/     # ADR-014 採購單：draft → confirmed → received，發布 GR/IR 事件
+│   ├── inventory/    # stock_moves（append-only）+ stock_summary，goods_shipped 與 goods_received 的訂閱者
 │   └── receivables/  # 發票、收款、沖款、帳齡
 ├── platform/
 │   ├── permissions/  # ADR-009 RBAC 模型、認證/session 服務、/auth router
