@@ -84,15 +84,14 @@ _ACCOUNTS = sa_table(
     sa_column("is_control"),
 )
 
-# ADR-008 R5/R11: kernel-owned control-account codes, protected from manual
-# journal entries and manual reversal regardless of whether a given
-# company's chart happens to have `accounts.is_control` set on the matching
-# row (a newly-seeded chart that never set the flag is still protected).
-# "1100" is Accounts Receivable — see the standard chart-of-account codes
-# documented in `ledger.posting`. A company-declared `is_control` flag
-# (checked alongside this set in `_reject_control_account_lines`) covers
-# any additional control account a company wants the same protection on.
-KERNEL_CONTROL_ACCOUNT_CODES: frozenset[str] = frozenset({"1100"})
+# ADR-008 R5/R11 + ADR-015 Decision 4: kernel-owned control-account codes,
+# protected from manual journal entries and manual reversal regardless of
+# whether a given company's chart happens to have `accounts.is_control` set on
+# the matching row:
+#   - 1100 Accounts Receivable (receivables)
+#   - 2000 Accounts Payable    (payables)
+#   - 2110 Accrued Purchases   (GR/IR clearing between purchase receipt & bill)
+KERNEL_CONTROL_ACCOUNT_CODES: frozenset[str] = frozenset({"1100", "2000", "2110"})
 
 
 async def _commit_or_conflict(session: AsyncSession, *, entity: str) -> None:

@@ -152,6 +152,11 @@ RECEIVABLES_INVOICE_VOIDED_EVENT_TYPE = "receivables.invoice_voided"
 RECEIVABLES_PAYMENT_RECEIVED_EVENT_TYPE = "receivables.payment_received"
 RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE = "receivables.payment_voided"
 
+PAYABLES_BILL_ISSUED_EVENT_TYPE = "payables.bill_issued"
+PAYABLES_BILL_VOIDED_EVENT_TYPE = "payables.bill_voided"
+PAYABLES_PAYMENT_ISSUED_EVENT_TYPE = "payables.payment_issued"
+PAYABLES_PAYMENT_VOIDED_EVENT_TYPE = "payables.payment_voided"
+
 
 class GoodsShippedLine(BaseModel):
     """One shipped line's cost detail — kept in the payload alongside the
@@ -254,6 +259,41 @@ class PaymentVoidedPayload(BaseModel):
     amount: Decimal
 
 
+class VendorBillIssuedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    bill_no: str
+    order_id: uuid.UUID
+    supplier_id: uuid.UUID
+    total: Decimal
+
+
+class VendorBillVoidedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    bill_no: str
+    total: Decimal
+
+
+class VendorPaymentIssuedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    payment_no: str
+    supplier_id: uuid.UUID
+    amount: Decimal
+
+
+class VendorPaymentVoidedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    payment_no: str
+    amount: Decimal
+
+
 POSTING_RULES: dict[str, list[PostingRule]] = {
     GOODS_SHIPPED_EVENT_TYPE: [
         PostingRule(
@@ -287,6 +327,20 @@ POSTING_RULES: dict[str, list[PostingRule]] = {
     ],
     RECEIVABLES_PAYMENT_VOIDED_EVENT_TYPE: [
         PostingRule(debit_account_code="1100", credit_account_code="1000", amount_field="amount"),
+    ],
+    # ADR-015 Decision 1 / Decision 4: two-stage GR/IR clearing -> 2000 AP.
+    PAYABLES_BILL_ISSUED_EVENT_TYPE: [
+        PostingRule(debit_account_code="2110", credit_account_code="2000", amount_field="total"),
+    ],
+    PAYABLES_BILL_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="2000", credit_account_code="2110", amount_field="total"),
+    ],
+    # ADR-015 Decision 2 / Decision 4: outgoing supplier payment & void.
+    PAYABLES_PAYMENT_ISSUED_EVENT_TYPE: [
+        PostingRule(debit_account_code="2000", credit_account_code="1000", amount_field="amount"),
+    ],
+    PAYABLES_PAYMENT_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1000", credit_account_code="2000", amount_field="amount"),
     ],
 }
 

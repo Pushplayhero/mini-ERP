@@ -228,6 +228,10 @@ async def test_all_tenant_endpoints_reject_missing_company_context(client: Async
         ("GET", "/api/v1/suppliers"),
         ("GET", "/api/v1/products"),
         ("GET", "/api/v1/accounts"),
+        ("GET", "/api/v1/purchase-orders"),
+        ("GET", "/api/v1/payables/bills"),
+        ("GET", "/api/v1/payables/payments"),
+        ("GET", "/api/v1/payables/reports/ap-aging"),
     ]:
         response = await client.request(method, path)
         assert response.status_code == 401, f"{method} {path} did not fail-closed"

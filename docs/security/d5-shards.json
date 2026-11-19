@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 264,
+  "expected_total_files": 281,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 264,
+      "expected_total_files": 281,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -147,11 +147,14 @@
           ]
         },
         "u08_receivables": {
-          "expected_file_count": 15,
+          "expected_file_count": 28,
           "paths": [
             "app/modules/receivables",
+            "app/modules/payables",
             "tests/receivables",
+            "tests/payables",
             "app/cli/rebuild_ar_balances.py",
+            "app/cli/rebuild_ap_balances.py",
             "docs/adr/ADR-008-receivables.md"
           ]
         },
@@ -163,7 +166,7 @@
           ]
         },
         "u10_migrations": {
-          "expected_file_count": 20,
+          "expected_file_count": 21,
           "paths": [
             "alembic",
             "alembic.ini",
@@ -171,7 +174,7 @@
           ]
         },
         "u11_operations_e2e": {
-          "expected_file_count": 24,
+          "expected_file_count": 26,
           "paths": [
             "app/cli/__init__.py",
             "app/cli/demo_o2c.py",
@@ -197,7 +200,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 28,
+          "expected_file_count": 29,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -213,6 +216,7 @@
             "docs/adr/ADR-012-platform-workflow.md",
             "docs/adr/ADR-013-platform-integration.md",
             "docs/adr/ADR-014-purchase-and-supplier-masterdata.md",
+            "docs/adr/ADR-015-payables.md",
             "docs/adr/PHASE2-platform-architecture-overview.md",
             "docs/adr/PHASE3-suites-architecture-overview.md",
             "docs/adr/README.md",
@@ -255,7 +259,7 @@
     },
     {
       "id": "b_sales_inventory_plugins",
-      "expected_file_count": 50,
+      "expected_file_count": 52,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/__init__.py",
@@ -273,14 +277,17 @@
     },
     {
       "id": "c_ledger_receivables",
-      "expected_file_count": 41,
+      "expected_file_count": 54,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/ledger",
         "app/modules/receivables",
+        "app/modules/payables",
         "tests/ledger",
         "tests/receivables",
+        "tests/payables",
         "app/cli/rebuild_ar_balances.py",
+        "app/cli/rebuild_ap_balances.py",
         "app/cli/replay_outbox.py",
         "app/cli/rebuild_stock_summary.py",
         "docs/adr/ADR-002-append-only-ledgers.md",
@@ -291,7 +298,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 60,
+      "expected_file_count": 61,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -325,7 +332,7 @@
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 30,
+      "expected_file_count": 31,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",
@@ -344,6 +351,7 @@
         "docs/adr/ADR-012-platform-workflow.md",
         "docs/adr/ADR-013-platform-integration.md",
         "docs/adr/ADR-014-purchase-and-supplier-masterdata.md",
+        "docs/adr/ADR-015-payables.md",
         "docs/adr/PHASE2-platform-architecture-overview.md",
         "docs/adr/PHASE3-suites-architecture-overview.md",
         "docs/adr/README.md",

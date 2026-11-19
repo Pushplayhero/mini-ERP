@@ -60,6 +60,8 @@ from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
 from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
+from app.modules.payables import events as payables_events
+from app.modules.payables.router import router as payables_router
 from app.modules.purchase import events as purchase_events
 from app.modules.purchase.router import router as purchase_router
 from app.modules.receivables import events as receivables_events
@@ -272,6 +274,7 @@ app.include_router(sales_router, prefix="/api/v1")
 app.include_router(purchase_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
 app.include_router(receivables_router, prefix="/api/v1")
+app.include_router(payables_router, prefix="/api/v1")
 # ADR-009 / WEEK9 Slice B: `/auth/*`, not under `/api/v1` — matches the ADR's
 # own literal path references (grouped alongside `/health`/`/docs` in the
 # Slice D public-route allowlist, not the business-module API surface).
@@ -384,6 +387,43 @@ events.subscribe(
 events.subscribe(
     purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE,
     ledger_posting.make_posting_handler(purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE),
+)
+
+# ADR-015 (Phase 3 Week 15): payables vendor bill & supplier payment events.
+events.register_event(
+    payables_events.PAYABLES_BILL_ISSUED_EVENT_TYPE,
+    ledger_posting.VendorBillIssuedPayload,
+)
+events.subscribe(
+    payables_events.PAYABLES_BILL_ISSUED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(payables_events.PAYABLES_BILL_ISSUED_EVENT_TYPE),
+)
+
+events.register_event(
+    payables_events.PAYABLES_BILL_VOIDED_EVENT_TYPE,
+    ledger_posting.VendorBillVoidedPayload,
+)
+events.subscribe(
+    payables_events.PAYABLES_BILL_VOIDED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(payables_events.PAYABLES_BILL_VOIDED_EVENT_TYPE),
+)
+
+events.register_event(
+    payables_events.PAYABLES_PAYMENT_ISSUED_EVENT_TYPE,
+    ledger_posting.VendorPaymentIssuedPayload,
+)
+events.subscribe(
+    payables_events.PAYABLES_PAYMENT_ISSUED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(payables_events.PAYABLES_PAYMENT_ISSUED_EVENT_TYPE),
+)
+
+events.register_event(
+    payables_events.PAYABLES_PAYMENT_VOIDED_EVENT_TYPE,
+    ledger_posting.VendorPaymentVoidedPayload,
+)
+events.subscribe(
+    payables_events.PAYABLES_PAYMENT_VOIDED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(payables_events.PAYABLES_PAYMENT_VOIDED_EVENT_TYPE),
 )
 
 
@@ -566,6 +606,56 @@ async def _export_payments(session: AsyncSession, company_id: uuid.UUID) -> list
     ]
 
 
+async def _export_vendor_bills(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.payables.models import VendorBill
+
+    stmt = (
+        select(VendorBill).where(VendorBill.company_id == company_id).order_by(VendorBill.bill_no)
+    )
+    bills = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(b.id),
+            "bill_no": b.bill_no,
+            "order_id": str(b.order_id),
+            "supplier_id": str(b.supplier_id),
+            "supplier_invoice_no": b.supplier_invoice_no,
+            "total": str(b.total),
+            "settled_amount": str(b.settled_amount),
+            "status": str(b.status.value if hasattr(b.status, "value") else b.status),
+            "bill_date": str(b.bill_date),
+            "due_date": str(b.due_date),
+        }
+        for b in bills
+    ]
+
+
+async def _export_vendor_payments(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.payables.models import VendorPayment
+
+    stmt = (
+        select(VendorPayment)
+        .where(VendorPayment.company_id == company_id)
+        .order_by(VendorPayment.payment_no)
+    )
+    payments = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(p.id),
+            "payment_no": p.payment_no,
+            "supplier_id": str(p.supplier_id),
+            "amount": str(p.amount),
+            "allocated_amount": str(p.allocated_amount),
+            "status": str(p.status.value if hasattr(p.status, "value") else p.status),
+        }
+        for p in payments
+    ]
+
+
 async def _export_journal_entries(
     session: AsyncSession, company_id: uuid.UUID
 ) -> list[dict[str, Any]]:
@@ -616,6 +706,8 @@ def register_default_export_providers() -> None:
     register_export_provider(BatchEntityType.PURCHASE_ORDER, _export_purchase_orders)
     register_export_provider(BatchEntityType.INVOICE, _export_invoices)
     register_export_provider(BatchEntityType.PAYMENT, _export_payments)
+    register_export_provider(BatchEntityType.VENDOR_BILL, _export_vendor_bills)
+    register_export_provider(BatchEntityType.VENDOR_PAYMENT, _export_vendor_payments)
     register_export_provider(BatchEntityType.JOURNAL_ENTRY, _export_journal_entries)
     register_export_provider(BatchEntityType.STOCK_SUMMARY, _export_stock_summary)
 

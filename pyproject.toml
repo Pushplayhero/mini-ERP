@@ -139,6 +139,7 @@ modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
 ]
 
@@ -151,6 +152,7 @@ forbidden_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
 ]
 
@@ -218,6 +220,7 @@ forbidden_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
     "app.plugins",
     "app.platform.plugins",
@@ -238,6 +241,7 @@ forbidden_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
     "app.plugins",
     "app.platform.permissions",
@@ -258,6 +262,7 @@ forbidden_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
     "app.plugins",
     "app.platform.permissions",
@@ -278,6 +283,7 @@ forbidden_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
     "app.plugins",
     "app.platform.permissions",
@@ -298,6 +304,7 @@ forbidden_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
     "app.plugins",
     "app.platform.permissions",
@@ -329,6 +336,8 @@ forbidden_modules = [
     "app.modules.inventory.router",
     "app.modules.receivables.models",
     "app.modules.receivables.router",
+    "app.modules.payables.models",
+    "app.modules.payables.router",
     "app.modules.ledger.models",
     "app.modules.ledger.router",
 ]
@@ -376,6 +385,7 @@ protected_modules = [
     "app.modules.purchase",
     "app.modules.inventory",
     "app.modules.receivables",
+    "app.modules.payables",
     "app.modules.ledger",
     "app.platform",
     "app.platform.permissions",

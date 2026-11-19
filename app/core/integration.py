@@ -30,6 +30,8 @@ class BatchEntityType(StrEnum):
     PURCHASE_ORDER = "purchase_order"
     INVOICE = "invoice"
     PAYMENT = "payment"
+    VENDOR_BILL = "vendor_bill"
+    VENDOR_PAYMENT = "vendor_payment"
     JOURNAL_ENTRY = "journal_entry"
     STOCK_SUMMARY = "stock_summary"
 

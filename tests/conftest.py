@@ -212,6 +212,8 @@ async def _clean_tenant_tables(
             text(
                 "TRUNCATE TABLE journal_lines, journal_entries, ledger_sequences, "
                 "accounting_periods, stock_moves, stock_summary, "
+                "vendor_payment_allocations, vendor_payment_allocation_commands, "
+                "vendor_payments, vendor_bills, payables_sequences, "
                 "payment_allocations, payment_allocation_commands, payments, "
                 "invoices, receivables_sequences, "
                 "webhook_deliveries, integration_outbox_receipts, "
@@ -303,6 +305,14 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "receivables.payment.void",
         "receivables.payment.allocate",
         "receivables.report.read",
+        "payables.bill.create",
+        "payables.bill.read",
+        "payables.bill.void",
+        "payables.payment.create",
+        "payables.payment.read",
+        "payables.payment.void",
+        "payables.payment.allocate",
+        "payables.report.read",
         "platform.plugin.read",
         "platform.plugin.manage",
         "platform.customfield.read",

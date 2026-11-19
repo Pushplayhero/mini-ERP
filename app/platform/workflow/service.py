@@ -1073,6 +1073,24 @@ _PAYMENTS = sa.table(
     sa.column("allocated_amount"),
 )
 
+_VENDOR_BILLS = sa.table(
+    "vendor_bills",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("status"),
+    sa.column("total"),
+    sa.column("settled_amount"),
+)
+
+_VENDOR_PAYMENTS = sa.table(
+    "vendor_payments",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("status"),
+    sa.column("amount"),
+    sa.column("allocated_amount"),
+)
+
 _JOURNAL_ENTRIES = sa.table(
     "journal_entries",
     sa.column("id"),
@@ -1188,56 +1206,39 @@ async def _resolve_order_cancel(
     return parse_and_quantize_amount(res_order.total, "order_total")
 
 
-async def _resolve_invoice_void(
-    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+async def _resolve_void_with_balance(
+    session: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    entity_label: str,
+    table: Any,
+    amount_col: Any,
+    used_col: Any,
+    used_label: str,
+    amount_name: str,
 ) -> Decimal:
-    stmt_inv = (
+    stmt = (
         select(
-            _INVOICES.c.id,
-            _INVOICES.c.status,
-            _INVOICES.c.total,
-            _INVOICES.c.settled_amount,
+            table.c.id,
+            table.c.status,
+            amount_col.label("doc_amount"),
+            used_col.label("used_amount"),
         )
-        .where(_INVOICES.c.id == entity_id, _INVOICES.c.company_id == company_id)
+        .where(table.c.id == entity_id, table.c.company_id == company_id)
         .with_for_update()
     )
-    res_inv = (await session.execute(stmt_inv)).first()
-    if res_inv is None:
-        raise NotFoundError("Invoice", str(entity_id))
-    if str(res_inv.status).lower() == "voided":
-        raise ConflictError(f"Invoice {entity_id} is already voided")
-    if res_inv.settled_amount != 0:
+    res = (await session.execute(stmt)).first()
+    if res is None:
+        raise NotFoundError(entity_label, str(entity_id))
+    if str(res.status).lower() == "voided":
+        raise ConflictError(f"{entity_label} {entity_id} is already voided")
+    if res.used_amount != 0:
         raise ConflictError(
-            f"Invoice {entity_id} has settled_amount={res_inv.settled_amount} != 0; "
-            "cannot void a partially or fully settled invoice"
+            f"{entity_label} {entity_id} has {used_label}={res.used_amount} != 0; "
+            f"cannot void a {entity_label.lower()} with settled or allocated activity"
         )
-    return parse_and_quantize_amount(res_inv.total, "invoice_total")
-
-
-async def _resolve_payment_void(
-    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
-) -> Decimal:
-    stmt_pay = (
-        select(
-            _PAYMENTS.c.id,
-            _PAYMENTS.c.status,
-            _PAYMENTS.c.amount,
-            _PAYMENTS.c.allocated_amount,
-        )
-        .where(_PAYMENTS.c.id == entity_id, _PAYMENTS.c.company_id == company_id)
-        .with_for_update()
-    )
-    res_pay = (await session.execute(stmt_pay)).first()
-    if res_pay is None:
-        raise NotFoundError("Payment", str(entity_id))
-    if str(res_pay.status).lower() == "voided":
-        raise ConflictError(f"Payment {entity_id} is already voided")
-    if res_pay.allocated_amount != 0:
-        raise ConflictError(
-            f"Payment {entity_id} has allocated_amount={res_pay.allocated_amount} != 0; "
-            "cannot void a payment with active allocations"
-        )
-    return parse_and_quantize_amount(res_pay.amount, "payment_amount")
+    return parse_and_quantize_amount(res.doc_amount, amount_name)
 
 
 async def _resolve_journal_entry_reverse(
@@ -1280,8 +1281,10 @@ async def _resolve_journal_entry_reverse(
         .where(
             _JOURNAL_LINES.c.entry_id == entity_id,
             _JOURNAL_LINES.c.company_id == company_id,
-            ((_ACCOUNTS.c.is_control.is_(True)) | (_ACCOUNTS.c.code.in_(["1100"]))),
+            ((_ACCOUNTS.c.is_control.is_(True)) | (_ACCOUNTS.c.code.in_(["1100", "2000", "2110"]))),
         )
+        .order_by(_ACCOUNTS.c.code)
+        .limit(1)
     )
     ctrl_code = (await session.execute(stmt_ctrl)).scalar_one_or_none()
     if ctrl_code is not None:
@@ -1365,9 +1368,53 @@ async def resolve_workflow_target_unchecked(
             terminal_verb="received goods",
         )
     elif e_type is WorkflowEntityType.INVOICE and t_type is WorkflowTransition.VOID:
-        resolved = await _resolve_invoice_void(session, company_id, entity_id)
+        resolved = await _resolve_void_with_balance(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="Invoice",
+            table=_INVOICES,
+            amount_col=_INVOICES.c.total,
+            used_col=_INVOICES.c.settled_amount,
+            used_label="settled_amount",
+            amount_name="invoice_total",
+        )
     elif e_type is WorkflowEntityType.PAYMENT and t_type is WorkflowTransition.VOID:
-        resolved = await _resolve_payment_void(session, company_id, entity_id)
+        resolved = await _resolve_void_with_balance(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="Payment",
+            table=_PAYMENTS,
+            amount_col=_PAYMENTS.c.amount,
+            used_col=_PAYMENTS.c.allocated_amount,
+            used_label="allocated_amount",
+            amount_name="payment_amount",
+        )
+    elif e_type is WorkflowEntityType.VENDOR_BILL and t_type is WorkflowTransition.VOID:
+        resolved = await _resolve_void_with_balance(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="VendorBill",
+            table=_VENDOR_BILLS,
+            amount_col=_VENDOR_BILLS.c.total,
+            used_col=_VENDOR_BILLS.c.settled_amount,
+            used_label="settled_amount",
+            amount_name="bill_total",
+        )
+    elif e_type is WorkflowEntityType.VENDOR_PAYMENT and t_type is WorkflowTransition.VOID:
+        resolved = await _resolve_void_with_balance(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_label="VendorPayment",
+            table=_VENDOR_PAYMENTS,
+            amount_col=_VENDOR_PAYMENTS.c.amount,
+            used_col=_VENDOR_PAYMENTS.c.allocated_amount,
+            used_label="allocated_amount",
+            amount_name="payment_amount",
+        )
     elif e_type is WorkflowEntityType.JOURNAL_ENTRY and t_type is WorkflowTransition.REVERSE:
         resolved = await _resolve_journal_entry_reverse(session, company_id, entity_id)
 

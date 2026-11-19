@@ -9,12 +9,12 @@ English | [繁體中文](README.zh-TW.md)
 > hours, and actually trust with their data. Open-source, API-first,
 > plugin-extensible ERP kernel.
 
-**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, `platform.workflow`, & `platform.integration`) complete + Phase 3 Suites in progress (Week 14 / ADR-014 Purchase & Supplier Masterdata complete).** Six business
-modules — masterdata (incl. suppliers), ledger, sales, purchase, inventory +
-shipping/receiving, receivables — implement the order-to-cash (O2C) line and
-the first half of procure-to-pay (P2P: PO → GR/IR goods receipt) on top of a
-real double-entry posting engine, each backed by an [architecture decision
-record](docs/adr/README.md); ADR-003 through ADR-008 each passed a real
+**This repository state = Phase 1 ("Kernel") complete + Phase 2 Platform (`platform.permissions`, `platform.plugins`, `platform.customfields`, `platform.workflow`, & `platform.integration`) complete + Phase 3 Suites in progress (Week 14 `ADR-014` Purchase & Week 15 `ADR-015` Payables complete — full O2C & P2P loops).** Seven business
+modules — masterdata (incl. customers & suppliers), ledger, sales, purchase,
+inventory + shipping/receiving, receivables, payables — implement the full
+order-to-cash (O2C) and procure-to-pay (P2P: PO → GR/IR receipt → vendor bill →
+payment/allocation/aging) loops on top of a real double-entry posting engine,
+each backed by an [architecture decision record](docs/adr/README.md); ADR-003 through ADR-008 each passed a real
 `codex` CLI consensus review before implementation, and ADR-001/ADR-002
 document decisions already made and shipped in Weeks 1-2 (see "Design
 Decisions" below for the distinction). See `docs/open-erp-master-plan.md`
@@ -24,7 +24,7 @@ phase implements.
 
 ## Non-Goals
 
-Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), arbitrary BPMN workflow scripting or visual workflow engines (platform.workflow provides deterministic, tenant-scoped amount-threshold approval gates with strict Separation of Duties for critical business transitions per ADR-012, not arbitrary BPMN script orchestration or external human-task forms), custom fields on line/fact-level tables (`platform.customfields` governs the `custom_data JSONB` column on the 8 primary tenant-scoped business entities — customers, products, accounts, orders, invoices, payments, journal entries, and accounting periods — via `custom_field_definitions`, `/api/v1/custom-fields`, and `app/cli/manage_custom_fields.py` per ADR-011, but not on order lines, journal lines, or stock moves, and there is no admin frontend UI), and any frontend
+Out of scope for the kernel: untrusted plugin sandboxing (plugins are trusted in-process code, master-plan §10.3 / ADR-010), arbitrary BPMN workflow scripting or visual workflow engines (platform.workflow provides deterministic, tenant-scoped amount-threshold approval gates with strict Separation of Duties for critical business transitions per ADR-012, not arbitrary BPMN script orchestration or external human-task forms), custom fields on line/fact-level tables (`platform.customfields` governs the `custom_data JSONB` column on the 12 primary tenant-scoped business entities — customers, suppliers, products, accounts, sales orders, purchase orders, invoices, payments, vendor bills, vendor payments, journal entries, and accounting periods — via `custom_field_definitions`, `/api/v1/custom-fields`, and `app/cli/manage_custom_fields.py` per ADR-011, but not on order lines, journal lines, or stock moves, and there is no admin frontend UI), and any frontend
 (this is an API-only kernel — `/docs` is the interactive client for now).
 Taiwan-specific tax/e-invoice integration is Phase 4.
 
@@ -191,6 +191,7 @@ graph TB
             PU["purchase<br/>orders: draft → confirmed → received"]
             IN["inventory<br/>append-only stock_moves + stock_summary"]
             RE["receivables<br/>invoices · payments · AR aging"]
+            AP["payables<br/>vendor bills · payments · AP aging"]
         end
 
         PL["plugins<br/>credit_limit hook (ADR-006)"]
@@ -201,15 +202,16 @@ graph TB
     PG[("PostgreSQL 16<br/>append-only fact tables, ADR-002")]
 
     Client -->|"HTTP + Authorization: Bearer <token>"| MW
-    MW --> MD & SA & PU & IN & RE
+    MW --> MD & SA & PU & IN & RE & AP
     SA -->|"sales.order.validate_confirm hook"| PL
     PU -->|"purchase.order.validate_confirm hook"| PL
     SA -->|"publish: order_confirmed, goods_shipped"| EB
     PU -->|"publish: order_confirmed, goods_received"| EB
     RE -->|"publish: invoice_issued/voided, payment_received/voided"| EB
+    AP -->|"publish: bill_issued/voided, payment_issued/voided"| EB
     EB -->|"goods_shipped / goods_received FIRST: deduct/receive stock"| IN
-    EB -->|"goods_shipped / goods_received SECOND + receivables: balanced journal entries"| LE
-    MD & SA & PU & IN & RE & LE --> PG
+    EB -->|"goods_shipped / goods_received SECOND + receivables/payables: balanced JEs"| LE
+    MD & SA & PU & IN & RE & AP & LE --> PG
 ```
 
 Every arrow into a *tenant-scoped* operation crosses the
@@ -359,19 +361,19 @@ Beyond ordinary CRUD/integration tests per module:
   company B is proven unable to read/update/delete it (404) or see it in
   a list, plus a DB-layer test that the ORM filter itself fail-closes
   (raises) when no company context is bound.
-- **Full O2C end-to-end** (`tests/e2e/test_o2c_end_to_end.py`): create →
-  confirm → ship → invoice → pay → allocate against a real Postgres, with
+- **Full O2C & P2P end-to-end** (`tests/e2e/test_o2c_end_to_end.py`, `tests/e2e/test_p2p_end_to_end.py`):
+  confirm → ship/receive → invoice/bill → pay → allocate against a real Postgres, with
   the exact ledger delta asserted at every single step (not just a final
   "it balances" check — a step posting the right amount to the wrong
   account, or vice versa, fails loudly).
 - **Property-based invariants**
   (`tests/ledger/test_property_trial_balance.py`,
-  `tests/e2e/test_property_o2c_balances.py`): Hypothesis-generated random
+  `tests/e2e/test_property_o2c_balances.py`,
+  `tests/e2e/test_property_p2p_balances.py`): Hypothesis-generated random
   (but always-legal, bounded-length) operation sequences, asserting the
-  trial balance balances, the AR ↔ ledger 1100 control-account tie-out
-  holds, and `on_hand >= 0` — not just for the one flow the E2E test
-  walks, but for many legal interleavings of
-  orders/shipments/invoices/payments.
+  trial balance balances, the AR ↔ ledger `1100`, AP ↔ ledger `2000`,
+  and unbilled GR/IR ↔ ledger `2110` control-account tie-outs hold, and
+  `on_hand` matches exact stock movements across arbitrary operation interleavings.
 - **Idempotent CLIs** (`tests/e2e/test_seed_idempotent.py`): `seed_demo`
   run twice against a real DB produces unchanged row counts, stock, and
   balances.
@@ -402,6 +404,7 @@ substitute — follow the links for the actual reasoning.
 | `platform.integration` — webhooks, outbox worker, batch import/export, and SSRF defense | [ADR-013](docs/adr/ADR-013-platform-integration.md) |
 | Phase 3 Suites blueprint (P2P / GR/IR / Costing / MRP roadmap) | [Phase 3 Overview](docs/adr/PHASE3-suites-architecture-overview.md) |
 | Purchase & Supplier Masterdata (POs, receiving, GR/IR accrual) | [ADR-014](docs/adr/ADR-014-purchase-and-supplier-masterdata.md) |
+| Payables — vendor bills, GR/IR clearing, outgoing payments, AP aging | [ADR-015](docs/adr/ADR-015-payables.md) |
 
 A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
@@ -437,13 +440,13 @@ receivables payment/allocation amounts (`receivables.schemas`) since Week
 `standard_cost` (`masterdata.schemas`), and
 `SalesOrderLineCreate.unit_price` (`sales.schemas`) since Week 8 Decision
 0. Each module owns its own private round-half-even helper
-(`_round_half_even_6dp` in masterdata/sales/purchase/receivables and plugins.credit_limit;
+(`_round_half_even_6dp` in masterdata/sales/purchase/receivables/payables and plugins.credit_limit;
 `_round_half_even_to_6dp` in ledger) — never imported cross-module, per
 the import-linter module-independence contract — rather than sharing one
 from `app/core/`. Zero is always a legal value for `credit_limit`/
-price/cost fields (never rejected), unlike `receivables.schemas`'s
-`_round_and_reject_zero`, which is specific to payment/allocation amounts
-where zero genuinely isn't legal.
+price/cost fields (never rejected), unlike `receivables.schemas` and
+`payables.schemas`'s `_round_and_reject_zero`, which are specific to
+payment/allocation amounts where zero genuinely isn't legal.
 
 **Ledger.** Double-entry, dual-currency lines, a `DEFERRED CONSTRAINT
 TRIGGER` that rejects an unbalanced entry at commit, immutability via
@@ -462,9 +465,10 @@ transaction. Not every registered event has a subscriber:
 `sales.order_confirmed` and `purchase.order_confirmed` are registered (so `publish()`/replay still
 validate their schemas and write an outbox row) without side-effecting subscribers
 (ADR-006 Decision 4, ADR-014 Decision 4) — nothing reacts to "confirmed" on its own.
-`app/modules/ledger/posting.py` subscribes to `sales.goods_shipped`, `purchase.goods_received`, and
-all four `receivables.*` events, turning each into a balanced journal
-entry via a declarative rules table.
+`app/modules/ledger/posting.py` subscribes to `sales.goods_shipped`, `purchase.goods_received`,
+all four `receivables.*` events, and all four `payables.*` events, turning each into a balanced journal
+entry via a declarative rules table. Control accounts (`1100` AR, `2000` AP, `2110` Accrued Purchases)
+reject manual entries and manual reversals so subledger tie-outs hold by construction.
 `app/modules/inventory/service.py`'s `handle_goods_shipped` and `handle_goods_received` ALSO
 subscribe to `sales.goods_shipped` and `purchase.goods_received`, respectively, to deduct or
 receive stock — for both physical-goods events,
@@ -491,7 +495,7 @@ or routers (ADR-010).
 
 **Custom fields.** Every primary tenant-scoped transactional entity (`Customer`, `Supplier`,
 `Product`, `Account`, `AccountingPeriod`, `JournalEntry`, `SalesOrder`, `PurchaseOrder`, `Invoice`,
-`Payment`) carries a `custom_data JSONB` column governed per-company in
+`Payment`, `VendorBill`, `VendorPayment`) carries a `custom_data JSONB` column governed per-company in
 `custom_field_definitions` via `/api/v1/custom-fields` and
 `app/cli/manage_custom_fields.py` (ADR-011). Field definition mutations serialize
 via `lock_company_unchecked` (`SELECT ... FOR UPDATE`). Business modules validate and
@@ -503,7 +507,7 @@ postings bypass manual-entry custom-field requirements.
 
 **Workflows and approvals.** Critical business transitions (`sales_order_confirm`,
 `sales_order_cancel`, `purchase_order_confirm`, `purchase_order_cancel`,
-`invoice_void`, `payment_void`, and `journal_entry_reverse`)
+`invoice_void`, `payment_void`, `vendor_bill_void`, `vendor_payment_void`, and `journal_entry_reverse`)
 are guarded by tenant-scoped workflow definitions (`app/platform/workflow/`) via
 the lightweight core port (`app/core/workflow.py`, ADR-012). Approval definitions
 configure sequential steps with minimum amount thresholds (`min_amount`),
@@ -531,7 +535,8 @@ app/
 │   ├── sales/        # orders: draft → confirmed → shipped, hook registry consumer
 │   ├── purchase/     # ADR-014 purchase orders: draft → confirmed → received, GR/IR event publisher
 │   ├── inventory/    # stock_moves (append-only) + stock_summary, goods_shipped & goods_received subscribers
-│   └── receivables/  # invoices, payments, allocations, AR aging
+│   ├── receivables/  # invoices, payments, allocations, AR aging
+│   └── payables/     # ADR-015 vendor bills, outgoing payments, allocations, AP aging
 ├── platform/
 │   ├── permissions/  # ADR-009 RBAC models, auth/session service, /auth router
 │   ├── plugins/      # ADR-010 topological loader, company_plugins service, /api/v1/plugins router
@@ -539,7 +544,7 @@ app/
 │   ├── workflow/     # ADR-012 workflow definitions/instances service, runtime approval gate, /api/v1/workflows router
 │   └── integration/  # ADR-013 webhooks, outbox worker, batch engine, /api/v1/integrations router
 ├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, run_outbox_worker, seed_demo, demo_o2c, demo_platform, replay_outbox, rebuild_ar_balances, rebuild_stock_summary
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, run_outbox_worker, seed_demo, demo_o2c, demo_platform, replay_outbox, rebuild_ar_balances, rebuild_ap_balances, rebuild_stock_summary
 └── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
 docs/

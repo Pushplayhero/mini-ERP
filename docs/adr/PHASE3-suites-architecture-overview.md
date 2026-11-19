@@ -16,7 +16,7 @@ Phase 3 expands `mini-erp` from a single O2C revenue loop into an integrated **S
 | Milestone | Scope | Key Capabilities | Architecture Basis |
 | :--- | :--- | :--- | :--- |
 | **Week 14 (ADR-014)** | `masterdata.Supplier` + `purchase` | Supplier masterdata, PO lifecycle (`draft -> confirmed -> received`), confirm-time standard-cost repricing, Goods Receipt (`purchase.goods_received`), Inventory intake (`StockMoveType.RECEIPT`), GR/IR accrued purchases posting (`Dr 1300 / Cr 2110`) | [ADR-014](ADR-014-purchase-and-supplier-masterdata.md) |
-| **Week 15 (ADR-015)** | `payables` | Supplier Invoices (AP Bills) settling against received POs / clearing `2110 Accrued Purchases` → `2000 Accounts Payable`, Outgoing Vendor Payments, Subledger Allocations, AP Aging Report | Planned |
+| **Week 15 (ADR-015)** | `payables` | Supplier Invoices / Vendor Bills (1:1 from `RECEIVED` POs clearing `2110 Accrued Purchases` → `2000 Accounts Payable`), Outgoing Vendor Payments, Idempotent Subledger Allocations, `2000`/`2110` Control Account Protection, AP Aging & `rebuild_ap_balances` | [ADR-015](ADR-015-payables.md) |
 | **Week 16+ (ADR-016)** | `costing` | Inventory valuation upgrades (Moving Average / Monthly Weighted Average), landed cost & purchase price variance (PPV) clearing, replacing Phase 1's `standard_cost` stand-in | Planned |
 | **Week 17+ (ADR-017)** | `mrp` | Multi-level Bills of Materials (BOM), Work Orders, Material Issue / Production Receipt, WIP ledger posting, and MRP net-requirements planning | Planned |
 

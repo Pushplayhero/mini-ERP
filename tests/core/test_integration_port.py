@@ -38,7 +38,7 @@ def _clean_export_providers() -> Any:
 
 
 def test_batch_entity_type_enums() -> None:
-    assert len(BatchEntityType) == 10
+    assert len(BatchEntityType) == 12
     assert BatchEntityType.CUSTOMER.value == "customer"
     assert BatchEntityType.SUPPLIER.value == "supplier"
     assert BatchEntityType.PRODUCT.value == "product"
@@ -47,6 +47,8 @@ def test_batch_entity_type_enums() -> None:
     assert BatchEntityType.PURCHASE_ORDER.value == "purchase_order"
     assert BatchEntityType.INVOICE.value == "invoice"
     assert BatchEntityType.PAYMENT.value == "payment"
+    assert BatchEntityType.VENDOR_BILL.value == "vendor_bill"
+    assert BatchEntityType.VENDOR_PAYMENT.value == "vendor_payment"
     assert BatchEntityType.JOURNAL_ENTRY.value == "journal_entry"
     assert BatchEntityType.STOCK_SUMMARY.value == "stock_summary"
 
@@ -72,13 +74,19 @@ def test_supported_entity_subsets() -> None:
     assert is_supported_import_entity("account") is True
     assert is_supported_import_entity("sales_order") is False
     assert is_supported_import_entity("purchase_order") is False
+    assert is_supported_import_entity("vendor_bill") is False
+    assert is_supported_import_entity("vendor_payment") is False
     assert is_supported_import_entity("nonexistent") is False
 
     # is_supported_export_entity
     assert is_supported_export_entity(BatchEntityType.SALES_ORDER) is True
     assert is_supported_export_entity(BatchEntityType.PURCHASE_ORDER) is True
+    assert is_supported_export_entity(BatchEntityType.VENDOR_BILL) is True
+    assert is_supported_export_entity(BatchEntityType.VENDOR_PAYMENT) is True
     assert is_supported_export_entity("sales_order") is True
     assert is_supported_export_entity("purchase_order") is True
+    assert is_supported_export_entity("vendor_bill") is True
+    assert is_supported_export_entity("vendor_payment") is True
     assert is_supported_export_entity("stock_summary") is True
     assert is_supported_export_entity("nonexistent") is False
 

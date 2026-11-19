@@ -576,3 +576,97 @@ async def test_batch_import_and_export_supplier_and_purchase_order(
         assert exp_po_job.status == "COMPLETED"
         assert exp_po_job.total_rows == 1
         assert "PO-2026-000001" in json_po
+
+
+@pytest.mark.asyncio
+async def test_batch_export_vendor_bill_and_vendor_payment(
+    db_session: AsyncSession,
+) -> None:
+    from datetime import date, datetime, timezone
+
+    from app.modules.masterdata.models import Supplier
+    from app.modules.payables.models import (
+        VendorBill,
+        VendorBillStatus,
+        VendorPayment,
+        VendorPaymentStatus,
+    )
+    from app.modules.purchase.models import PurchaseOrder, PurchaseOrderStatus
+
+    co_id = await create_company(db_session, "BATCH_AP_CO")
+    actor = ActorContext(
+        user_id=uuid.uuid4(),
+        permission_codes=frozenset({"platform.integration.read"}),
+    )
+
+    sup = Supplier(
+        company_id=co_id,
+        code="APSUP1",
+        name="AP Vendor",
+        currency_code="TWD",
+        payment_terms_days=30,
+    )
+    db_session.add(sup)
+    await db_session.flush()
+
+    now_utc = datetime.now(timezone.utc)  # noqa: UP017
+    po = PurchaseOrder(
+        company_id=co_id,
+        order_no="PO-2026-000099",
+        supplier_id=sup.id,
+        status=PurchaseOrderStatus.RECEIVED,
+        currency_code="TWD",
+        total=Decimal("250.000000"),
+        snapshot_supplier_code="APSUP1",
+        snapshot_supplier_name="AP Vendor",
+        received_at=now_utc,
+    )
+    db_session.add(po)
+    await db_session.flush()
+
+    today_utc = now_utc.date()
+    bill = VendorBill(
+        company_id=co_id,
+        bill_no="BILL-2026-000001",
+        order_id=po.id,
+        supplier_id=sup.id,
+        supplier_invoice_no="SUP-BILL-99",
+        status=VendorBillStatus.OPEN,
+        currency_code="TWD",
+        order_received_at=now_utc,
+        bill_date=today_utc,
+        due_date=date(today_utc.year, today_utc.month, today_utc.day),
+        total=Decimal("250.000000"),
+        settled_amount=Decimal("0.000000"),
+        snapshot_supplier_code="APSUP1",
+        snapshot_supplier_name="AP Vendor",
+    )
+    pay = VendorPayment(
+        company_id=co_id,
+        payment_no="APAY-2026-000001",
+        supplier_id=sup.id,
+        status=VendorPaymentStatus.ISSUED,
+        external_ref="AP-EXP-REF-1",
+        currency_code="TWD",
+        amount=Decimal("250.000000"),
+        allocated_amount=Decimal("0.000000"),
+        paid_at=now_utc,
+    )
+    db_session.add_all([bill, pay])
+    await db_session.commit()
+
+    with company_context(co_id), actor_context(actor):
+        csv_bill, bill_job = await batch.export_batch_data(
+            db_session, BatchEntityType.VENDOR_BILL, data_format=BatchDataFormat.CSV
+        )
+        assert bill_job.status == "COMPLETED"
+        assert bill_job.total_rows == 1
+        assert "BILL-2026-000001" in csv_bill
+        assert "SUP-BILL-99" in csv_bill
+
+        json_pay, pay_job = await batch.export_batch_data(
+            db_session, BatchEntityType.VENDOR_PAYMENT, data_format=BatchDataFormat.JSON
+        )
+        assert pay_job.status == "COMPLETED"
+        assert pay_job.total_rows == 1
+        assert "APAY-2026-000001" in json_pay

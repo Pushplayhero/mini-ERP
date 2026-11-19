@@ -36,6 +36,7 @@ _BEFORE_MIGRATION_0012 = "b4c5d6e7f8a1"  # 0012's own down_revision (0011's revi
 _BEFORE_MIGRATION_0013 = "c5d6e7f8a1b2"  # 0013's own down_revision (0012's revision id)
 _BEFORE_MIGRATION_0014 = "d6e7f8a1b2c3"  # 0014's own down_revision (0013's revision id)
 _BEFORE_MIGRATION_0015 = "e7f8a1b2c3d4"  # 0015's own down_revision (0014's revision id)
+_BEFORE_MIGRATION_0016 = "f8a1b2c3d4e5"  # 0016's own down_revision (0015's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -84,6 +85,12 @@ EXPECTED_TABLES = {
     "purchase_sequences",
     "purchase_orders",
     "purchase_order_lines",
+    # ADR-015 / WEEK15 / migration 0016.
+    "payables_sequences",
+    "vendor_bills",
+    "vendor_payments",
+    "vendor_payment_allocation_commands",
+    "vendor_payment_allocations",
     "alembic_version",
 }
 
@@ -659,17 +666,18 @@ async def test_migration_0010_and_0011_seed_permissions_and_grant_all_to_admin(
     async with db_engine.connect() as conn:
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
         # 1 (0009) + 44 (0010) + 2 (0011) + 2 (customfield in 0012)
-        # + 3 (workflow in 0013) + 3 (integration in 0014) + 10 (purchase/supplier in 0015) = 65
+        # + 3 (workflow in 0013) + 3 (integration in 0014)
+        # + 10 (purchase/supplier in 0015) + 8 (payables in 0016) = 73
         assert (
-            perm_count == 65
-        ), f"expected exactly 65 permissions in total catalog, got {perm_count}"
+            perm_count == 73
+        ), f"expected exactly 73 permissions in total catalog, got {perm_count}"
 
         admin_grants = await conn.scalar(
             text("SELECT COUNT(*) FROM role_permissions WHERE role_code = 'admin'")
         )
         assert (
-            admin_grants == 65
-        ), f"expected admin role to have all 65 permissions, got {admin_grants}"
+            admin_grants == 73
+        ), f"expected admin role to have all 73 permissions, got {admin_grants}"
 
 
 @pytest.mark.asyncio
@@ -767,7 +775,7 @@ async def test_migration_0011_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "company_plugins" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 65
+        assert perm_count == 73
 
 
 @pytest.mark.asyncio
@@ -885,7 +893,7 @@ async def test_migration_0012_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert "custom_field_definitions" in table_names
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 65
+        assert perm_count == 73
 
 
 @pytest.mark.asyncio
@@ -1161,7 +1169,7 @@ async def test_migration_0013_downgrade_upgrade_cycle_is_safe(db_engine: AsyncEn
         assert workflow_tables.issubset(table_names)
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 65
+        assert perm_count == 73
 
 
 @pytest.mark.asyncio
@@ -1420,7 +1428,7 @@ async def test_migration_0014_idempotent_downgrade_and_upgrade(
         assert integration_tables.issubset(table_names)
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 65
+        assert perm_count == 73
 
 
 @pytest.mark.asyncio
@@ -1617,4 +1625,214 @@ async def test_migration_0015_downgrade_upgrade_cycle_is_safe(
         assert new_tables.issubset(table_names)
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
-        assert perm_count == 65
+        assert perm_count == 73
+
+
+@pytest.mark.asyncio
+async def test_migration_0016_schema_matches_adr_015(db_engine: AsyncEngine) -> None:
+    """Assert migration 0016 creates payables tables, constraints, partial indexes & 8 perms."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_conn: Connection) -> Any:
+        inspector = inspect(sync_conn)
+
+        def table_info(tbl: str) -> dict[str, Any]:
+            return {
+                "cols": {c["name"]: c for c in inspector.get_columns(tbl)},
+                "fks": inspector.get_foreign_keys(tbl),
+                "uqs": inspector.get_unique_constraints(tbl),
+                "indexes": inspector.get_indexes(tbl),
+                "checks": inspector.get_check_constraints(tbl),
+            }
+
+        return {
+            "payables_sequences": table_info("payables_sequences"),
+            "vendor_bills": table_info("vendor_bills"),
+            "vendor_payments": table_info("vendor_payments"),
+            "vendor_payment_allocation_commands": table_info("vendor_payment_allocation_commands"),
+            "vendor_payment_allocations": table_info("vendor_payment_allocations"),
+        }
+
+    expected_new_perms = {
+        "payables.bill.create",
+        "payables.bill.read",
+        "payables.bill.void",
+        "payables.payment.create",
+        "payables.payment.read",
+        "payables.payment.void",
+        "payables.payment.allocate",
+        "payables.report.read",
+    }
+
+    async with db_engine.connect() as conn:
+        schema = await conn.run_sync(_inspect)
+        seeded_perms = (
+            (
+                await conn.execute(
+                    text("SELECT code FROM permissions WHERE code = ANY(:codes)"),
+                    {"codes": list(expected_new_perms)},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        bill_statuses = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT enumlabel FROM pg_enum "
+                        "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                        "WHERE pg_type.typname = 'vendor_bill_status'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        pay_statuses = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT enumlabel FROM pg_enum "
+                        "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                        "WHERE pg_type.typname = 'vendor_payment_status'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert set(seeded_perms) == expected_new_perms
+    assert set(bill_statuses) == {"OPEN", "PARTIAL", "PAID", "VOIDED"}
+    assert set(pay_statuses) == {"ISSUED", "VOIDED"}
+
+    vb = schema["vendor_bills"]
+    assert {
+        "id",
+        "company_id",
+        "bill_no",
+        "order_id",
+        "supplier_id",
+        "supplier_invoice_no",
+        "status",
+        "currency_code",
+        "order_received_at",
+        "bill_date",
+        "due_date",
+        "total",
+        "settled_amount",
+        "snapshot_supplier_code",
+        "snapshot_supplier_name",
+        "voided_at",
+        "custom_data",
+    }.issubset(vb["cols"].keys())
+    assert any(uq["name"] == "uq_vendor_bills_company_bill_no" for uq in vb["uqs"])
+    vb_indexes = {idx["name"] for idx in vb["indexes"]}
+    assert {
+        "uq_vendor_bills_order_live",
+        "uq_vendor_bills_supplier_invoice_no_live",
+    }.issubset(vb_indexes)
+    vb_checks = {ck["name"] for ck in vb["checks"]}
+    assert {
+        "ck_vendor_bills_total_positive",
+        "ck_vendor_bills_settled_amount_bounds",
+        "ck_vendor_bills_status_settled_amount_consistency",
+        "ck_vendor_bills_voided_at_consistency",
+        "ck_vendor_bills_due_date_after_bill_date",
+        "ck_vendor_bills_bill_date_after_receipt",
+        "ck_vendor_bills_invoice_no_nonempty",
+    }.issubset(vb_checks)
+
+    vp = schema["vendor_payments"]
+    assert {
+        "id",
+        "company_id",
+        "payment_no",
+        "supplier_id",
+        "status",
+        "external_ref",
+        "currency_code",
+        "amount",
+        "allocated_amount",
+        "paid_at",
+        "voided_at",
+        "custom_data",
+    }.issubset(vp["cols"].keys())
+    vp_uqs = {uq["name"] for uq in vp["uqs"]}
+    assert {
+        "uq_vendor_payments_company_payment_no",
+        "uq_vendor_payments_company_external_ref",
+    }.issubset(vp_uqs)
+    vp_checks = {ck["name"] for ck in vp["checks"]}
+    assert {
+        "ck_vendor_payments_amount_positive",
+        "ck_vendor_payments_allocated_amount_bounds",
+        "ck_vendor_payments_voided_zero_allocated",
+        "ck_vendor_payments_voided_at_consistency",
+    }.issubset(vp_checks)
+
+    cmd = schema["vendor_payment_allocation_commands"]
+    assert any(
+        uq["name"] == "uq_vendor_payment_alloc_cmds_payment_request_ref" for uq in cmd["uqs"]
+    )
+
+    alloc = schema["vendor_payment_allocations"]
+    assert any(
+        ck["name"] == "ck_vendor_payment_allocations_amount_positive" for ck in alloc["checks"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_migration_0016_downgrade_upgrade_cycle_is_safe(
+    db_engine: AsyncEngine,
+) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0016 drops payables tables/8 perms
+
+    and upgrade restores cleanly.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    payables_tables = {
+        "payables_sequences",
+        "vendor_bills",
+        "vendor_payments",
+        "vendor_payment_allocation_commands",
+        "vendor_payment_allocations",
+    }
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0016)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(inspect(sync_conn).get_table_names())
+            )
+            assert not (payables_tables & table_names)
+
+            perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+            assert perm_count == 65
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        assert payables_tables.issubset(table_names)
+
+        perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
+        assert perm_count == 73
