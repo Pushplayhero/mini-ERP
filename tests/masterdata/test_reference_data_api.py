@@ -86,8 +86,9 @@ async def test_manage_reference_data_cli_and_get_queries(
     auth = await setup_company_with_admin(client, code="REFCLI")
 
     # 1. Programmatic UoM creation
-    uom_box = await manage_reference_data.create_uom(code="BOX", name="Box", session=db_session)
-    assert uom_box.code == "BOX"
+    code_box = f"BX{uuid.uuid4().hex[:4].upper()}"
+    uom_box = await manage_reference_data.create_uom(code=code_box, name="Box", session=db_session)
+    assert uom_box.code == code_box
 
     # 2. CLI _main invocation for UoM
     code_pack = f"PK{uuid.uuid4().hex[:4].upper()}"
@@ -99,7 +100,7 @@ async def test_manage_reference_data_cli_and_get_queries(
     uom_list_resp = await client.get("/api/v1/uom")
     assert uom_list_resp.status_code == 200
     codes = {u["code"] for u in uom_list_resp.json()}
-    assert {"BOX", code_pack}.issubset(codes)
+    assert {code_box, code_pack}.issubset(codes)
 
     # 3. Currency creation
     eur_code = f"E{uuid.uuid4().hex[:2].upper()}"
@@ -124,7 +125,7 @@ async def test_manage_reference_data_cli_and_get_queries(
     uoms = (await client.get("/api/v1/uom")).json()
     ea_id = uuid.UUID(next(u["id"] for u in uoms if u["code"] == "EA"))
     kg_id = uuid.UUID(next(u["id"] for u in uoms if u["code"] == "KG"))
-    box_id = uuid.UUID(next(u["id"] for u in uoms if u["code"] == "BOX"))
+    box_id = uuid.UUID(next(u["id"] for u in uoms if u["code"] == code_box))
 
     conv = await manage_reference_data.create_uom_conversion(
         from_uom_id=kg_id,

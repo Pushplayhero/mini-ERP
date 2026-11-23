@@ -35,6 +35,17 @@ from app.platform.integration.batch import neutralize_formula
 from tests.platform.permissions._helpers import create_company
 
 
+async def _get_or_create_uom(db_session: AsyncSession, code: str, name: str) -> Uom:
+    """Idempotently fetch or create a global UoM (uom table is shared across the test session)."""
+    existing = await db_session.scalar(select(Uom).where(Uom.code == code))
+    if existing is not None:
+        return existing
+    uom = Uom(code=code, name=name)
+    db_session.add(uom)
+    await db_session.commit()
+    return uom
+
+
 def test_formula_injection_neutralization() -> None:
     # Dangerous formula prefixes are prepended with an apostrophe
     assert neutralize_formula("=SUM(A1:A10)") == "'=SUM(A1:A10)"
@@ -163,10 +174,8 @@ async def test_batch_import_product_with_uom_code(
         permission_codes=frozenset({"platform.integration.import"}),
     )
 
-    # Create reference UoM
-    uom = Uom(code="PCS", name="Pieces")
-    db_session.add(uom)
-    await db_session.commit()
+    # Create or reuse reference UoM
+    uom = await _get_or_create_uom(db_session, "PCS", "Pieces")
 
     csv_data = (
         "sku,name,uom_code,list_price,standard_cost\n"
@@ -201,6 +210,8 @@ async def test_batch_import_product_with_uom_code(
 async def test_batch_export_customer_csv_and_json(
     db_session: AsyncSession,
 ) -> None:
+    import app.main as _app_main  # noqa: F401  (ensures export providers are registered)
+
     co_id = await create_company(db_session, "BATCH_EXP_CO")
     actor = ActorContext(
         user_id=uuid.uuid4(),
@@ -584,6 +595,7 @@ async def test_batch_export_vendor_bill_and_vendor_payment(
 ) -> None:
     from datetime import date, datetime, timezone
 
+    import app.main as _app_main  # noqa: F401  (ensures export providers are registered)
     from app.modules.masterdata.models import Supplier
     from app.modules.payables.models import (
         VendorBill,
@@ -684,9 +696,7 @@ async def test_batch_import_stamps_actor_handles_blank_csv_cells_and_rejects_emp
         permission_codes=frozenset({"platform.integration.import", "platform.integration.read"}),
     )
 
-    uom = Uom(code="BOX", name="Box")
-    db_session.add(uom)
-    await db_session.commit()
+    await _get_or_create_uom(db_session, "BOX", "Box")
 
     with company_context(co_id), actor_context(actor):
         # 1. Customer CSV with empty optional cells falls back to defaults & stamps actor
