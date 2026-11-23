@@ -46,6 +46,7 @@ _VALID_ENTITY_TRANSITIONS_SQL = (
     "(entity_type = 'payment' AND transition = 'void') OR "
     "(entity_type = 'vendor_bill' AND transition = 'void') OR "
     "(entity_type = 'vendor_payment' AND transition = 'void') OR "
+    "(entity_type = 'cost_adjustment' AND transition = 'void') OR "
     "(entity_type = 'journal_entry' AND transition = 'reverse')"
     ")"
 )

@@ -17,6 +17,7 @@
 | [ADR-013](ADR-013-platform-integration.md) | `platform.integration` — webhooks, outbox worker, batch import/export, and SSRF defense | Accepted |
 | [ADR-014](ADR-014-purchase-and-supplier-masterdata.md) | `purchase` + `masterdata.Supplier` — procurement lifecycle, goods receipt intake, and two-stage GR/IR accrual | Accepted |
 | [ADR-015](ADR-015-payables.md) | `payables` — vendor bills, GR/IR clearing, outgoing supplier payments, and AP aging | Accepted |
+| [ADR-016](ADR-016-costing.md) | `costing` — moving weighted average valuation, landed cost, PPV clearing, and revaluation | Accepted |
 
 See also:
 - [Phase 2 Architecture Overview](PHASE2-platform-architecture-overview.md)

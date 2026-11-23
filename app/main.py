@@ -55,6 +55,9 @@ from app.core.plugins import set_plugin_runtime_gate
 from app.core.settings import get_settings
 from app.core.tenancy import reset_current_company_id, set_current_company_id
 from app.core.workflow import set_workflow_approval_gate, set_workflow_target_resolver
+from app.modules.costing import events as costing_events
+from app.modules.costing import service as costing_service
+from app.modules.costing.router import router as costing_router
 from app.modules.inventory import service as inventory_service
 from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
@@ -273,6 +276,7 @@ app.include_router(ledger_router, prefix="/api/v1")
 app.include_router(sales_router, prefix="/api/v1")
 app.include_router(purchase_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
+app.include_router(costing_router, prefix="/api/v1")
 app.include_router(receivables_router, prefix="/api/v1")
 app.include_router(payables_router, prefix="/api/v1")
 # ADR-009 / WEEK9 Slice B: `/auth/*`, not under `/api/v1` — matches the ADR's
@@ -327,6 +331,7 @@ events.register_event(
 events.subscribe(
     sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE, inventory_service.handle_goods_shipped
 )
+events.subscribe(sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE, costing_service.handle_goods_shipped)
 events.subscribe(
     sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE,
     ledger_posting.make_posting_handler(sales_events.SALES_GOODS_SHIPPED_EVENT_TYPE),
@@ -386,6 +391,10 @@ events.subscribe(
 )
 events.subscribe(
     purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE,
+    costing_service.handle_goods_received,
+)
+events.subscribe(
+    purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE,
     ledger_posting.make_posting_handler(purchase_events.PURCHASE_GOODS_RECEIVED_EVENT_TYPE),
 )
 
@@ -425,6 +434,22 @@ events.subscribe(
     payables_events.PAYABLES_PAYMENT_VOIDED_EVENT_TYPE,
     ledger_posting.make_posting_handler(payables_events.PAYABLES_PAYMENT_VOIDED_EVENT_TYPE),
 )
+
+# ADR-016 (Phase 3 Week 16): costing adjustments (Landed Cost, PPV, Revaluation).
+for _costing_event_type in (
+    costing_events.COSTING_LANDED_COST_POSTED_EVENT_TYPE,
+    costing_events.COSTING_LANDED_COST_VOIDED_EVENT_TYPE,
+    costing_events.COSTING_PPV_UNFAVORABLE_POSTED_EVENT_TYPE,
+    costing_events.COSTING_PPV_UNFAVORABLE_VOIDED_EVENT_TYPE,
+    costing_events.COSTING_PPV_FAVORABLE_POSTED_EVENT_TYPE,
+    costing_events.COSTING_PPV_FAVORABLE_VOIDED_EVENT_TYPE,
+    costing_events.COSTING_REVALUATION_UP_POSTED_EVENT_TYPE,
+    costing_events.COSTING_REVALUATION_UP_VOIDED_EVENT_TYPE,
+    costing_events.COSTING_REVALUATION_DOWN_POSTED_EVENT_TYPE,
+    costing_events.COSTING_REVALUATION_DOWN_VOIDED_EVENT_TYPE,
+):
+    events.register_event(_costing_event_type, ledger_posting.CostAdjustmentPostingPayload)
+    events.subscribe(_costing_event_type, ledger_posting.make_posting_handler(_costing_event_type))
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +722,59 @@ async def _export_stock_summary(
     ]
 
 
+async def _export_cost_adjustments(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.costing.models import CostAdjustment
+
+    stmt = (
+        select(CostAdjustment)
+        .where(CostAdjustment.company_id == company_id)
+        .order_by(CostAdjustment.adjustment_no)
+    )
+    adjustments = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(a.id),
+            "adjustment_no": a.adjustment_no,
+            "adjustment_type": str(
+                a.adjustment_type.value
+                if hasattr(a.adjustment_type, "value")
+                else a.adjustment_type
+            ),
+            "status": str(a.status.value if hasattr(a.status, "value") else a.status),
+            "product_id": str(a.product_id),
+            "order_id": str(a.order_id) if a.order_id is not None else "",
+            "amount": str(a.amount),
+            "adjustment_date": str(a.adjustment_date),
+            "reason": a.reason,
+        }
+        for a in adjustments
+    ]
+
+
+async def _export_product_cost_summaries(
+    session: AsyncSession, company_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.modules.costing.models import ProductCostSummary
+
+    stmt = (
+        select(ProductCostSummary)
+        .where(ProductCostSummary.company_id == company_id)
+        .order_by(ProductCostSummary.product_id)
+    )
+    summaries = (await session.scalars(stmt)).all()
+    return [
+        {
+            "product_id": str(s.product_id),
+            "tracked_qty": str(s.tracked_qty),
+            "total_cost_value": str(s.total_cost_value),
+            "moving_avg_cost": str(s.moving_avg_cost),
+        }
+        for s in summaries
+    ]
+
+
 def register_default_export_providers() -> None:
     register_export_provider(BatchEntityType.CUSTOMER, _export_customers)
     register_export_provider(BatchEntityType.SUPPLIER, _export_suppliers)
@@ -710,6 +788,8 @@ def register_default_export_providers() -> None:
     register_export_provider(BatchEntityType.VENDOR_PAYMENT, _export_vendor_payments)
     register_export_provider(BatchEntityType.JOURNAL_ENTRY, _export_journal_entries)
     register_export_provider(BatchEntityType.STOCK_SUMMARY, _export_stock_summary)
+    register_export_provider(BatchEntityType.COST_ADJUSTMENT, _export_cost_adjustments)
+    register_export_provider(BatchEntityType.PRODUCT_COST_SUMMARY, _export_product_cost_summaries)
 
 
 register_default_export_providers()

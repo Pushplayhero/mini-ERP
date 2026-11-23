@@ -92,6 +92,7 @@ WORKFLOW_ADMIN_ACTOR = ActorContext(
             "receivables.payment.void",
             "payables.bill.void",
             "payables.payment.void",
+            "costing.adjustment.void",
             "ledger.journal_entry.reverse",
         }
     ),

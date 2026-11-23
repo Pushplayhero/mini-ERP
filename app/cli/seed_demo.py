@@ -173,6 +173,7 @@ _STANDARD_CHART = (
     ("2110", "Accrued Purchases", AccountType.LIABILITY),
     ("4000", "Revenue", AccountType.REVENUE),
     ("5000", "COGS", AccountType.EXPENSE),
+    ("5110", "Purchase Price Variance", AccountType.EXPENSE),
 )
 _UNIT_PRICE = Decimal("100")
 _STANDARD_COST = Decimal("30")

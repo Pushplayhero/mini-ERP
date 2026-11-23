@@ -138,6 +138,7 @@ class AccountResolutionError(DomainValidationError):
 #   1300  Inventory           (asset)     -- sales.goods_shipped / purchase.goods_received
 #   2000  Accounts Payable    (liability) -- payables bills/payments (Phase 3 / ADR-015)
 #   2110  Accrued Purchases   (liability) -- purchase.goods_received GR/IR clearing (ADR-014)
+#   5110  Purchase Price Variance (expense) -- costing PPV clearing & revaluation (ADR-016)
 # ---------------------------------------------------------------------------
 
 GOODS_SHIPPED_EVENT_TYPE = "sales.goods_shipped"
@@ -156,6 +157,17 @@ PAYABLES_BILL_ISSUED_EVENT_TYPE = "payables.bill_issued"
 PAYABLES_BILL_VOIDED_EVENT_TYPE = "payables.bill_voided"
 PAYABLES_PAYMENT_ISSUED_EVENT_TYPE = "payables.payment_issued"
 PAYABLES_PAYMENT_VOIDED_EVENT_TYPE = "payables.payment_voided"
+
+COSTING_LANDED_COST_POSTED_EVENT_TYPE = "costing.landed_cost_posted"
+COSTING_LANDED_COST_VOIDED_EVENT_TYPE = "costing.landed_cost_voided"
+COSTING_PPV_UNFAVORABLE_POSTED_EVENT_TYPE = "costing.ppv_unfavorable_posted"
+COSTING_PPV_UNFAVORABLE_VOIDED_EVENT_TYPE = "costing.ppv_unfavorable_voided"
+COSTING_PPV_FAVORABLE_POSTED_EVENT_TYPE = "costing.ppv_favorable_posted"
+COSTING_PPV_FAVORABLE_VOIDED_EVENT_TYPE = "costing.ppv_favorable_voided"
+COSTING_REVALUATION_UP_POSTED_EVENT_TYPE = "costing.revaluation_up_posted"
+COSTING_REVALUATION_UP_VOIDED_EVENT_TYPE = "costing.revaluation_up_voided"
+COSTING_REVALUATION_DOWN_POSTED_EVENT_TYPE = "costing.revaluation_down_posted"
+COSTING_REVALUATION_DOWN_VOIDED_EVENT_TYPE = "costing.revaluation_down_voided"
 
 
 class GoodsShippedLine(BaseModel):
@@ -294,6 +306,16 @@ class VendorPaymentVoidedPayload(BaseModel):
     amount: Decimal
 
 
+class CostAdjustmentPostingPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    event_date: date
+    adjustment_no: str
+    product_id: uuid.UUID
+    order_id: uuid.UUID | None = None
+    amount: Decimal
+
+
 POSTING_RULES: dict[str, list[PostingRule]] = {
     GOODS_SHIPPED_EVENT_TYPE: [
         PostingRule(
@@ -341,6 +363,37 @@ POSTING_RULES: dict[str, list[PostingRule]] = {
     ],
     PAYABLES_PAYMENT_VOIDED_EVENT_TYPE: [
         PostingRule(debit_account_code="1000", credit_account_code="2000", amount_field="amount"),
+    ],
+    # ADR-016 (Week 16): landed cost capitalization, PPV clearing, and inventory revaluation.
+    COSTING_LANDED_COST_POSTED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1300", credit_account_code="2110", amount_field="amount"),
+    ],
+    COSTING_LANDED_COST_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="2110", credit_account_code="1300", amount_field="amount"),
+    ],
+    COSTING_PPV_UNFAVORABLE_POSTED_EVENT_TYPE: [
+        PostingRule(debit_account_code="5110", credit_account_code="2110", amount_field="amount"),
+    ],
+    COSTING_PPV_UNFAVORABLE_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="2110", credit_account_code="5110", amount_field="amount"),
+    ],
+    COSTING_PPV_FAVORABLE_POSTED_EVENT_TYPE: [
+        PostingRule(debit_account_code="2110", credit_account_code="5110", amount_field="amount"),
+    ],
+    COSTING_PPV_FAVORABLE_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="5110", credit_account_code="2110", amount_field="amount"),
+    ],
+    COSTING_REVALUATION_UP_POSTED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1300", credit_account_code="5110", amount_field="amount"),
+    ],
+    COSTING_REVALUATION_UP_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="5110", credit_account_code="1300", amount_field="amount"),
+    ],
+    COSTING_REVALUATION_DOWN_POSTED_EVENT_TYPE: [
+        PostingRule(debit_account_code="5110", credit_account_code="1300", amount_field="amount"),
+    ],
+    COSTING_REVALUATION_DOWN_VOIDED_EVENT_TYPE: [
+        PostingRule(debit_account_code="1300", credit_account_code="5110", amount_field="amount"),
     ],
 }
 

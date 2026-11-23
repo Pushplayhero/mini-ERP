@@ -211,7 +211,8 @@ async def _clean_tenant_tables(
         await conn.execute(
             text(
                 "TRUNCATE TABLE journal_lines, journal_entries, ledger_sequences, "
-                "accounting_periods, stock_moves, stock_summary, "
+                "accounting_periods, cost_moves, product_cost_summaries, cost_adjustments, "
+                "costing_sequences, stock_moves, stock_summary, "
                 "vendor_payment_allocations, vendor_payment_allocation_commands, "
                 "vendor_payments, vendor_bills, payables_sequences, "
                 "payment_allocations, payment_allocation_commands, payments, "
@@ -297,6 +298,12 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "inventory.adjustment.create",
         "inventory.summary.read",
         "inventory.move.read",
+        "costing.summary.read",
+        "costing.move.read",
+        "costing.adjustment.create",
+        "costing.adjustment.read",
+        "costing.adjustment.void",
+        "costing.report.read",
         "receivables.invoice.create",
         "receivables.invoice.read",
         "receivables.invoice.void",

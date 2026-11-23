@@ -55,6 +55,7 @@ def test_custom_field_entity_type_enums() -> None:
         "payment",
         "vendor_bill",
         "vendor_payment",
+        "cost_adjustment",
     }
     assert {e.value for e in CustomFieldEntityType} == expected_entities
     assert CustomFieldEntityType.CUSTOMER.value == "customer"
@@ -69,6 +70,7 @@ def test_custom_field_entity_type_enums() -> None:
     assert CustomFieldEntityType.PAYMENT.value == "payment"
     assert CustomFieldEntityType.VENDOR_BILL.value == "vendor_bill"
     assert CustomFieldEntityType.VENDOR_PAYMENT.value == "vendor_payment"
+    assert CustomFieldEntityType.COST_ADJUSTMENT.value == "cost_adjustment"
 
 
 def test_field_key_pattern_and_port_alias() -> None:

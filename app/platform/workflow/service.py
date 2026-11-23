@@ -1105,6 +1105,14 @@ _VENDOR_PAYMENTS = sa.table(
     sa.column("allocated_amount"),
 )
 
+_COST_ADJUSTMENTS = sa.table(
+    "cost_adjustments",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("status"),
+    sa.column("amount"),
+)
+
 _JOURNAL_ENTRIES = sa.table(
     "journal_entries",
     sa.column("id"),
@@ -1253,6 +1261,22 @@ async def _resolve_void_with_balance(
             f"cannot void a {entity_label.lower()} with settled or allocated activity"
         )
     return parse_and_quantize_amount(res.doc_amount, amount_name)
+
+
+async def _resolve_cost_adjustment_void(
+    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+) -> Decimal:
+    stmt = (
+        select(_COST_ADJUSTMENTS.c.id, _COST_ADJUSTMENTS.c.status, _COST_ADJUSTMENTS.c.amount)
+        .where(_COST_ADJUSTMENTS.c.id == entity_id, _COST_ADJUSTMENTS.c.company_id == company_id)
+        .with_for_update()
+    )
+    res = (await session.execute(stmt)).first()
+    if res is None:
+        raise NotFoundError("CostAdjustment", str(entity_id))
+    if str(res.status).lower() == "voided":
+        raise ConflictError(f"CostAdjustment {entity_id} is already voided")
+    return parse_and_quantize_amount(abs(res.amount), "adjustment_amount")
 
 
 async def _resolve_journal_entry_reverse(
@@ -1429,6 +1453,8 @@ async def resolve_workflow_target_unchecked(
             used_label="allocated_amount",
             amount_name="payment_amount",
         )
+    elif e_type is WorkflowEntityType.COST_ADJUSTMENT and t_type is WorkflowTransition.VOID:
+        resolved = await _resolve_cost_adjustment_void(session, company_id, entity_id)
     elif e_type is WorkflowEntityType.JOURNAL_ENTRY and t_type is WorkflowTransition.REVERSE:
         resolved = await _resolve_journal_entry_reverse(session, company_id, entity_id)
 
