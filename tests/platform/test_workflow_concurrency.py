@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
 
@@ -269,7 +270,7 @@ async def test_concurrent_create_definition_serialized_by_company_lock(
                     await session.rollback()
                     results[label] = f"ConflictError: {exc}"
 
-    masterdata_service.lock_company_unchecked = instrumented_lock  # type: ignore[assignment]
+    masterdata_service.lock_company_unchecked = instrumented_lock
     try:
         t_1 = asyncio.create_task(run_create("first", wait_first=False))
         await first_locked.wait()
@@ -376,7 +377,7 @@ async def test_concurrent_update_steps_and_deactivate_serialized_by_company_lock
                     ),
                 )
 
-    masterdata_service.lock_company_unchecked = instrumented_lock  # type: ignore[assignment]
+    masterdata_service.lock_company_unchecked = instrumented_lock
     try:
         t_deact = asyncio.create_task(run_deactivate())
         await first_locked.wait()
@@ -1104,11 +1105,12 @@ async def _assert_consumed_instance_immutable(
             assert reloaded.status == WorkflowInstanceStatus.CONSUMED.value
             assert reloaded.consumed_at is not None
             assert reloaded.consumed_by == expected_consumer_id
-            for action in (
+            actions: tuple[Callable[[], Awaitable[Any]], ...] = (
                 lambda: wf_service.approve_workflow_instance(session, inst_id),
                 lambda: wf_service.reject_workflow_instance(session, inst_id),
                 lambda: wf_service.cancel_workflow_instance(session, inst_id),
-            ):
+            )
+            for action in actions:
                 with pytest.raises(ConflictError, match="CONSUMED"):
                     await action()
                 await session.rollback()
@@ -1501,12 +1503,13 @@ async def test_definition_deactivation_cancels_active_instances_and_blocks_decis
             ).status == WorkflowInstanceStatus.CANCELLED.value
 
         with company_context(company_id), actor_context(approver):
-            for fn in (
+            decisions: tuple[Callable[[], Awaitable[Any]], ...] = (
                 lambda: wf_service.approve_workflow_instance(session, inst_pending_id),
                 lambda: wf_service.reject_workflow_instance(
                     session, inst_pending_id, WorkflowDecisionInput(comment="too late")
                 ),
-            ):
+            )
+            for fn in decisions:
                 with pytest.raises(ConflictError):
                     await fn()
                 await session.rollback()

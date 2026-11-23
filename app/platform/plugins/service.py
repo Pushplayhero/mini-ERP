@@ -73,7 +73,9 @@ async def get_company_plugin(session: AsyncSession, plugin_name: str) -> Company
         raise NotFoundError("Plugin", plugin_name)
 
     res = await session.execute(
-        select(CompanyPlugin).where(CompanyPlugin.plugin_name == plugin_name)
+        select(CompanyPlugin)
+        .where(CompanyPlugin.plugin_name == plugin_name)
+        .execution_options(populate_existing=True)
     )
     row = res.scalars().first()
     return _to_read_dto(manifest, row)
@@ -229,7 +231,9 @@ async def execute_with_plugin_gate_unchecked(
         )
 
     res = await session.execute(
-        select(CompanyPlugin).where(CompanyPlugin.plugin_name == plugin_name)
+        select(CompanyPlugin)
+        .where(CompanyPlugin.plugin_name == plugin_name)
+        .execution_options(populate_existing=True)
     )
     row = res.scalars().first()
 

@@ -371,7 +371,7 @@ async def _run_serialized_pair(
         await asyncio.gather(t_1, t_2)
         assert second_acquired_lock.is_set()
     finally:
-        masterdata_service.lock_company_unchecked = orig_lock  # type: ignore[assignment]
+        masterdata_service.lock_company_unchecked = orig_lock
 
     return results
 

@@ -41,6 +41,9 @@ async def test_demo_platform_runs_idempotently_and_preserves_o2c(
         assert first_run.workflow_step_rbac_status == 403
         assert first_run.workflow_final_status == "CONSUMED"
         assert first_run.trial_balance_debit == first_run.trial_balance_credit
+        assert first_run.integration_dry_run_status == "DRY_RUN"
+        assert first_run.integration_export_rows >= 1
+        assert first_run.integration_ssrf_blocked_status == 422
 
         # Second run must pass identically with zero stock or ledger drift.
         second_run = await run_demo_platform(demo_client)
@@ -50,6 +53,9 @@ async def test_demo_platform_runs_idempotently_and_preserves_o2c(
         assert second_run.trial_balance_debit == first_run.trial_balance_debit
         assert second_run.trial_balance_credit == first_run.trial_balance_credit
         assert second_run.stock_on_hand == first_run.stock_on_hand
+        assert second_run.integration_dry_run_status == "DRY_RUN"
+        assert second_run.integration_export_rows == first_run.integration_export_rows
+        assert second_run.integration_ssrf_blocked_status == 422
 
         # Phase 1 O2C baseline must succeed seamlessly after demo_platform cleanup.
         await run_demo(demo_client)

@@ -29,7 +29,7 @@ from app.core.integration import (
     BatchImportValidationError,
 )
 from app.core.tenancy import company_context
-from app.modules.masterdata.models import Customer, Product, Uom
+from app.modules.masterdata.models import Account, Customer, Product, Supplier, Uom
 from app.platform.integration import batch
 from app.platform.integration.batch import neutralize_formula
 from tests.platform.permissions._helpers import create_company
@@ -670,3 +670,84 @@ async def test_batch_export_vendor_bill_and_vendor_payment(
         assert pay_job.status == "COMPLETED"
         assert pay_job.total_rows == 1
         assert "APAY-2026-000001" in json_pay
+
+
+@pytest.mark.asyncio
+async def test_batch_import_stamps_actor_handles_blank_csv_cells_and_rejects_empty_cf_key(
+    db_session: AsyncSession,
+) -> None:
+    """Verify actor stamping, empty optional CSV cells, and custom_data. validation."""
+    co_id = await create_company(db_session, "BATCH_HARDEN_CO")
+    actor_id = uuid.uuid4()
+    actor = ActorContext(
+        user_id=actor_id,
+        permission_codes=frozenset({"platform.integration.import", "platform.integration.read"}),
+    )
+
+    uom = Uom(code="BOX", name="Box")
+    db_session.add(uom)
+    await db_session.commit()
+
+    with company_context(co_id), actor_context(actor):
+        # 1. Customer CSV with empty optional cells falls back to defaults & stamps actor
+        cust_csv = (
+            "code,name,credit_limit,currency_code,payment_terms_days,is_active\n"
+            "CB1,Blank Opt Customer,,,,\n"
+        )
+        job_c, err_c = await batch.import_batch_data(
+            db_session, BatchEntityType.CUSTOMER, cust_csv, data_format=BatchDataFormat.CSV
+        )
+        assert job_c.status == "COMPLETED", err_c
+        cust = (await db_session.scalars(select(Customer).where(Customer.code == "CB1"))).one()
+        assert cust.credit_limit == Decimal("0.000000")
+        assert cust.payment_terms_days == 30
+        assert cust.is_active is True
+        assert cust.created_by == actor_id
+        assert cust.updated_by == actor_id
+
+        # 2. Supplier CSV with empty optional cells & actor stamp
+        sup_csv = "code,name,payment_terms_days,is_active\nSB1,Blank Opt Supplier,,\n"
+        job_s, err_s = await batch.import_batch_data(
+            db_session, BatchEntityType.SUPPLIER, sup_csv, data_format=BatchDataFormat.CSV
+        )
+        assert job_s.status == "COMPLETED", err_s
+        sup = (await db_session.scalars(select(Supplier).where(Supplier.code == "SB1"))).one()
+        assert sup.payment_terms_days == 30
+        assert sup.is_active is True
+        assert sup.created_by == actor_id
+        assert sup.updated_by == actor_id
+
+        # 3. Product CSV with empty optional cells & actor stamp
+        prod_csv = (
+            "sku,name,uom_code,list_price,standard_cost,is_active\n" "PB1,Blank Product,BOX,,,\n"
+        )
+        job_p, err_p = await batch.import_batch_data(
+            db_session, BatchEntityType.PRODUCT, prod_csv, data_format=BatchDataFormat.CSV
+        )
+        assert job_p.status == "COMPLETED", err_p
+        prod = (await db_session.scalars(select(Product).where(Product.sku == "PB1"))).one()
+        assert prod.list_price == Decimal("0.000000")
+        assert prod.standard_cost == Decimal("0.000000")
+        assert prod.is_active is True
+        assert prod.created_by == actor_id
+        assert prod.updated_by == actor_id
+
+        # 4. Account CSV with empty optional cells & actor stamp
+        acct_csv = "code,name,type,is_control,is_active\n1099,Temp Cash,asset,,\n"
+        job_a, err_a = await batch.import_batch_data(
+            db_session, BatchEntityType.ACCOUNT, acct_csv, data_format=BatchDataFormat.CSV
+        )
+        assert job_a.status == "COMPLETED", err_a
+        acct = (await db_session.scalars(select(Account).where(Account.code == "1099"))).one()
+        assert acct.is_control is False
+        assert acct.is_active is True
+        assert acct.created_by == actor_id
+        assert acct.updated_by == actor_id
+
+        # 5. Empty field key after 'custom_data.' fails cleanly
+        bad_cf_csv = "code,name,custom_data.\nCB2,Bad Header,value\n"
+        job_bad, err_bad = await batch.import_batch_data(
+            db_session, BatchEntityType.CUSTOMER, bad_cf_csv, data_format=BatchDataFormat.CSV
+        )
+        assert job_bad.status == "FAILED"
+        assert "specify a field name" in err_bad[0]["error"]

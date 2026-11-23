@@ -24,6 +24,7 @@ _DECIMAL_QUANTUM = Decimal("0.000001")
 _MAX_DECIMAL_EXCLUSIVE = Decimal("100000000000000")  # 10^14
 _MIN_INT64 = -(2**63)
 _MAX_INT64 = 2**63 - 1
+_MAX_REGEX_LENGTH = 500
 
 
 def _parse_and_quantize_decimal(value: Any, context_name: str) -> Decimal:
@@ -82,6 +83,10 @@ def _validate_text_rules(rules: dict[str, Any]) -> dict[str, Any]:
     if regex is not None:
         if not isinstance(regex, str) or not regex.strip():
             raise CustomFieldValidationError("regex must be a non-empty string pattern")
+        if len(regex) > _MAX_REGEX_LENGTH:
+            raise CustomFieldValidationError(
+                f"regex pattern length cannot exceed {_MAX_REGEX_LENGTH} characters"
+            )
         try:
             re.compile(regex)
         except re.error as exc:

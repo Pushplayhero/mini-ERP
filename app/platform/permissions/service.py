@@ -257,12 +257,29 @@ async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.U
     """Re-point a session's active company, re-checking entitlement immediately."""
     require_current_actor()
     session_id = require_current_session_id()
-    result = await session.execute(select(SessionModel).where(SessionModel.id == session_id))
+    result = await session.execute(
+        select(SessionModel)
+        .where(SessionModel.id == session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     session_row = result.scalars().first()
     if session_row is None:
         raise InvalidSessionError(f"Session {session_id} not found.")
 
     _assert_current_actor_owns_session(session_row)
+
+    if session_row.expires_at <= datetime.now(UTC):
+        raise InvalidSessionError("Session has expired.")
+
+    user_result = await session.execute(
+        select(User).where(User.id == session_row.user_id).execution_options(populate_existing=True)
+    )
+    user = user_result.scalars().first()
+    if user is None:
+        raise InvalidSessionError(f"Session {session_row.id} has no resolvable user.")
+    if not user.is_active:
+        raise UserDisabledError(f"User {user.id} is disabled.")
 
     entitled = await session.execute(
         select(UserCompanyRole.id).where(
@@ -287,7 +304,12 @@ async def logout(session: AsyncSession) -> None:
     """
     require_current_actor()
     session_id = require_current_session_id()
-    result = await session.execute(select(SessionModel).where(SessionModel.id == session_id))
+    result = await session.execute(
+        select(SessionModel)
+        .where(SessionModel.id == session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     session_row = result.scalars().first()
     if session_row is None:
         raise InvalidSessionError(f"Session {session_id} not found.")

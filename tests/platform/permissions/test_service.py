@@ -391,3 +391,42 @@ async def test_switch_company_and_logout_reject_session_actor_mismatch(
             await service.switch_company(db_session, company_a)
         with pytest.raises(service.InvalidSessionError):
             await service.logout(db_session)
+
+
+@pytest.mark.asyncio
+async def test_switch_company_rejects_expired_session_and_disabled_user(
+    db_session: AsyncSession,
+) -> None:
+    company_a = await create_company(db_session, "SWEXPA")
+    company_b = await create_company(db_session, "SWEXPB")
+    user_id = await create_user_with_role(
+        db_session, email="swexp@example.com", password="pw12345", company_id=company_a
+    )
+    await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="admin")
+    result = await service.login(db_session, "swexp@example.com", "pw12345", company_a)
+    resolved = await service.resolve_actor(db_session, result.raw_token)
+
+    user = await db_session.get(User, user_id)
+    assert user is not None
+    user.is_active = False
+    await db_session.commit()
+
+    with (
+        actor_context(resolved.actor_context),
+        session_context(result.session_id),
+        pytest.raises(service.UserDisabledError),
+    ):
+        await service.switch_company(db_session, company_b)
+
+    user.is_active = True
+    session_row = await db_session.get(SessionModel, result.session_id)
+    assert session_row is not None
+    session_row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await db_session.commit()
+
+    with (
+        actor_context(resolved.actor_context),
+        session_context(result.session_id),
+        pytest.raises(service.InvalidSessionError, match="expired"),
+    ):
+        await service.switch_company(db_session, company_b)

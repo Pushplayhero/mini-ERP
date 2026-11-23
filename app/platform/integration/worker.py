@@ -502,6 +502,69 @@ def _active_previous_secret(endpoint: WebhookEndpoint, now: datetime) -> str | N
     return None
 
 
+async def _settle_dispatch_outcome(
+    session: AsyncSession,
+    claimed: ClaimedDelivery,
+    *,
+    success: bool,
+    http_status: int | None,
+    error_message: str | None,
+) -> str:
+    """Persist HTTP dispatch outcome under row lock, defending against late overwrites."""
+    delivery = await session.scalar(
+        select(WebhookDelivery)
+        .where(
+            WebhookDelivery.id == claimed.id,
+            WebhookDelivery.company_id == claimed.company_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if delivery is None:
+        await session.rollback()
+        return "DEAD"
+    if delivery.status in ("DELIVERED", "DEAD"):
+        existing_status = delivery.status
+        await session.rollback()
+        return existing_status
+
+    if success:
+        delivery.attempts = claimed.attempts + 1
+        delivery.status = "DELIVERED"
+        delivery.delivered_at = datetime.now(UTC)
+        delivery.last_http_status = http_status
+        delivery.lease_until = None
+        delivery.last_error = None
+        await session.commit()
+        return "DELIVERED"
+
+    with company_context(claimed.company_id):
+        fresh_endpoint = await session.scalar(
+            select(WebhookEndpoint)
+            .where(
+                WebhookEndpoint.id == claimed.endpoint_id,
+                WebhookEndpoint.company_id == claimed.company_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+    if fresh_endpoint is None or not fresh_endpoint.is_active:
+        delivery.attempts = claimed.attempts + 1
+        delivery.status = "DEAD"
+        delivery.last_http_status = http_status
+        delivery.last_error = "Webhook endpoint deactivated"
+        delivery.lease_until = None
+        await session.commit()
+        return "DEAD"
+
+    return await _settle_failed_attempt(
+        session,
+        delivery,
+        claimed,
+        error_message,
+        http_status=http_status,
+    )
+
+
 async def dispatch_single_delivery(
     session: AsyncSession,
     claimed: ClaimedDelivery,
@@ -511,20 +574,24 @@ async def dispatch_single_delivery(
     """Perform network delivery for one claimed webhook attempt."""
     with company_context(claimed.company_id):
         endpoint = await session.scalar(
-            select(WebhookEndpoint).where(
+            select(WebhookEndpoint)
+            .where(
                 WebhookEndpoint.id == claimed.endpoint_id,
                 WebhookEndpoint.company_id == claimed.company_id,
             )
+            .execution_options(populate_existing=True)
         )
 
     delivery = await session.scalar(
-        select(WebhookDelivery).where(
+        select(WebhookDelivery)
+        .where(
             WebhookDelivery.id == claimed.id,
             WebhookDelivery.company_id == claimed.company_id,
         )
+        .execution_options(populate_existing=True)
     )
-    if delivery is None:
-        return "DEAD"
+    if delivery is None or delivery.status in ("DELIVERED", "DEAD"):
+        return "DEAD" if delivery is None else delivery.status
 
     prepared = _prepare_delivery_payload(
         endpoint,
@@ -532,11 +599,12 @@ async def dispatch_single_delivery(
         resolve_dns=(http_client is None),
     )
     if prepared.retryable_error is not None:
-        return await _settle_failed_attempt(
+        return await _settle_dispatch_outcome(
             session,
-            delivery,
             claimed,
-            prepared.retryable_error,
+            success=False,
+            http_status=None,
+            error_message=prepared.retryable_error,
         )
     if (
         prepared.dead_error is not None
@@ -579,23 +647,12 @@ async def dispatch_single_delivery(
         max_response_bytes=settings.webhook_max_response_bytes,
         http_client=http_client,
     )
-
-    if success:
-        delivery.attempts = claimed.attempts + 1
-        delivery.status = "DELIVERED"
-        delivery.delivered_at = datetime.now(UTC)
-        delivery.last_http_status = http_status
-        delivery.lease_until = None
-        delivery.last_error = None
-        await session.commit()
-        return "DELIVERED"
-
-    return await _settle_failed_attempt(
+    return await _settle_dispatch_outcome(
         session,
-        delivery,
         claimed,
-        error_message,
+        success=success,
         http_status=http_status,
+        error_message=error_message,
     )
 
 

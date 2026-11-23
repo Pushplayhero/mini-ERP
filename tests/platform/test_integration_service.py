@@ -461,3 +461,7 @@ async def test_service_rbac_and_deactivation_cancels_pending_deliveries(
     assert pending_deliv.status == "DEAD"
     assert pending_deliv.last_error == "Webhook endpoint deactivated"
     assert done_deliv.status == "DELIVERED"
+
+    # Retrying a DEAD delivery while its endpoint is deactivated fails closed
+    with pytest.raises(DomainValidationError, match="inactive webhook endpoint"):
+        await service.retry_webhook_delivery(db_session, pending_deliv.id)

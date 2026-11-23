@@ -110,6 +110,7 @@ async def _load_definition_for_share(
         )
         .options(selectinload(WorkflowDefinition.steps))
         .with_for_update(read=True, of=WorkflowDefinition)
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalars().first()
 
@@ -129,6 +130,7 @@ async def _cancel_active_instances_where(
             ),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     active_instances = (await session.execute(stmt)).scalars().all()
     for inst in active_instances:
@@ -362,6 +364,7 @@ async def update_workflow_definition(
         .where(WorkflowDefinition.id == definition_id)
         .options(selectinload(WorkflowDefinition.steps))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     res = await session.execute(stmt)
     row = res.scalars().first()
@@ -432,6 +435,7 @@ async def deactivate_workflow_definition(
         .where(WorkflowDefinition.id == definition_id)
         .options(selectinload(WorkflowDefinition.steps))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     res = await session.execute(stmt)
     row = res.scalars().first()
@@ -568,6 +572,7 @@ async def submit_workflow_instance(
             WorkflowInstance.status.in_(["PENDING", "APPROVED"]),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     existing_instances = (await session.execute(stmt_existing)).scalars().all()
     for existing in existing_instances:
@@ -658,6 +663,7 @@ async def approve_workflow_instance(
             selectinload(WorkflowInstance.logs),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     res = await session.execute(stmt)
     instance = res.scalars().first()
@@ -757,6 +763,7 @@ async def reject_workflow_instance(
             selectinload(WorkflowInstance.logs),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     res = await session.execute(stmt)
     instance = res.scalars().first()
@@ -834,7 +841,12 @@ async def cancel_workflow_instance(
     require_current_company_id()
     actor = require_current_actor()
 
-    stmt = select(WorkflowInstance).where(WorkflowInstance.id == instance_id).with_for_update()
+    stmt = (
+        select(WorkflowInstance)
+        .where(WorkflowInstance.id == instance_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     res = await session.execute(stmt)
     instance = res.scalars().first()
     if instance is None:
@@ -929,6 +941,7 @@ async def verify_workflow_approval_unchecked(
                 WorkflowInstance.status.in_(["PENDING", "APPROVED"]),
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         existing_active = (await session.execute(stmt_inst)).scalars().first()
         if existing_active is not None:
@@ -957,6 +970,7 @@ async def verify_workflow_approval_unchecked(
         )
         .options(selectinload(WorkflowInstance.logs))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     instance = (await session.execute(stmt_inst)).scalars().first()
 

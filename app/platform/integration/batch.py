@@ -224,11 +224,25 @@ def _extract_custom_data(row: dict[str, Any]) -> dict[str, Any]:
     for key in prefixed_keys:
         val = row.pop(key)
         field_key = key.removeprefix("custom_data.")
+        if not field_key.strip():
+            raise DomainValidationError(
+                "custom_data column key must specify a field name after 'custom_data.'"
+            )
         if val != "" and val is not None:
             custom_data[field_key] = val
 
     row["custom_data"] = custom_data
     return row
+
+
+def _strip_empty_optional_fields(
+    data: dict[str, Any],
+    optional_keys: tuple[str, ...],
+) -> None:
+    """Remove keys with empty CSV string values so Pydantic defaults apply cleanly."""
+    for key in optional_keys:
+        if data.get(key) == "":
+            data.pop(key, None)
 
 
 async def import_batch_data(
@@ -293,13 +307,17 @@ async def import_batch_data(
             async with session.begin_nested():
                 prepared = _extract_custom_data(dict(row_data))
                 if entity_type == BatchEntityType.CUSTOMER:
-                    await _import_customer_row(session, company_id, prepared)
+                    await _import_customer_row(
+                        session, company_id, prepared, actor_id=actor.user_id
+                    )
                 elif entity_type == BatchEntityType.SUPPLIER:
-                    await _import_supplier_row(session, company_id, prepared)
+                    await _import_supplier_row(
+                        session, company_id, prepared, actor_id=actor.user_id
+                    )
                 elif entity_type == BatchEntityType.PRODUCT:
-                    await _import_product_row(session, company_id, prepared)
+                    await _import_product_row(session, company_id, prepared, actor_id=actor.user_id)
                 elif entity_type == BatchEntityType.ACCOUNT:
-                    await _import_account_row(session, company_id, prepared)
+                    await _import_account_row(session, company_id, prepared, actor_id=actor.user_id)
                 succeeded_count += 1
         except Exception as exc:
             errors.append({"row": idx, "error": str(exc), "data": row_data})
@@ -338,9 +356,12 @@ async def _import_customer_row(
     session: AsyncSession,
     company_id: uuid.UUID,
     data: dict[str, Any],
+    *,
+    actor_id: uuid.UUID | None = None,
 ) -> None:
     if "currency_code" not in data or not data["currency_code"]:
         data["currency_code"] = "TWD"
+    _strip_empty_optional_fields(data, ("credit_limit", "payment_terms_days", "is_active"))
 
     payload = CustomerCreate(**data)
     normalized_custom_data = await validate_and_normalize_custom_data(
@@ -358,6 +379,8 @@ async def _import_customer_row(
         payment_terms_days=payload.payment_terms_days,
         is_active=payload.is_active,
         custom_data=normalized_custom_data,
+        created_by=actor_id,
+        updated_by=actor_id,
     )
     session.add(customer)
     await session.flush()
@@ -367,9 +390,12 @@ async def _import_supplier_row(
     session: AsyncSession,
     company_id: uuid.UUID,
     data: dict[str, Any],
+    *,
+    actor_id: uuid.UUID | None = None,
 ) -> None:
     if "currency_code" not in data or not data["currency_code"]:
         data["currency_code"] = "TWD"
+    _strip_empty_optional_fields(data, ("payment_terms_days", "is_active"))
 
     payload = SupplierCreate(**data)
     normalized_custom_data = await validate_and_normalize_custom_data(
@@ -386,6 +412,8 @@ async def _import_supplier_row(
         payment_terms_days=payload.payment_terms_days,
         is_active=payload.is_active,
         custom_data=normalized_custom_data,
+        created_by=actor_id,
+        updated_by=actor_id,
     )
     session.add(supplier)
     await session.flush()
@@ -395,6 +423,8 @@ async def _import_product_row(
     session: AsyncSession,
     company_id: uuid.UUID,
     data: dict[str, Any],
+    *,
+    actor_id: uuid.UUID | None = None,
 ) -> None:
     uom_code = data.pop("uom_code", None)
     if "uom_id" not in data or not data["uom_id"]:
@@ -404,6 +434,7 @@ async def _import_product_row(
         if uom is None:
             raise DomainValidationError(f"UOM code '{uom_code}' does not exist")
         data["uom_id"] = uom.id
+    _strip_empty_optional_fields(data, ("list_price", "standard_cost", "is_active"))
 
     payload = ProductCreate(**data)
     normalized_custom_data = await validate_and_normalize_custom_data(
@@ -421,6 +452,8 @@ async def _import_product_row(
         standard_cost=payload.standard_cost,
         is_active=payload.is_active,
         custom_data=normalized_custom_data,
+        created_by=actor_id,
+        updated_by=actor_id,
     )
     session.add(product)
     await session.flush()
@@ -430,7 +463,11 @@ async def _import_account_row(
     session: AsyncSession,
     company_id: uuid.UUID,
     data: dict[str, Any],
+    *,
+    actor_id: uuid.UUID | None = None,
 ) -> None:
+    _strip_empty_optional_fields(data, ("is_control", "is_active"))
+
     payload = AccountCreate(**data)
     normalized_custom_data = await validate_and_normalize_custom_data(
         session,
@@ -446,6 +483,8 @@ async def _import_account_row(
         is_control=payload.is_control,
         is_active=payload.is_active,
         custom_data=normalized_custom_data,
+        created_by=actor_id,
+        updated_by=actor_id,
     )
     session.add(account)
     await session.flush()

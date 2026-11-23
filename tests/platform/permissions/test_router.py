@@ -421,3 +421,53 @@ async def test_bearer_scheme_case_insensitivity_and_malformed_headers(
     resp = await client.get("/api/v1/customers", headers={"Authorization": "Bearer"})
     assert resp.status_code == 401
     _assert_no_leaked_context()
+
+
+@pytest.mark.asyncio
+async def test_auth_requests_forbid_extra_fields_and_switch_checks_user_active(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    company_a = await create_company(db_session, "EXTRAA")
+    company_b = await create_company(db_session, "EXTRAB")
+    user_id = await create_user_with_role(
+        db_session, email="extra@example.com", password="pw12345", company_id=company_a
+    )
+    await grant_test_role(db_session, user_id=user_id, company_id=company_b, role_code="admin")
+
+    bad_login = await client.post(
+        "/auth/login",
+        json={"email": "extra@example.com", "password": "pw12345", "role": "superuser"},
+    )
+    assert bad_login.status_code == 422
+
+    login_resp = await client.post(
+        "/auth/login",
+        json={
+            "email": "extra@example.com",
+            "password": "pw12345",
+            "company_id": str(company_a),
+        },
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.json()["access_token"]
+
+    bad_switch = await client.post(
+        "/auth/switch-company",
+        json={"company_id": str(company_b), "unexpected": True},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert bad_switch.status_code == 422
+    _assert_no_leaked_context()
+
+    user = await db_session.get(User, user_id)
+    assert user is not None
+    user.is_active = False
+    await db_session.commit()
+
+    disabled_switch = await client.post(
+        "/auth/switch-company",
+        json={"company_id": str(company_b)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert disabled_switch.status_code == 403
+    _assert_no_leaked_context()

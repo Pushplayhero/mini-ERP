@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import require_current_actor, require_permission
@@ -42,14 +43,17 @@ async def _load_webhook_endpoint_unchecked(
     db: AsyncSession,
     company_id: uuid.UUID,
     endpoint_id: uuid.UUID,
+    *,
+    for_update: bool = False,
 ) -> WebhookEndpoint:
     """Load an endpoint within `company_id` without asserting read permission."""
-    endpoint = await db.scalar(
-        select(WebhookEndpoint).where(
-            WebhookEndpoint.id == endpoint_id,
-            WebhookEndpoint.company_id == company_id,
-        )
+    stmt = select(WebhookEndpoint).where(
+        WebhookEndpoint.id == endpoint_id,
+        WebhookEndpoint.company_id == company_id,
     )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    endpoint = await db.scalar(stmt)
     if endpoint is None:
         raise NotFoundError("WebhookEndpoint", endpoint_id)
     return endpoint
@@ -59,14 +63,17 @@ async def _load_webhook_delivery_unchecked(
     db: AsyncSession,
     company_id: uuid.UUID,
     delivery_id: uuid.UUID,
+    *,
+    for_update: bool = False,
 ) -> WebhookDelivery:
     """Load a delivery within `company_id` without asserting read permission."""
-    delivery = await db.scalar(
-        select(WebhookDelivery).where(
-            WebhookDelivery.id == delivery_id,
-            WebhookDelivery.company_id == company_id,
-        )
+    stmt = select(WebhookDelivery).where(
+        WebhookDelivery.id == delivery_id,
+        WebhookDelivery.company_id == company_id,
     )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    delivery = await db.scalar(stmt)
     if delivery is None:
         raise NotFoundError("WebhookDelivery", delivery_id)
     return delivery
@@ -145,7 +152,11 @@ async def create_webhook_endpoint(
         updated_by=actor.user_id,
     )
     db.add(endpoint)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConflictError(f"Webhook endpoint '{payload.name}' already exists") from exc
     await db.refresh(endpoint)
     return endpoint, secret
 
@@ -187,7 +198,7 @@ async def update_webhook_endpoint(
     actor = require_current_actor()
 
     await masterdata_service.lock_company_unchecked(db, company_id)
-    endpoint = await _load_webhook_endpoint_unchecked(db, company_id, endpoint_id)
+    endpoint = await _load_webhook_endpoint_unchecked(db, company_id, endpoint_id, for_update=True)
 
     if payload.name is not None and payload.name != endpoint.name:
         existing = await db.scalar(
@@ -223,7 +234,12 @@ async def update_webhook_endpoint(
         endpoint.max_attempts = payload.max_attempts
 
     endpoint.updated_by = actor.user_id
-    await db.commit()
+    conflict_name = endpoint.name
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConflictError(f"Webhook endpoint '{conflict_name}' already exists") from exc
     await db.refresh(endpoint)
     return endpoint
 
@@ -247,7 +263,7 @@ async def rotate_webhook_endpoint_secret(
     actor = require_current_actor()
 
     await masterdata_service.lock_company_unchecked(db, company_id)
-    endpoint = await _load_webhook_endpoint_unchecked(db, company_id, endpoint_id)
+    endpoint = await _load_webhook_endpoint_unchecked(db, company_id, endpoint_id, for_update=True)
 
     new_secret = generate_webhook_secret()
     if overlap_seconds > 0:
@@ -276,7 +292,7 @@ async def deactivate_webhook_endpoint(
     actor = require_current_actor()
 
     await masterdata_service.lock_company_unchecked(db, company_id)
-    endpoint = await _load_webhook_endpoint_unchecked(db, company_id, endpoint_id)
+    endpoint = await _load_webhook_endpoint_unchecked(db, company_id, endpoint_id, for_update=True)
 
     endpoint.is_active = False
     endpoint.updated_by = actor.user_id
@@ -332,11 +348,17 @@ async def retry_webhook_delivery(
     company_id = require_current_company_id()
     await masterdata_service.lock_company_unchecked(db, company_id)
 
-    delivery = await _load_webhook_delivery_unchecked(db, company_id, delivery_id)
+    delivery = await _load_webhook_delivery_unchecked(db, company_id, delivery_id, for_update=True)
     if delivery.status not in ("DEAD", "FAILED"):
         raise DomainValidationError(
             f"Cannot retry delivery in status '{delivery.status}': must be DEAD"
         )
+
+    endpoint = await _load_webhook_endpoint_unchecked(
+        db, company_id, delivery.endpoint_id, for_update=True
+    )
+    if not endpoint.is_active:
+        raise DomainValidationError("Cannot retry delivery for an inactive webhook endpoint")
 
     delivery.status = "PENDING"
     delivery.attempts = 0

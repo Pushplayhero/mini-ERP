@@ -322,6 +322,10 @@ def test_validation_rules_text_enforcement() -> None:
     with pytest.raises(CustomFieldValidationError, match="Invalid regex pattern"):
         validate_and_normalize_validation_rules(CustomFieldType.TEXT, {"regex": "[unclosed"})
 
+    # Overlong regex rejected
+    with pytest.raises(CustomFieldValidationError, match="cannot exceed 500 characters"):
+        validate_and_normalize_validation_rules(CustomFieldType.TEXT, {"regex": "a" * 501})
+
     # Trailing newline rejected by fullmatch on regex
     with pytest.raises(CustomFieldValidationError, match="does not match regex pattern"):
         validate_and_normalize_field_value("code", CustomFieldType.TEXT, "ABC\n", r)

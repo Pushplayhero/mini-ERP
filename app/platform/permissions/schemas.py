@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=1, max_length=1024)
     # Required only when the user has more than one company entitlement
@@ -25,6 +27,8 @@ class LoginResponse(BaseModel):
 
 
 class SwitchCompanyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     company_id: uuid.UUID
 
 

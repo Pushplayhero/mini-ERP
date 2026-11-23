@@ -145,7 +145,12 @@ async def update_custom_field_definition(
 
     await masterdata_service.lock_company_unchecked(session, company_id)
 
-    stmt = select(CustomFieldDefinition).where(CustomFieldDefinition.id == field_id)
+    stmt = (
+        select(CustomFieldDefinition)
+        .where(CustomFieldDefinition.id == field_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     res = await session.execute(stmt)
     row = res.scalars().first()
     if row is None:
@@ -209,7 +214,12 @@ async def deactivate_custom_field_definition(
 
     await masterdata_service.lock_company_unchecked(session, company_id)
 
-    stmt = select(CustomFieldDefinition).where(CustomFieldDefinition.id == field_id)
+    stmt = (
+        select(CustomFieldDefinition)
+        .where(CustomFieldDefinition.id == field_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     res = await session.execute(stmt)
     row = res.scalars().first()
     if row is None:
@@ -218,7 +228,12 @@ async def deactivate_custom_field_definition(
     row.is_active = False
     row.updated_by = actor.user_id
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise ConflictError(f"Conflict deactivating custom field {str(field_id)!r}") from exc
+
     await session.refresh(row)
     return CustomFieldDefinitionRead.model_validate(row)
 
@@ -249,9 +264,13 @@ async def validate_and_normalize_custom_data_unchecked(
     if not isinstance(raw_custom_data, dict):
         raise CustomFieldValidationError("custom_data must be a JSON object (dictionary)")
 
-    stmt = select(CustomFieldDefinition).where(
-        CustomFieldDefinition.entity_type == normalized_entity,
-        CustomFieldDefinition.is_active.is_(True),
+    stmt = (
+        select(CustomFieldDefinition)
+        .where(
+            CustomFieldDefinition.entity_type == normalized_entity,
+            CustomFieldDefinition.is_active.is_(True),
+        )
+        .execution_options(populate_existing=True)
     )
     res = await session.execute(stmt)
     active_defs = res.scalars().all()

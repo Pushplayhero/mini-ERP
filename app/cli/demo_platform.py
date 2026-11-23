@@ -27,6 +27,10 @@ Complements `app.cli.demo_o2c` (the Phase 1 O2C baseline) by exercising:
    while rejecting writes to retired keys with HTTP 422), then restores temporary
    demo guardrails so reruns are idempotent and `make demo` (`demo_o2c`)
    continues working cleanly.
+5. **Act 5 — Integration Dry-Run Import, Export & Anti-SSRF (`platform.integration`)**:
+   Exercises CSV `dry_run=True` validation, BOM-enabled CSV export with job
+   audit inspection, and fail-closed HTTP 422 SSRF rejection of cloud metadata
+   webhook targets.
 """
 
 from __future__ import annotations
@@ -119,6 +123,9 @@ class DemoPlatformResult:
     trial_balance_credit: str
     stock_on_hand: str
     settled_canonical_in_this_run: bool
+    integration_dry_run_status: str = "DRY_RUN"
+    integration_export_rows: int = 0
+    integration_ssrf_blocked_status: int = 422
 
 
 def _resolve_base_url(base_url: str | None) -> str:
@@ -1002,6 +1009,72 @@ async def _run_act_4_deactivation(
     return deact_write_resp.status_code
 
 
+async def _run_act_5_integration(
+    client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    api: str,
+) -> tuple[str, int, int]:
+    """Verify batch dry-run import, audited CSV export, and HTTP 422 SSRF defense."""
+    imp_resp = await client.post(
+        f"{api}/integrations/imports",
+        json={
+            "entity_type": "customer",
+            "format": "CSV",
+            "dry_run": True,
+            "content": "code,name,currency_code\nPLAT-DRY-01,@Demo+Partner,TWD\n",
+        },
+        headers=admin_headers,
+    )
+    imp_resp.raise_for_status()
+    imp_body: dict[str, Any] = imp_resp.json()
+    imp_job: dict[str, Any] = imp_body["job"]
+    assert imp_job["status"] == "DRY_RUN"
+    assert imp_job["total_rows"] == 1
+    assert imp_body["errors"] == []
+
+    exp_resp = await client.post(
+        f"{api}/integrations/exports",
+        json={
+            "entity_type": "customer",
+            "format": "CSV",
+            "include_bom": True,
+        },
+        headers=admin_headers,
+    )
+    exp_resp.raise_for_status()
+    exp_body: dict[str, Any] = exp_resp.json()
+    exp_job: dict[str, Any] = exp_body["job"]
+    assert str(exp_body["content"]).startswith("\ufeff")
+    assert exp_job["status"] == "COMPLETED"
+    assert int(exp_job["total_rows"]) >= 1
+
+    job_resp = await client.get(
+        f"{api}/integrations/jobs/{exp_job['id']}",
+        headers=admin_headers,
+    )
+    job_resp.raise_for_status()
+
+    ssrf_resp = await client.post(
+        f"{api}/integrations/webhooks",
+        json={
+            "name": "ssrf-probe",
+            "url": "https://169.254.169.254/latest/meta-data/",
+            "event_types": ["*"],
+        },
+        headers=admin_headers,
+    )
+    assert (
+        ssrf_resp.status_code == 422
+    ), f"Expected 422 SSRF rejection, got {ssrf_resp.status_code}: {ssrf_resp.text}"
+
+    print(
+        f"[Act 5: Integration] Dry-run CSV import={imp_job['status']}, "
+        f"exported {exp_job['total_rows']} customer row(s) with BOM & audit job, "
+        "and blocked metadata webhook with HTTP 422."
+    )
+    return str(imp_job["status"]), int(exp_job["total_rows"]), ssrf_resp.status_code
+
+
 async def _restore_custom_fields(
     client: httpx.AsyncClient,
     admin_headers: dict[str, str],
@@ -1280,6 +1353,11 @@ async def run_demo_platform(
                 probe_id=probe_id,
                 canonical_id=str(canonical_order["id"]),
             )
+            dry_run_status, export_rows, ssrf_status = await _run_act_5_integration(
+                client,
+                admin_headers,
+                api,
+            )
 
             return DemoPlatformResult(
                 company_id=company_id,
@@ -1301,6 +1379,9 @@ async def run_demo_platform(
                 trial_balance_credit=f"{total_credit:.6f}",
                 stock_on_hand=f"{on_hand_after:.6f}",
                 settled_canonical_in_this_run=settled_this_run,
+                integration_dry_run_status=dry_run_status,
+                integration_export_rows=export_rows,
+                integration_ssrf_blocked_status=ssrf_status,
             )
         finally:
             await _restore_guardrails(

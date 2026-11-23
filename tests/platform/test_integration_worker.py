@@ -27,6 +27,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import events
+from app.core.tenancy import company_context
 from app.platform.integration import service
 from app.platform.integration.models import (
     IntegrationOutboxReceipt,
@@ -343,3 +344,108 @@ async def test_worker_crash_lease_recovery(
     claimed = await claim_due_deliveries(db_session)
     assert len(claimed) == 1
     assert claimed[0].id == delivery.id
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatch_defends_against_concurrent_settlement_and_deactivation(
+    db_session: AsyncSession,
+) -> None:
+    """In-flight settlement and endpoint deactivation are respected on lock re-check."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    co_id = await create_company(db_session, "WORKER_INFLIGHT_CO")
+    ep_id = uuid.uuid4()
+    endpoint = WebhookEndpoint(
+        id=ep_id,
+        company_id=co_id,
+        name="Inflight Hook",
+        url="https://api.example.com/webhook",
+        signing_secret="whsec_123456789012345678901234567890123456789012345678",
+        secret_prefix="whsec_123456",
+        event_types=["*"],
+        is_active=True,
+        max_attempts=5,
+    )
+    db_session.add(endpoint)
+    await db_session.flush()
+
+    ob1, ob2 = uuid.uuid4(), uuid.uuid4()
+    await db_session.execute(
+        insert(events.OUTBOX_TABLE),
+        [
+            {"id": ob1, "event_type": "e1", "payload": {"company_id": str(co_id)}},
+            {"id": ob2, "event_type": "e2", "payload": {"company_id": str(co_id)}},
+        ],
+    )
+    d_stomp = WebhookDelivery(
+        company_id=co_id,
+        endpoint_id=ep_id,
+        outbox_event_id=ob1,
+        event_type="e1",
+        payload={"company_id": str(co_id)},
+        status="PENDING",
+        attempts=0,
+        max_attempts=5,
+    )
+    d_deact = WebhookDelivery(
+        company_id=co_id,
+        endpoint_id=ep_id,
+        outbox_event_id=ob2,
+        event_type="e2",
+        payload={"company_id": str(co_id)},
+        status="PENDING",
+        attempts=0,
+        max_attempts=5,
+    )
+    db_session.add_all([d_stomp, d_deact])
+    await db_session.commit()
+    stomp_id = d_stomp.id
+    deact_id = d_deact.id
+
+    claimed = await claim_due_deliveries(db_session, batch_size=2)
+    assert len(claimed) == 2
+    claim_by_id = {c.id: c for c in claimed}
+    session_factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+
+    # 1. Another worker marks d_stomp DELIVERED while this HTTP call fails with 500
+    async def _stomp_handler(_request: httpx.Request) -> httpx.Response:
+        async with session_factory() as other:
+            row = await other.get(WebhookDelivery, stomp_id)
+            assert row is not None
+            row.status = "DELIVERED"
+            row.attempts = 9
+            row.last_error = None
+            await other.commit()
+        return httpx.Response(500, text="Late failure should not stomp DELIVERED")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_stomp_handler)) as client1:
+        outcome_1 = await dispatch_single_delivery(
+            db_session, claim_by_id[stomp_id], http_client=client1
+        )
+    assert outcome_1 == "DELIVERED"
+    db_session.expire_all()
+    refreshed_stomp = await db_session.get(WebhookDelivery, stomp_id)
+    assert refreshed_stomp is not None
+    assert refreshed_stomp.status == "DELIVERED"
+    assert refreshed_stomp.attempts == 9
+
+    # 2. Endpoint is deactivated while d_deact HTTP call is in flight -> marks DEAD immediately
+    async def _deact_handler(_request: httpx.Request) -> httpx.Response:
+        async with session_factory() as other:
+            with company_context(co_id):
+                ep_row = await other.get(WebhookEndpoint, ep_id)
+                assert ep_row is not None
+                ep_row.is_active = False
+                await other.commit()
+        return httpx.Response(502, text="Bad Gateway after deactivate")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_deact_handler)) as client2:
+        outcome_2 = await dispatch_single_delivery(
+            db_session, claim_by_id[deact_id], http_client=client2
+        )
+    assert outcome_2 == "DEAD"
+    db_session.expire_all()
+    refreshed_deact = await db_session.get(WebhookDelivery, deact_id)
+    assert refreshed_deact is not None
+    assert refreshed_deact.status == "DEAD"
+    assert refreshed_deact.last_error == "Webhook endpoint deactivated"

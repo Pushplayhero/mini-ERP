@@ -78,6 +78,8 @@ async def switch_company_endpoint(
         active_company_id = await service.switch_company(session, payload.company_id)
     except service.CompanyNotEntitledError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except service.UserDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except service.InvalidSessionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
