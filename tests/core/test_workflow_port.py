@@ -46,7 +46,7 @@ def _reset_workflow_ports() -> Any:
 
 
 def test_workflow_enums() -> None:
-    assert len(WorkflowEntityType) == 8
+    assert len(WorkflowEntityType) == 9
     assert WorkflowEntityType.SALES_ORDER.value == "sales_order"
     assert WorkflowEntityType.PURCHASE_ORDER.value == "purchase_order"
     assert WorkflowEntityType.INVOICE.value == "invoice"
@@ -54,6 +54,7 @@ def test_workflow_enums() -> None:
     assert WorkflowEntityType.VENDOR_BILL.value == "vendor_bill"
     assert WorkflowEntityType.VENDOR_PAYMENT.value == "vendor_payment"
     assert WorkflowEntityType.COST_ADJUSTMENT.value == "cost_adjustment"
+    assert WorkflowEntityType.WORK_ORDER.value == "work_order"
     assert WorkflowEntityType.JOURNAL_ENTRY.value == "journal_entry"
 
     assert len(WorkflowTransition) == 4
@@ -85,6 +86,8 @@ def test_valid_entity_transitions() -> None:
         ("vendor_bill", "void"),
         ("vendor_payment", "void"),
         ("cost_adjustment", "void"),
+        ("work_order", "confirm"),
+        ("work_order", "cancel"),
         ("journal_entry", "reverse"),
     }
     assert expected == VALID_ENTITY_TRANSITIONS

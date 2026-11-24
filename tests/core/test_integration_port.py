@@ -38,7 +38,7 @@ def _clean_export_providers() -> Any:
 
 
 def test_batch_entity_type_enums() -> None:
-    assert len(BatchEntityType) == 14
+    assert len(BatchEntityType) == 16
     assert BatchEntityType.CUSTOMER.value == "customer"
     assert BatchEntityType.SUPPLIER.value == "supplier"
     assert BatchEntityType.PRODUCT.value == "product"
@@ -53,6 +53,8 @@ def test_batch_entity_type_enums() -> None:
     assert BatchEntityType.STOCK_SUMMARY.value == "stock_summary"
     assert BatchEntityType.COST_ADJUSTMENT.value == "cost_adjustment"
     assert BatchEntityType.PRODUCT_COST_SUMMARY.value == "product_cost_summary"
+    assert BatchEntityType.BOM.value == "bom"
+    assert BatchEntityType.WORK_ORDER.value == "work_order"
 
 
 def test_supported_entity_subsets() -> None:

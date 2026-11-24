@@ -8,10 +8,10 @@
 > 取代購買顧問工時來客製、而且真正能信任自己資料的鼎新。開源、
 > API-first、可用 plugin 擴充的 ERP 核心。
 
-**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields`、`platform.workflow` 與 `platform.integration`）已完成 + Phase 3 Suites 推進中（Week 14 `ADR-014` 採購與 Week 15 `ADR-015` 應付模組已完成 —— O2C 與 P2P 全線閉環）。** 七個業務模組
-——masterdata（含客戶與供應商）、ledger、sales、purchase、inventory + 出貨/收貨、receivables、payables——
+**目前這個 repo 的狀態 = Phase 1（「Kernel」）已完成 + Phase 2 Platform（`platform.permissions`、`platform.plugins`、`platform.customfields`、`platform.workflow` 與 `platform.integration`）已完成 + Phase 3 Suites 已完成（Week 14 `ADR-014` 採購、Week 15 `ADR-015` 應付、Week 16 `ADR-016` 存貨計價與 Week 17 `ADR-017` 製造與 MRP —— O2C、P2P、成本結算與製造全線閉環）。** 九個業務模組
+——masterdata（含客戶與供應商）、ledger、sales、purchase、inventory + 出貨/收貨、costing（MWA 移動加權平均成本／附帶成本／PPV／重估）、mrp（多階 BOM／工單／`1310` 在製品／拓撲淨需求）、receivables、payables——
 在一個真正的複式簿記過帳引擎（posting engine）之上，實作了完整的
-order-to-cash（O2C，訂單到收款）與 procure-to-pay（P2P，採購單 → GR/IR 驗收 → 應付帳單 → 付款／沖款／帳齡）全線流程；每一個模組都有對應的
+order-to-cash（O2C）、procure-to-pay（P2P，採購單 → GR/IR 驗收 → 應付帳單 → 付款／沖款／帳齡）與製造（BOM → 工單領料／退料／完工入庫 → `1310` WIP → MWA 成品成本資本化）全線流程；每一個模組都有對應的
 [架構決策紀錄（ADR）](docs/adr/README.md)——ADR-003 到 ADR-008 在實作
 之前都經過真正的 `codex` CLI 共識審查（consensus review），ADR-001/
 ADR-002 記錄的則是 Week 1-2 就已經拍板並上線的決策（兩者的差別見下方
@@ -22,7 +22,7 @@ kernel 藍圖見 `docs/mini-erp-architecture.md`。
 ## Non-Goals（刻意不做的事）
 
 目前核心的範疇外：不受信任插件沙箱化（plugin 為管理者安裝的受信任 in-process 程式碼，master-plan §10.3 / ADR-010）、任意 BPMN 流程圖腳本或外部表單引擎（`platform.workflow` 依據 ADR-012 提供確定性、租戶隔離、基於金額門檻與嚴格職能分工 SoD 的關鍵業務交易審批閘門，而非任意 BPMN 流程腳本或視覺化表單設計器）、明細/事實表層級的自訂欄位
-（`platform.customfields` 已透過中央欄位定義表 `custom_field_definitions`、`/api/v1/custom-fields` 與 `app/cli/manage_custom_fields.py` 治理 12 大主要租戶業務實體——客戶、供應商、商品、科目、銷售訂單、採購單、應收發票、應收付款、應付帳單、應付付款、傳票、會計期間——的 `custom_data JSONB` 欄位，見 ADR-011；但訂單明細、傳票明細、庫存異動等明細表尚未開放，也沒有前端管理 UI）、以及任何前端（這是一個純 API 的 kernel
+（`platform.customfields` 已透過中央欄位定義表 `custom_field_definitions`、`/api/v1/custom-fields` 與 `app/cli/manage_custom_fields.py` 治理 15 大主要租戶業務實體——客戶、供應商、商品、科目、銷售訂單、採購單、應收發票、應收付款、應付帳單、應付付款、成本調整單、BOM、工單、傳票、會計期間——的 `custom_data JSONB` 欄位，見 ADR-011；但訂單明細、傳票明細、庫存異動等明細表尚未開放，也沒有前端管理 UI）、以及任何前端（這是一個純 API 的 kernel
 ——現階段 `/docs` 就是互動式的 client）。台灣特有的稅務/電子發票整合是
 Phase 4 的事。
 
@@ -155,11 +155,13 @@ graph TB
             SA["sales<br/>訂單：draft → confirmed → shipped"]
             PU["purchase<br/>採購單：draft → confirmed → received"]
             IN["inventory<br/>append-only stock_moves + stock_summary"]
+            CO["costing<br/>MWA 成本子帳 · 附帶成本 · PPV · 重估"]
+            MR["mrp<br/>多階 BOM · 工單 · 1310 WIP · 淨需求規劃"]
             RE["receivables<br/>應收發票 · 收款 · AR 帳齡"]
             AP["payables<br/>應付帳單 · 付款 · AP 帳齡"]
         end
 
-        PL["plugins<br/>credit_limit hook（ADR-006）"]
+        PL["plugins<br/>credit_limit 與業務驗證 hook（ADR-006, ADR-010）"]
         EB["event bus<br/>app/core/events.py（ADR-004）"]
         LE["ledger<br/>過帳引擎 + 試算表（ADR-003, ADR-005）"]
     end
@@ -167,16 +169,20 @@ graph TB
     PG[("PostgreSQL 16<br/>append-only 事實表，ADR-002")]
 
     Client -->|"HTTP + Authorization: Bearer <token>"| MW
-    MW --> MD & SA & PU & IN & RE & AP
+    MW --> MD & SA & PU & IN & CO & MR & RE & AP
     SA -->|"sales.order.validate_confirm hook"| PL
     PU -->|"purchase.order.validate_confirm hook"| PL
+    MR -->|"mrp.work_order.validate_confirm hook"| PL
     SA -->|"發布事件：order_confirmed、goods_shipped"| EB
     PU -->|"發布事件：order_confirmed、goods_received"| EB
+    CO -->|"發布事件：landed_cost / ppv / revaluation"| EB
+    MR -->|"發布事件：wo_confirmed、material_*、production_received"| EB
     RE -->|"發布事件：invoice_issued/voided、payment_received/voided"| EB
     AP -->|"發布事件：bill_issued/voided、payment_issued/voided"| EB
-    EB -->|"goods_shipped / goods_received（第一個執行）：扣減/入庫庫存"| IN
-    EB -->|"goods_shipped / goods_received（第二個執行）+ receivables / payables 事件：過平衡傳票"| LE
-    MD & SA & PU & IN & RE & AP & LE --> PG
+    EB -->|"goods_shipped / goods_received / mrp.*（第一個執行）：異動庫存"| IN
+    EB -->|"goods_shipped / goods_received / mrp.*（第二個執行）：更新 MWA 成本子帳"| CO
+    EB -->|"最終執行 + costing / receivables / payables 事件：過平衡傳票"| LE
+    MD & SA & PU & IN & CO & MR & RE & AP & LE --> PG
 ```
 
 每一個進入*租戶範圍（tenant-scoped）*操作的箭頭，在任何查詢真正執行
@@ -359,6 +365,8 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 | Phase 3 Suites 藍圖（P2P / GR/IR / Costing / MRP 路線圖） | [Phase 3 Overview](docs/adr/PHASE3-suites-architecture-overview.md) |
 | 採購模組與供應商主檔（PO、驗收入庫、GR/IR 暫估入帳） | [ADR-014](docs/adr/ADR-014-purchase-and-supplier-masterdata.md) |
 | Payables ——應付帳單、GR/IR 結清、供應商付款與 AP 帳齡 | [ADR-015](docs/adr/ADR-015-payables.md) |
+| Costing ——移動加權平均成本子帳、附帶成本、PPV 與存貨重估 | [ADR-016](docs/adr/ADR-016-costing.md) |
+| MRP ——多階 BOM、工單執行、`1310` WIP 明細帳與拓撲淨需求 | [ADR-017](docs/adr/ADR-017-mrp.md) |
 
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
@@ -393,7 +401,7 @@ round-half-even（銀行家捨入法），不是丟給 DB 隱含轉型：傳票�
 `Customer.credit_limit`、`Product.list_price`/`standard_cost`
 （`masterdata.schemas`）、`SalesOrderLineCreate.unit_price`
 （`sales.schemas`）則是從 Week 8 Decision 0 開始。每個模組各自擁有
-一份私有的 round-half-even 輔助函式（masterdata/sales/purchase/receivables/payables 與
+一份私有的 round-half-even 輔助函式（masterdata/sales/purchase/costing/mrp/receivables/payables 與
 `plugins.credit_limit` 裡叫 `_round_half_even_6dp`；ledger 裡叫
 `_round_half_even_to_6dp`）——依照 import-linter 的模組獨立性契約，
 從不跨模組 import——而不是共用 `app/core/` 底下的一份。`credit_limit`
@@ -413,17 +421,16 @@ ADR-002，說明這是刻意的、逐領域決定的取捨，跟同樣有維護�
 `publish()` 會先驗證 payload 符合已註冊的 schema、在呼叫者自己的
 交易內寫一列到 `outbox`，然後依序同步呼叫每一個訂閱的 handler——
 任何一個 handler 拋出例外都會讓整個交易一起 rollback。不是每一個
-已註冊的事件都有訂閱者：`sales.order_confirmed` 與 `purchase.order_confirmed`
+已註冊的事件都有訂閱者：`sales.order_confirmed`、`purchase.order_confirmed` 與 `mrp.work_order_confirmed`
 均有註冊（讓 `publish()`/replay 依然能驗證其 schema、依然會產生一筆 outbox 紀錄）
-但刻意不綁定副作用訂閱者（ADR-006 Decision 4、ADR-014 Decision 4）——沒有任何東西會對
+但刻意不綁定副作用訂閱者（ADR-006 Decision 4、ADR-014 Decision 4、ADR-017 Decision 2）——沒有任何東西會對
 「confirmed」這件事本身自動記帳。`app/modules/ledger/posting.py`
-訂閱了 `sales.goods_shipped`、`purchase.goods_received`、全部 4 個 `receivables.*` 事件以及全部 4 個 `payables.*` 事件，透過一張
-宣告式規則表，把每一個都轉成一筆平衡的傳票；同時統馭科目 `1100`（AR）、`2000`（AP）與 `2110`（GR/IR 暫估）一律拒絕手動分錄與手動反轉，確保明細帳與總帳恆常勾稽。
-`app/modules/inventory/service.py` 的 `handle_goods_shipped` 與 `handle_goods_received` **也**
-分別訂閱了 `sales.goods_shipped` 與 `purchase.goods_received`，用來扣減或增加庫存——
-對這兩類實體貨物流轉事件來說，**訂閱順序是規範性的、不是隨意的**（ADR-007 Decision 1、ADR-014 Decision 4）：
-inventory 的移動 handler 會先於 ledger 的過帳 handler 執行（出貨過 `Dr 5000 COGS / Cr 1300 Inventory`，
-驗收入庫過 `Dr 1300 Inventory / Cr 2110 Accrued Purchases` GR/IR 暫估分錄），「先搬貨、再記帳」。
+訂閱了 `sales.goods_shipped`、`purchase.goods_received`、全部 4 個 `receivables.*` 事件、全部 4 個 `payables.*` 事件、`costing.*` 成本調整事件與 `mrp.{material_issued,material_returned,production_received}` 事件，透過一張
+宣告式規則表，把每一個都轉成一筆平衡的傳票；同時統馭科目 `1100`（AR）、`1310`（WIP）、`2000`（AP）與 `2110`（GR/IR 暫估）一律拒絕手動分錄與手動反轉，確保明細帳與總帳恆常勾稽。
+`app/modules/inventory/service.py` 與 `app/modules/costing/service.py` **也**
+分別訂閱了 `sales.goods_shipped`、`purchase.goods_received` 與 `mrp.*` 事件，用來異動庫存與維護 MWA 成本子帳——
+對實體貨物流轉與生產領退入庫事件來說，**訂閱順序是規範性的、不是隨意的**（ADR-007 Decision 1、ADR-014 Decision 4、ADR-016 Decision 1、ADR-017 Decision 2）：
+`inventory` 先行、接著 `costing` 更新 MWA 成本子帳、最後 `ledger.posting` 過帳（出貨過 `Dr 5000 COGS / Cr 1300 Inventory`、驗收入庫過 `Dr 1300 Inventory / Cr 2110 Accrued Purchases`、MRP 領退完工入庫過 `1300` <-> `1310`），「先搬貨、再計價、最後記帳」。
 兩者都在跟 publish 同一個交易裡執行，所以不管順序為何都會一起 commit 或一起
 rollback；順序只影響 `ship` 或 `receive` 失敗時，是哪個 handler 的例外被歸咎為
 失敗原因。`app.cli.replay_outbox` 會把任何 `dispatched_at IS NULL`
@@ -438,8 +445,8 @@ rollback；順序只影響 `ship` 或 `receive` 失敗時，是哪個 handler �
 並在業務交易執行時由 `PluginRuntimeGate` 強制把關。Import-linter 嚴格限制插件只能引用模組的
 公開 `service` 與 `schemas` 層，禁止直接 import 內部 ORM model 或 router（ADR-010）。
 
-**Custom fields（自訂欄位）。** 12 大主要租戶範圍交易實體（`Customer`、`Supplier`、`Product`、
-`Account`、`AccountingPeriod`、`JournalEntry`、`SalesOrder`、`PurchaseOrder`、`Invoice`、`Payment`、`VendorBill`、`VendorPayment`）
+**Custom fields（自訂欄位）。** 15 大主要租戶範圍交易實體（`Customer`、`Supplier`、`Product`、
+`Account`、`AccountingPeriod`、`JournalEntry`、`SalesOrder`、`PurchaseOrder`、`Invoice`、`Payment`、`VendorBill`、`VendorPayment`、`CostAdjustment`、`Bom`、`WorkOrder`）
 皆具備 `custom_data JSONB` 欄位，由各公司於 `custom_field_definitions` 表透過
 `/api/v1/custom-fields`（及 `app/cli/manage_custom_fields.py`）獨立治理（ADR-011）。
 欄位定義異動一律透過 `lock_company_unchecked`（`SELECT ... FOR UPDATE`）序列化以防範
@@ -448,9 +455,9 @@ TOCTOU 競爭條件；業務模組在建立與更新時僅透過輕量核心埠�
 拒絕（`422`），`DECIMAL` 欄位強制以銀行家捨入法（`ROUND_HALF_EVEN`）正規化至
 `NUMERIC(20, 6)`，且系統事件驅動的自動過帳分錄不受手動傳票自訂必填欄位阻擋。
 
-**審批工作流（Workflows and approvals）。** 關鍵業務交易狀態轉換（`sales_order_confirm`、
-`sales_order_cancel`、`purchase_order_confirm`、`purchase_order_cancel`、`invoice_void`、
-`payment_void`、`vendor_bill_void`、`vendor_payment_void` 及 `journal_entry_reverse`）
+**審批工作流（Workflows and approvals）。** 關鍵業務交易狀態轉換（橫跨 9 種實體共 12 組轉換：`sales_order.confirm`、
+`sales_order.cancel`、`purchase_order.confirm`、`purchase_order.cancel`、`work_order.confirm`、`work_order.cancel`、
+`invoice.void`、`payment.void`、`vendor_bill.void`、`vendor_payment.void`、`cost_adjustment.void` 及 `journal_entry.reverse`）
 由租戶層級的工作流定義（`app/platform/workflow/`）透過輕量核心埠（`app/core/workflow.py`，ADR-012）
 把關。審批定義支援依金額門檻下限（`min_amount`）進行多階段路由、指派特定審批權限，
 並落實嚴格的職能分工原則（Separation of Duties，預設 `allow_self_approval=False`，申請者不得核准自己的申請）。
@@ -473,7 +480,9 @@ app/
 │   ├── ledger/       # 傳票、會計期間、試算表、過帳引擎
 │   ├── sales/        # 訂單：draft → confirmed → shipped，hook registry 的使用者
 │   ├── purchase/     # ADR-014 採購單：draft → confirmed → received，發布 GR/IR 事件
-│   ├── inventory/    # stock_moves（append-only）+ stock_summary，goods_shipped 與 goods_received 的訂閱者
+│   ├── inventory/    # stock_moves（append-only）+ stock_summary，goods_shipped/received 與 mrp.* 的訂閱者
+│   ├── costing/      # ADR-016 MWA 成本子帳、附帶成本、PPV 與存貨重估調整
+│   ├── mrp/          # ADR-017 多階 BOM、工單執行、1310 WIP 明細帳與拓撲 MRP 淨需求
 │   ├── receivables/  # 應收發票、收款、沖款、AR 帳齡
 │   └── payables/     # ADR-015 應付帳單、付款、沖款、AP 帳齡
 ├── platform/
@@ -483,7 +492,7 @@ app/
 │   ├── workflow/     # ADR-012 workflow 定義/實例服務、執行期審批閘門、/api/v1/workflows router
 │   └── integration/  # ADR-013 webhooks、outbox worker、批次引擎、/api/v1/integrations router
 ├── plugins/          # credit_limit.py ——內建客戶信用額度把關 manifest
-├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、run_outbox_worker、seed_demo、demo_o2c、demo_platform、replay_outbox、rebuild_ar_balances、rebuild_ap_balances、rebuild_stock_summary
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、run_outbox_worker、seed_demo、demo_o2c、demo_platform、replay_outbox、rebuild_ar_balances、rebuild_ap_balances、rebuild_stock_summary、rebuild_cost_summaries、rebuild_mrp_balances
 └── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
 docs/

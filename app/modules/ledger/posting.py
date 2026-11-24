@@ -136,6 +136,7 @@ class AccountResolutionError(DomainValidationError):
 #   4000  Revenue             (revenue)   -- receivables.invoice_issued/_voided (ADR-008)
 #   5000  COGS                (expense)   -- sales.goods_shipped (ADR-007)
 #   1300  Inventory           (asset)     -- sales.goods_shipped / purchase.goods_received
+#   1310  Work in Process     (asset)     -- mrp material/production events (ADR-017)
 #   2000  Accounts Payable    (liability) -- payables bills/payments (Phase 3 / ADR-015)
 #   2110  Accrued Purchases   (liability) -- purchase.goods_received GR/IR clearing (ADR-014)
 #   5110  Purchase Price Variance (expense) -- costing PPV clearing & revaluation (ADR-016)
@@ -168,6 +169,10 @@ COSTING_REVALUATION_UP_POSTED_EVENT_TYPE = "costing.revaluation_up_posted"
 COSTING_REVALUATION_UP_VOIDED_EVENT_TYPE = "costing.revaluation_up_voided"
 COSTING_REVALUATION_DOWN_POSTED_EVENT_TYPE = "costing.revaluation_down_posted"
 COSTING_REVALUATION_DOWN_VOIDED_EVENT_TYPE = "costing.revaluation_down_voided"
+
+MRP_MATERIAL_ISSUED_EVENT_TYPE = "mrp.material_issued"
+MRP_MATERIAL_RETURNED_EVENT_TYPE = "mrp.material_returned"
+MRP_PRODUCTION_RECEIVED_EVENT_TYPE = "mrp.production_received"
 
 
 class GoodsShippedLine(BaseModel):
@@ -316,6 +321,47 @@ class CostAdjustmentPostingPayload(BaseModel):
     amount: Decimal
 
 
+class MaterialMoveLine(BaseModel):
+    """One component line in an MRP material issue or return event (ADR-017)."""
+
+    product_id: uuid.UUID
+    qty: Decimal
+    unit_cost: Decimal
+    line_cost: Decimal
+
+
+class MaterialIssuedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    wo_id: uuid.UUID
+    wo_no: str
+    event_date: date
+    lines: list[MaterialMoveLine]
+    total_cost: Decimal
+
+
+class MaterialReturnedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    wo_id: uuid.UUID
+    wo_no: str
+    event_date: date
+    lines: list[MaterialMoveLine]
+    total_cost: Decimal
+
+
+class ProductionReceivedPayload(BaseModel):
+    company_id: uuid.UUID
+    source_id: uuid.UUID
+    wo_id: uuid.UUID
+    wo_no: str
+    product_id: uuid.UUID
+    qty: Decimal
+    unit_cost: Decimal
+    total_cost: Decimal
+    received_at: datetime
+
+
 POSTING_RULES: dict[str, list[PostingRule]] = {
     GOODS_SHIPPED_EVENT_TYPE: [
         PostingRule(
@@ -394,6 +440,28 @@ POSTING_RULES: dict[str, list[PostingRule]] = {
     ],
     COSTING_REVALUATION_DOWN_VOIDED_EVENT_TYPE: [
         PostingRule(debit_account_code="1300", credit_account_code="5110", amount_field="amount"),
+    ],
+    # ADR-017 (Week 17): WIP material issue, material return, and production receipt.
+    MRP_MATERIAL_ISSUED_EVENT_TYPE: [
+        PostingRule(
+            debit_account_code="1310",
+            credit_account_code="1300",
+            amount_field="total_cost",
+        ),
+    ],
+    MRP_MATERIAL_RETURNED_EVENT_TYPE: [
+        PostingRule(
+            debit_account_code="1300",
+            credit_account_code="1310",
+            amount_field="total_cost",
+        ),
+    ],
+    MRP_PRODUCTION_RECEIVED_EVENT_TYPE: [
+        PostingRule(
+            debit_account_code="1300",
+            credit_account_code="1310",
+            amount_field="total_cost",
+        ),
     ],
 }
 

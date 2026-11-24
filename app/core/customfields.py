@@ -48,6 +48,8 @@ class CustomFieldEntityType(StrEnum):
     VENDOR_BILL = "vendor_bill"
     VENDOR_PAYMENT = "vendor_payment"
     COST_ADJUSTMENT = "cost_adjustment"
+    BOM = "bom"
+    WORK_ORDER = "work_order"
 
 
 class CustomFieldValidationError(DomainValidationError):

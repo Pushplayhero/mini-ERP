@@ -169,6 +169,7 @@ _STANDARD_CHART = (
     ("1000", "Cash", AccountType.ASSET),
     ("1100", "Accounts Receivable", AccountType.ASSET),
     ("1300", "Inventory", AccountType.ASSET),
+    ("1310", "Work in Process", AccountType.ASSET),
     ("2000", "Accounts Payable", AccountType.LIABILITY),
     ("2110", "Accrued Purchases", AccountType.LIABILITY),
     ("4000", "Revenue", AccountType.REVENUE),

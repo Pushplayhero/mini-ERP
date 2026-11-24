@@ -50,6 +50,9 @@ class CostMoveType(str, enum.Enum):
     LANDED_COST = "landed_cost"
     PPV = "ppv"
     REVALUATION = "revaluation"
+    PRODUCTION_ISSUE = "production_issue"
+    PRODUCTION_RETURN = "production_return"
+    PRODUCTION_RECEIPT = "production_receipt"
 
 
 class CostAdjustmentType(str, enum.Enum):

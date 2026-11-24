@@ -63,6 +63,8 @@ from app.modules.inventory.router import router as inventory_router
 from app.modules.ledger import posting as ledger_posting
 from app.modules.ledger.router import router as ledger_router
 from app.modules.masterdata.router import router as masterdata_router
+from app.modules.mrp import events as mrp_events
+from app.modules.mrp.router import router as mrp_router
 from app.modules.payables import events as payables_events
 from app.modules.payables.router import router as payables_router
 from app.modules.purchase import events as purchase_events
@@ -277,6 +279,7 @@ app.include_router(sales_router, prefix="/api/v1")
 app.include_router(purchase_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
 app.include_router(costing_router, prefix="/api/v1")
+app.include_router(mrp_router, prefix="/api/v1")
 app.include_router(receivables_router, prefix="/api/v1")
 app.include_router(payables_router, prefix="/api/v1")
 # ADR-009 / WEEK9 Slice B: `/auth/*`, not under `/api/v1` — matches the ADR's
@@ -450,6 +453,63 @@ for _costing_event_type in (
 ):
     events.register_event(_costing_event_type, ledger_posting.CostAdjustmentPostingPayload)
     events.subscribe(_costing_event_type, ledger_posting.make_posting_handler(_costing_event_type))
+
+# ADR-017 (Phase 3 Week 17): multi-level BOM, work orders & WIP closed-loop events.
+events.register_event(
+    mrp_events.MRP_WORK_ORDER_CONFIRMED_EVENT_TYPE,
+    mrp_events.WorkOrderConfirmedPayload,
+)
+
+events.register_event(
+    mrp_events.MRP_MATERIAL_ISSUED_EVENT_TYPE,
+    ledger_posting.MaterialIssuedPayload,
+)
+events.subscribe(
+    mrp_events.MRP_MATERIAL_ISSUED_EVENT_TYPE,
+    inventory_service.handle_material_issued,
+)
+events.subscribe(
+    mrp_events.MRP_MATERIAL_ISSUED_EVENT_TYPE,
+    costing_service.handle_material_issued,
+)
+events.subscribe(
+    mrp_events.MRP_MATERIAL_ISSUED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(mrp_events.MRP_MATERIAL_ISSUED_EVENT_TYPE),
+)
+
+events.register_event(
+    mrp_events.MRP_MATERIAL_RETURNED_EVENT_TYPE,
+    ledger_posting.MaterialReturnedPayload,
+)
+events.subscribe(
+    mrp_events.MRP_MATERIAL_RETURNED_EVENT_TYPE,
+    inventory_service.handle_material_returned,
+)
+events.subscribe(
+    mrp_events.MRP_MATERIAL_RETURNED_EVENT_TYPE,
+    costing_service.handle_material_returned,
+)
+events.subscribe(
+    mrp_events.MRP_MATERIAL_RETURNED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(mrp_events.MRP_MATERIAL_RETURNED_EVENT_TYPE),
+)
+
+events.register_event(
+    mrp_events.MRP_PRODUCTION_RECEIVED_EVENT_TYPE,
+    ledger_posting.ProductionReceivedPayload,
+)
+events.subscribe(
+    mrp_events.MRP_PRODUCTION_RECEIVED_EVENT_TYPE,
+    inventory_service.handle_production_received,
+)
+events.subscribe(
+    mrp_events.MRP_PRODUCTION_RECEIVED_EVENT_TYPE,
+    costing_service.handle_production_received,
+)
+events.subscribe(
+    mrp_events.MRP_PRODUCTION_RECEIVED_EVENT_TYPE,
+    ledger_posting.make_posting_handler(mrp_events.MRP_PRODUCTION_RECEIVED_EVENT_TYPE),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -775,6 +835,43 @@ async def _export_product_cost_summaries(
     ]
 
 
+async def _export_boms(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.mrp.models import Bom
+
+    stmt = select(Bom).where(Bom.company_id == company_id).order_by(Bom.code)
+    boms = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(b.id),
+            "code": b.code,
+            "product_id": str(b.product_id),
+            "output_qty": str(b.output_qty),
+            "is_active": b.is_active,
+        }
+        for b in boms
+    ]
+
+
+async def _export_work_orders(session: AsyncSession, company_id: uuid.UUID) -> list[dict[str, Any]]:
+    from app.modules.mrp.models import WorkOrder
+
+    stmt = select(WorkOrder).where(WorkOrder.company_id == company_id).order_by(WorkOrder.wo_no)
+    orders = (await session.scalars(stmt)).all()
+    return [
+        {
+            "id": str(o.id),
+            "wo_no": o.wo_no,
+            "bom_id": str(o.bom_id),
+            "product_id": str(o.product_id),
+            "planned_qty": str(o.planned_qty),
+            "completed_qty": str(o.completed_qty),
+            "wip_balance": str(o.wip_balance),
+            "status": str(o.status.value if hasattr(o.status, "value") else o.status),
+        }
+        for o in orders
+    ]
+
+
 def register_default_export_providers() -> None:
     register_export_provider(BatchEntityType.CUSTOMER, _export_customers)
     register_export_provider(BatchEntityType.SUPPLIER, _export_suppliers)
@@ -790,6 +887,8 @@ def register_default_export_providers() -> None:
     register_export_provider(BatchEntityType.STOCK_SUMMARY, _export_stock_summary)
     register_export_provider(BatchEntityType.COST_ADJUSTMENT, _export_cost_adjustments)
     register_export_provider(BatchEntityType.PRODUCT_COST_SUMMARY, _export_product_cost_summaries)
+    register_export_provider(BatchEntityType.BOM, _export_boms)
+    register_export_provider(BatchEntityType.WORK_ORDER, _export_work_orders)
 
 
 register_default_export_providers()

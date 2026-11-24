@@ -1113,6 +1113,35 @@ _COST_ADJUSTMENTS = sa.table(
     sa.column("amount"),
 )
 
+_WORK_ORDERS = sa.table(
+    "work_orders",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("status"),
+    sa.column("completed_qty"),
+    sa.column("wip_balance"),
+)
+
+_WORK_ORDER_LINES = sa.table(
+    "work_order_lines",
+    sa.column("id"),
+    sa.column("company_id"),
+    sa.column("work_order_id"),
+    sa.column("component_product_id"),
+    sa.column("required_qty"),
+    sa.column("issued_qty"),
+    sa.column("returned_qty"),
+    sa.column("estimated_unit_cost"),
+)
+
+_PRODUCT_COST_SUMMARIES = sa.table(
+    "product_cost_summaries",
+    sa.column("company_id"),
+    sa.column("product_id"),
+    sa.column("tracked_qty"),
+    sa.column("moving_avg_cost"),
+)
+
 _JOURNAL_ENTRIES = sa.table(
     "journal_entries",
     sa.column("id"),
@@ -1279,6 +1308,160 @@ async def _resolve_cost_adjustment_void(
     return parse_and_quantize_amount(abs(res.amount), "adjustment_amount")
 
 
+async def _resolve_work_order_confirm(
+    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+) -> Decimal:
+    wo_res = (
+        await session.execute(
+            select(_WORK_ORDERS.c.id, _WORK_ORDERS.c.status)
+            .where(_WORK_ORDERS.c.id == entity_id, _WORK_ORDERS.c.company_id == company_id)
+            .with_for_update()
+        )
+    ).first()
+    if wo_res is None:
+        raise NotFoundError("WorkOrder", str(entity_id))
+    if str(wo_res.status).lower() != "draft":
+        raise ConflictError(
+            f"WorkOrder {entity_id} is in status {wo_res.status!r}; "
+            "only draft work orders can be submitted for confirm workflow"
+        )
+
+    stmt_lines = (
+        select(
+            _WORK_ORDER_LINES.c.component_product_id,
+            _WORK_ORDER_LINES.c.required_qty,
+            _PRODUCTS.c.standard_cost,
+            _PRODUCT_COST_SUMMARIES.c.tracked_qty,
+            _PRODUCT_COST_SUMMARIES.c.moving_avg_cost,
+        )
+        .select_from(
+            _WORK_ORDER_LINES.outerjoin(
+                _PRODUCTS,
+                sa.and_(
+                    _PRODUCTS.c.id == _WORK_ORDER_LINES.c.component_product_id,
+                    _PRODUCTS.c.company_id == company_id,
+                ),
+            ).outerjoin(
+                _PRODUCT_COST_SUMMARIES,
+                sa.and_(
+                    _PRODUCT_COST_SUMMARIES.c.product_id
+                    == _WORK_ORDER_LINES.c.component_product_id,
+                    _PRODUCT_COST_SUMMARIES.c.company_id == company_id,
+                ),
+            )
+        )
+        .where(
+            _WORK_ORDER_LINES.c.work_order_id == entity_id,
+            _WORK_ORDER_LINES.c.company_id == company_id,
+        )
+    )
+    lines = (await session.execute(stmt_lines)).all()
+    if not lines:
+        raise DomainValidationError(
+            f"WorkOrder {entity_id} has no lines; cannot be submitted for confirmation"
+        )
+
+    total = Decimal("0")
+    for ln in lines:
+        if ln.standard_cost is None:
+            raise DomainValidationError(
+                f"WorkOrder {entity_id} line references invalid or missing component "
+                f"{ln.component_product_id}"
+            )
+        has_mwa = ln.tracked_qty is not None and (
+            Decimal(str(ln.tracked_qty)) > 0 or Decimal(str(ln.moving_avg_cost)) > 0
+        )
+        unit_cost = Decimal(str(ln.moving_avg_cost)) if has_mwa else Decimal(str(ln.standard_cost))
+        line_amt = parse_and_quantize_amount(
+            Decimal(str(ln.required_qty)) * parse_and_quantize_amount(unit_cost, "unit_cost"),
+            "line_amount",
+        )
+        total += line_amt
+    return parse_and_quantize_amount(total, "estimated_total")
+
+
+async def _resolve_work_order_cancel(
+    session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
+) -> Decimal:
+    wo_res = (
+        await session.execute(
+            select(
+                _WORK_ORDERS.c.id,
+                _WORK_ORDERS.c.status,
+                _WORK_ORDERS.c.completed_qty,
+                _WORK_ORDERS.c.wip_balance,
+            )
+            .where(_WORK_ORDERS.c.id == entity_id, _WORK_ORDERS.c.company_id == company_id)
+            .with_for_update()
+        )
+    ).first()
+    if wo_res is None:
+        raise NotFoundError("WorkOrder", str(entity_id))
+    status_str = str(wo_res.status).lower()
+    if status_str == "cancelled":
+        raise ConflictError(f"WorkOrder {entity_id} is already cancelled")
+    if status_str == "completed":
+        raise ConflictError(f"WorkOrder {entity_id} is already completed and cannot be cancelled")
+    if wo_res.completed_qty > 0 or wo_res.wip_balance > 0:
+        raise ConflictError(
+            f"WorkOrder {entity_id} has non-zero WIP or completed activity and cannot be cancelled"
+        )
+
+    stmt_lines = (
+        select(
+            _WORK_ORDER_LINES.c.required_qty,
+            _WORK_ORDER_LINES.c.issued_qty,
+            _WORK_ORDER_LINES.c.returned_qty,
+            _WORK_ORDER_LINES.c.estimated_unit_cost,
+            _PRODUCTS.c.standard_cost,
+            _PRODUCT_COST_SUMMARIES.c.tracked_qty,
+            _PRODUCT_COST_SUMMARIES.c.moving_avg_cost,
+        )
+        .select_from(
+            _WORK_ORDER_LINES.outerjoin(
+                _PRODUCTS,
+                sa.and_(
+                    _PRODUCTS.c.id == _WORK_ORDER_LINES.c.component_product_id,
+                    _PRODUCTS.c.company_id == company_id,
+                ),
+            ).outerjoin(
+                _PRODUCT_COST_SUMMARIES,
+                sa.and_(
+                    _PRODUCT_COST_SUMMARIES.c.product_id
+                    == _WORK_ORDER_LINES.c.component_product_id,
+                    _PRODUCT_COST_SUMMARIES.c.company_id == company_id,
+                ),
+            )
+        )
+        .where(
+            _WORK_ORDER_LINES.c.work_order_id == entity_id,
+            _WORK_ORDER_LINES.c.company_id == company_id,
+        )
+    )
+    lines = (await session.execute(stmt_lines)).all()
+    if any(Decimal(str(ln.issued_qty)) - Decimal(str(ln.returned_qty)) > 0 for ln in lines):
+        raise ConflictError(
+            f"WorkOrder {entity_id} still has unreturned material issues; return materials first"
+        )
+
+    total = Decimal("0")
+    for ln in lines:
+        if status_str != "draft":
+            unit_cost = Decimal(str(ln.estimated_unit_cost))
+        else:
+            has_mwa = ln.tracked_qty is not None and (
+                Decimal(str(ln.tracked_qty)) > 0 or Decimal(str(ln.moving_avg_cost)) > 0
+            )
+            unit_cost = (
+                Decimal(str(ln.moving_avg_cost)) if has_mwa else Decimal(str(ln.standard_cost))
+            )
+        total += parse_and_quantize_amount(
+            Decimal(str(ln.required_qty)) * parse_and_quantize_amount(unit_cost, "unit_cost"),
+            "line_amount",
+        )
+    return parse_and_quantize_amount(total, "cancel_amount")
+
+
 async def _resolve_journal_entry_reverse(
     session: AsyncSession, company_id: uuid.UUID, entity_id: uuid.UUID
 ) -> Decimal:
@@ -1319,7 +1502,10 @@ async def _resolve_journal_entry_reverse(
         .where(
             _JOURNAL_LINES.c.entry_id == entity_id,
             _JOURNAL_LINES.c.company_id == company_id,
-            ((_ACCOUNTS.c.is_control.is_(True)) | (_ACCOUNTS.c.code.in_(["1100", "2000", "2110"]))),
+            (
+                (_ACCOUNTS.c.is_control.is_(True))
+                | (_ACCOUNTS.c.code.in_(["1100", "1310", "2000", "2110"]))
+            ),
         )
         .order_by(_ACCOUNTS.c.code)
         .limit(1)
@@ -1455,6 +1641,10 @@ async def resolve_workflow_target_unchecked(
         )
     elif e_type is WorkflowEntityType.COST_ADJUSTMENT and t_type is WorkflowTransition.VOID:
         resolved = await _resolve_cost_adjustment_void(session, company_id, entity_id)
+    elif e_type is WorkflowEntityType.WORK_ORDER and t_type is WorkflowTransition.CONFIRM:
+        resolved = await _resolve_work_order_confirm(session, company_id, entity_id)
+    elif e_type is WorkflowEntityType.WORK_ORDER and t_type is WorkflowTransition.CANCEL:
+        resolved = await _resolve_work_order_cancel(session, company_id, entity_id)
     elif e_type is WorkflowEntityType.JOURNAL_ENTRY and t_type is WorkflowTransition.REVERSE:
         resolved = await _resolve_journal_entry_reverse(session, company_id, entity_id)
 

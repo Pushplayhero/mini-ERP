@@ -34,6 +34,7 @@ class WorkflowEntityType(StrEnum):
     VENDOR_BILL = "vendor_bill"
     VENDOR_PAYMENT = "vendor_payment"
     COST_ADJUSTMENT = "cost_adjustment"
+    WORK_ORDER = "work_order"
     JOURNAL_ENTRY = "journal_entry"
 
 
@@ -74,6 +75,8 @@ VALID_ENTITY_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         (WorkflowEntityType.VENDOR_BILL.value, WorkflowTransition.VOID.value),
         (WorkflowEntityType.VENDOR_PAYMENT.value, WorkflowTransition.VOID.value),
         (WorkflowEntityType.COST_ADJUSTMENT.value, WorkflowTransition.VOID.value),
+        (WorkflowEntityType.WORK_ORDER.value, WorkflowTransition.CONFIRM.value),
+        (WorkflowEntityType.WORK_ORDER.value, WorkflowTransition.CANCEL.value),
         (WorkflowEntityType.JOURNAL_ENTRY.value, WorkflowTransition.REVERSE.value),
     }
 )

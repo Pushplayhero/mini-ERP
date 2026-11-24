@@ -18,7 +18,7 @@ Phase 3 expands `mini-erp` from a single O2C revenue loop into an integrated **S
 | **Week 14 (ADR-014)** | `masterdata.Supplier` + `purchase` | Supplier masterdata, PO lifecycle (`draft -> confirmed -> received`), confirm-time standard-cost repricing, Goods Receipt (`purchase.goods_received`), Inventory intake (`StockMoveType.RECEIPT`), GR/IR accrued purchases posting (`Dr 1300 / Cr 2110`) | [ADR-014](ADR-014-purchase-and-supplier-masterdata.md) |
 | **Week 15 (ADR-015)** | `payables` | Supplier Invoices / Vendor Bills (1:1 from `RECEIVED` POs clearing `2110 Accrued Purchases` → `2000 Accounts Payable`), Outgoing Vendor Payments, Idempotent Subledger Allocations, `2000`/`2110` Control Account Protection, AP Aging & `rebuild_ap_balances` | [ADR-015](ADR-015-payables.md) |
 | **Week 16 (ADR-016)** | `costing` | Moving Weighted Average inventory valuation subledger, Landed Cost capitalization (`Dr 1300 / Cr 2110`), Purchase Price Variance PPV clearing (`5110` <-> `2110`), Revaluation, Standard Cost sync, Valuation Variance report & `rebuild_cost_summaries` | [ADR-016](ADR-016-costing.md) |
-| **Week 17+ (ADR-017)** | `mrp` | Multi-level Bills of Materials (BOM), Work Orders, Material Issue / Production Receipt, WIP ledger posting, and MRP net-requirements planning | Planned |
+| **Week 17 (ADR-017)** | `mrp` | Multi-level Bills of Materials (DAG cycle guard, scrap rate, cost roll-up explosion), Work Orders (`WO-{YYYY}-{NNNNNN}`, workflow & hook gating, `request_ref` idempotency), Material Issue/Return & Production Receipt (`1310` WIP control account <-> `1300` Inventory), Topological MRP net-requirements planning & `rebuild_mrp_balances` | [ADR-017](ADR-017-mrp.md) |
 
 ---
 

@@ -42,6 +42,7 @@ _VALID_ENTITY_TRANSITIONS_SQL = (
     "("
     "(entity_type = 'sales_order' AND transition IN ('confirm', 'cancel')) OR "
     "(entity_type = 'purchase_order' AND transition IN ('confirm', 'cancel')) OR "
+    "(entity_type = 'work_order' AND transition IN ('confirm', 'cancel')) OR "
     "(entity_type = 'invoice' AND transition = 'void') OR "
     "(entity_type = 'payment' AND transition = 'void') OR "
     "(entity_type = 'vendor_bill' AND transition = 'void') OR "

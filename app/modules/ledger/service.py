@@ -84,14 +84,15 @@ _ACCOUNTS = sa_table(
     sa_column("is_control"),
 )
 
-# ADR-008 R5/R11 + ADR-015 Decision 4: kernel-owned control-account codes,
-# protected from manual journal entries and manual reversal regardless of
+# ADR-008 R5/R11 + ADR-015 Decision 4 + ADR-017: kernel-owned control-account
+# codes, protected from manual journal entries and manual reversal regardless of
 # whether a given company's chart happens to have `accounts.is_control` set on
 # the matching row:
 #   - 1100 Accounts Receivable (receivables)
+#   - 1310 Work in Process     (mrp WIP control account)
 #   - 2000 Accounts Payable    (payables)
 #   - 2110 Accrued Purchases   (GR/IR clearing between purchase receipt & bill)
-KERNEL_CONTROL_ACCOUNT_CODES: frozenset[str] = frozenset({"1100", "2000", "2110"})
+KERNEL_CONTROL_ACCOUNT_CODES: frozenset[str] = frozenset({"1100", "1310", "2000", "2110"})
 
 
 async def _commit_or_conflict(session: AsyncSession, *, entity: str) -> None:

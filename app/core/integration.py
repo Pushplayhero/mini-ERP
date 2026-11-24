@@ -36,6 +36,8 @@ class BatchEntityType(StrEnum):
     STOCK_SUMMARY = "stock_summary"
     COST_ADJUSTMENT = "cost_adjustment"
     PRODUCT_COST_SUMMARY = "product_cost_summary"
+    BOM = "bom"
+    WORK_ORDER = "work_order"
 
 
 class BatchDataFormat(StrEnum):

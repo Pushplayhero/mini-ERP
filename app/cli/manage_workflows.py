@@ -93,6 +93,8 @@ WORKFLOW_ADMIN_ACTOR = ActorContext(
             "payables.bill.void",
             "payables.payment.void",
             "costing.adjustment.void",
+            "mrp.work_order.confirm",
+            "mrp.work_order.cancel",
             "ledger.journal_entry.reverse",
         }
     ),

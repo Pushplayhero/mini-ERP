@@ -59,6 +59,9 @@ class StockMoveType(str, enum.Enum):
     SHIPMENT = "shipment"
     ADJUSTMENT = "adjustment"
     RECEIPT = "receipt"
+    PRODUCTION_ISSUE = "production_issue"
+    PRODUCTION_RETURN = "production_return"
+    PRODUCTION_RECEIPT = "production_receipt"
 
 
 class StockMove(Base, TenantScopedMixin):

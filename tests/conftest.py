@@ -212,7 +212,8 @@ async def _clean_tenant_tables(
             text(
                 "TRUNCATE TABLE journal_lines, journal_entries, ledger_sequences, "
                 "accounting_periods, cost_moves, product_cost_summaries, cost_adjustments, "
-                "costing_sequences, stock_moves, stock_summary, "
+                "costing_sequences, work_order_transactions, work_order_lines, work_orders, "
+                "bom_lines, boms, mrp_sequences, stock_moves, stock_summary, "
                 "vendor_payment_allocations, vendor_payment_allocation_commands, "
                 "vendor_payments, vendor_bills, payables_sequences, "
                 "payment_allocations, payment_allocation_commands, payments, "
@@ -304,6 +305,17 @@ ALL_ADMIN_PERMISSION_CODES: frozenset[str] = frozenset(
         "costing.adjustment.read",
         "costing.adjustment.void",
         "costing.report.read",
+        "mrp.bom.create",
+        "mrp.bom.read",
+        "mrp.bom.update",
+        "mrp.work_order.create",
+        "mrp.work_order.read",
+        "mrp.work_order.update",
+        "mrp.work_order.confirm",
+        "mrp.work_order.cancel",
+        "mrp.work_order.issue",
+        "mrp.work_order.receive",
+        "mrp.plan.read",
         "receivables.invoice.create",
         "receivables.invoice.read",
         "receivables.invoice.void",

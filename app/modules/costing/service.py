@@ -66,6 +66,9 @@ _ZERO = Decimal("0.000000")
 
 _GOODS_RECEIVED_SOURCE_TYPE = "purchase.goods_received"
 _GOODS_SHIPPED_SOURCE_TYPE = "sales.goods_shipped"
+_MATERIAL_ISSUED_SOURCE_TYPE = "mrp.material_issued"
+_MATERIAL_RETURNED_SOURCE_TYPE = "mrp.material_returned"
+_PRODUCTION_RECEIVED_SOURCE_TYPE = "mrp.production_received"
 _ADJUSTMENT_POSTED_SOURCE_TYPE = "costing.adjustment_posted"
 _ADJUSTMENT_VOIDED_SOURCE_TYPE = "costing.adjustment_voided"
 
@@ -431,6 +434,236 @@ async def handle_goods_shipped(session: AsyncSession, payload: BaseModel) -> Non
             raise
         logger.info(
             "sales.goods_shipped source_id=%s already costed for company %s; "
+            "skipping duplicate delivery",
+            source_id,
+            company_id,
+        )
+
+
+def _build_production_issue_cost_move(
+    *,
+    company_id: uuid.UUID,
+    product_id: uuid.UUID,
+    summary: ProductCostSummary,
+    issue_qty: Decimal,
+    line_cost: Decimal,
+    unit_cost: Decimal,
+    source_id: uuid.UUID,
+    wo_no: str,
+) -> CostMove:
+    reason = f"WO {wo_no} material issue"[:255] if wo_no else "WO material issue"
+    if summary.tracked_qty == 0:
+        return CostMove(
+            company_id=company_id,
+            product_id=product_id,
+            move_type=CostMoveType.PRODUCTION_ISSUE,
+            qty_delta=_ZERO,
+            value_delta=_ZERO,
+            unit_cost=unit_cost,
+            resulting_qty=_ZERO,
+            resulting_value=_ZERO,
+            resulting_avg_cost=summary.moving_avg_cost,
+            source_type=_MATERIAL_ISSUED_SOURCE_TYPE,
+            source_id=source_id,
+            reason=f"{reason} (standard cost fallback)"[:255],
+        )
+
+    if summary.tracked_qty >= issue_qty:
+        qty_deducted = issue_qty
+        new_qty = _round_half_even_6dp(summary.tracked_qty - issue_qty)
+        val_deducted = (
+            summary.total_cost_value
+            if new_qty == 0
+            else min(summary.total_cost_value, _round_half_even_6dp(line_cost))
+        )
+        new_val = _round_half_even_6dp(summary.total_cost_value - val_deducted)
+        new_avg = (
+            _round_half_even_6dp(new_val / new_qty) if new_qty > 0 else summary.moving_avg_cost
+        )
+    else:
+        qty_deducted = summary.tracked_qty
+        val_deducted = summary.total_cost_value
+        new_qty = _ZERO
+        new_val = _ZERO
+        new_avg = summary.moving_avg_cost
+
+    move_unit = summary.moving_avg_cost
+    summary.tracked_qty = new_qty
+    summary.total_cost_value = new_val
+    summary.moving_avg_cost = new_avg
+    return CostMove(
+        company_id=company_id,
+        product_id=product_id,
+        move_type=CostMoveType.PRODUCTION_ISSUE,
+        qty_delta=-qty_deducted,
+        value_delta=-val_deducted,
+        unit_cost=move_unit,
+        resulting_qty=new_qty,
+        resulting_value=new_val,
+        resulting_avg_cost=new_avg,
+        source_type=_MATERIAL_ISSUED_SOURCE_TYPE,
+        source_id=source_id,
+        reason=reason,
+    )
+
+
+async def handle_material_issued(session: AsyncSession, payload: BaseModel) -> None:
+    """Relieve moving-average component cost on `mrp.material_issued` inside a SAVEPOINT."""
+    company_id = require_current_company_id()
+    payload_dict: dict[str, Any] = payload.model_dump()
+    source_id = uuid.UUID(str(payload_dict["source_id"]))
+    wo_no = str(payload_dict.get("wo_no", ""))
+    lines: Sequence[dict[str, Any]] = payload_dict["lines"]
+
+    agg: dict[uuid.UUID, tuple[Decimal, Decimal]] = {}
+    for line in lines:
+        product_id = uuid.UUID(str(line["product_id"]))
+        qty = Decimal(str(line["qty"]))
+        cost = Decimal(str(line["line_cost"]))
+        prev_q, prev_v = agg.get(product_id, (_ZERO, _ZERO))
+        agg[product_id] = (prev_q + qty, prev_v + cost)
+
+    try:
+        async with session.begin_nested():
+            for product_id in sorted(agg):
+                raw_q, raw_v = agg[product_id]
+                issue_qty = _round_half_even_6dp(raw_q)
+                line_cost = _round_half_even_6dp(raw_v)
+                if issue_qty <= 0:
+                    continue
+                summary = await get_or_lock_cost_summary(session, company_id, product_id)
+                eff_unit = _round_half_even_6dp(line_cost / issue_qty)
+                move = _build_production_issue_cost_move(
+                    company_id=company_id,
+                    product_id=product_id,
+                    summary=summary,
+                    issue_qty=issue_qty,
+                    line_cost=line_cost,
+                    unit_cost=eff_unit,
+                    source_id=source_id,
+                    wo_no=wo_no,
+                )
+                session.add(move)
+            await session.flush()
+    except IntegrityError as exc:
+        if not _is_source_conflict(exc):
+            raise
+        logger.info(
+            "mrp.material_issued source_id=%s already costed for company %s; "
+            "skipping duplicate delivery",
+            source_id,
+            company_id,
+        )
+
+
+async def handle_material_returned(session: AsyncSession, payload: BaseModel) -> None:
+    """Restore returned component cost into MWA summary on `mrp.material_returned`."""
+    company_id = require_current_company_id()
+    payload_dict: dict[str, Any] = payload.model_dump()
+    source_id = uuid.UUID(str(payload_dict["source_id"]))
+    wo_no = str(payload_dict.get("wo_no", ""))
+    lines: Sequence[dict[str, Any]] = payload_dict["lines"]
+
+    agg: dict[uuid.UUID, tuple[Decimal, Decimal]] = {}
+    for line in lines:
+        product_id = uuid.UUID(str(line["product_id"]))
+        qty = Decimal(str(line["qty"]))
+        cost = Decimal(str(line["line_cost"]))
+        prev_q, prev_v = agg.get(product_id, (_ZERO, _ZERO))
+        agg[product_id] = (prev_q + qty, prev_v + cost)
+
+    try:
+        async with session.begin_nested():
+            for product_id in sorted(agg):
+                raw_q, raw_v = agg[product_id]
+                delta_qty = _round_half_even_6dp(raw_q)
+                delta_val = _round_half_even_6dp(raw_v)
+                if delta_qty <= 0:
+                    continue
+                summary = await get_or_lock_cost_summary(session, company_id, product_id)
+                eff_unit = _round_half_even_6dp(delta_val / delta_qty)
+                new_qty = _round_half_even_6dp(summary.tracked_qty + delta_qty)
+                new_val = _round_half_even_6dp(summary.total_cost_value + delta_val)
+                new_avg = (
+                    _round_half_even_6dp(new_val / new_qty)
+                    if new_qty > 0
+                    else summary.moving_avg_cost
+                )
+                move = CostMove(
+                    company_id=company_id,
+                    product_id=product_id,
+                    move_type=CostMoveType.PRODUCTION_RETURN,
+                    qty_delta=delta_qty,
+                    value_delta=delta_val,
+                    unit_cost=eff_unit,
+                    resulting_qty=new_qty,
+                    resulting_value=new_val,
+                    resulting_avg_cost=new_avg,
+                    source_type=_MATERIAL_RETURNED_SOURCE_TYPE,
+                    source_id=source_id,
+                    reason=f"WO {wo_no} material return"[:255] if wo_no else "WO material return",
+                )
+                session.add(move)
+                summary.tracked_qty = new_qty
+                summary.total_cost_value = new_val
+                summary.moving_avg_cost = new_avg
+            await session.flush()
+    except IntegrityError as exc:
+        if not _is_source_conflict(exc):
+            raise
+        logger.info(
+            "mrp.material_returned source_id=%s already costed for company %s; "
+            "skipping duplicate delivery",
+            source_id,
+            company_id,
+        )
+
+
+async def handle_production_received(session: AsyncSession, payload: BaseModel) -> None:
+    """Capitalize WIP production cost into finished-good MWA summary without rounding drift."""
+    company_id = require_current_company_id()
+    payload_dict: dict[str, Any] = payload.model_dump()
+    source_id = uuid.UUID(str(payload_dict["source_id"]))
+    product_id = uuid.UUID(str(payload_dict["product_id"]))
+    wo_no = str(payload_dict.get("wo_no", ""))
+    delta_qty = _round_half_even_6dp(Decimal(str(payload_dict["qty"])))
+    delta_val = _round_half_even_6dp(Decimal(str(payload_dict["total_cost"])))
+    if delta_qty <= 0:
+        return
+
+    try:
+        async with session.begin_nested():
+            summary = await get_or_lock_cost_summary(session, company_id, product_id)
+            eff_unit = _round_half_even_6dp(delta_val / delta_qty)
+            new_qty = _round_half_even_6dp(summary.tracked_qty + delta_qty)
+            new_val = _round_half_even_6dp(summary.total_cost_value + delta_val)
+            new_avg = (
+                _round_half_even_6dp(new_val / new_qty) if new_qty > 0 else summary.moving_avg_cost
+            )
+            move = CostMove(
+                company_id=company_id,
+                product_id=product_id,
+                move_type=CostMoveType.PRODUCTION_RECEIPT,
+                qty_delta=delta_qty,
+                value_delta=delta_val,
+                unit_cost=eff_unit,
+                resulting_qty=new_qty,
+                resulting_value=new_val,
+                resulting_avg_cost=new_avg,
+                source_type=_PRODUCTION_RECEIVED_SOURCE_TYPE,
+                source_id=source_id,
+                reason=f"WO {wo_no} production receipt"[:255] if wo_no else "WO production receipt",
+            )
+            session.add(move)
+            summary.tracked_qty = new_qty
+            summary.total_cost_value = new_val
+            summary.moving_avg_cost = new_avg
+            await session.flush()
+    except IntegrityError as exc:
+        if not _is_source_conflict(exc):
+            raise
+        logger.info(
+            "mrp.production_received source_id=%s already costed for company %s; "
             "skipping duplicate delivery",
             source_id,
             company_id,

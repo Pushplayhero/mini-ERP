@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 # detectable via `uq_stock_moves_source`.
 _GOODS_SHIPPED_SOURCE_TYPE = "sales.goods_shipped"
 _GOODS_RECEIVED_SOURCE_TYPE = "purchase.goods_received"
+_MATERIAL_ISSUED_SOURCE_TYPE = "mrp.material_issued"
+_MATERIAL_RETURNED_SOURCE_TYPE = "mrp.material_returned"
+_PRODUCTION_RECEIVED_SOURCE_TYPE = "mrp.production_received"
 
 _PRODUCTS = sa_table(
     "products",
@@ -97,6 +100,30 @@ def _is_source_conflict(exc: IntegrityError) -> bool:
     if constraint_name:
         return str(constraint_name) == "uq_stock_moves_source"
     return "uq_stock_moves_source" in str(exc)
+
+
+async def _source_already_processed(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    source_type: str,
+    source_id: uuid.UUID,
+) -> bool:
+    """Return True if any `stock_moves` row already exists for `(company, source_type, source_id)`.
+
+    Outbox replays can occur after subsequent issues/shipments draw `on_hand` below the original
+    deduction (including 0); checking the natural idempotency key before sufficiency prevents
+    spurious `InsufficientStockError` failures on already-applied deductions.
+    """
+    existing = await session.execute(
+        select(StockMove.id)
+        .where(
+            StockMove.company_id == company_id,
+            StockMove.source_type == source_type,
+            StockMove.source_id == source_id,
+        )
+        .limit(1)
+    )
+    return existing.first() is not None
 
 
 async def _commit_or_conflict(session: AsyncSession, *, entity: str) -> None:
@@ -291,6 +318,38 @@ async def handle_goods_shipped(session: AsyncSession, payload: BaseModel) -> Non
     payload_dict: dict[str, Any] = payload.model_dump()
     source_id = uuid.UUID(str(payload_dict["source_id"]))
     lines: Sequence[dict[str, Any]] = payload_dict["lines"]
+    await _apply_source_keyed_stock_moves(
+        session,
+        company_id=company_id,
+        lines=lines,
+        move_type=StockMoveType.SHIPMENT,
+        source_type=_GOODS_SHIPPED_SOURCE_TYPE,
+        source_id=source_id,
+        sign=-1,
+        reason=None,
+    )
+
+
+async def _apply_source_keyed_stock_moves(
+    session: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    lines: Sequence[dict[str, Any]],
+    move_type: StockMoveType,
+    source_type: str,
+    source_id: uuid.UUID,
+    sign: int,
+    reason: str | None,
+) -> None:
+    """Apply aggregated per-product stock moves inside a single savepoint with replay guard."""
+    if await _source_already_processed(session, company_id, source_type, source_id):
+        logger.info(
+            "%s source_id=%s already processed for company %s; skipping duplicate delivery",
+            source_type,
+            source_id,
+            company_id,
+        )
+        return
 
     qty_by_product: dict[uuid.UUID, Decimal] = {}
     for line in lines:
@@ -301,22 +360,32 @@ async def handle_goods_shipped(session: AsyncSession, payload: BaseModel) -> Non
     try:
         async with session.begin_nested():
             for product_id in sorted(qty_by_product):
-                qty = qty_by_product[product_id]
+                delta = qty_by_product[product_id] * sign
                 await apply_stock_move(
                     session,
                     company_id,
                     product_id,
-                    -qty,
-                    StockMoveType.SHIPMENT,
-                    source_type=_GOODS_SHIPPED_SOURCE_TYPE,
+                    delta,
+                    move_type,
+                    source_type=source_type,
                     source_id=source_id,
+                    reason=reason,
                 )
+    except InsufficientStockError:
+        if not await _source_already_processed(session, company_id, source_type, source_id):
+            raise
+        logger.info(
+            "%s source_id=%s already processed concurrently for company %s; skipping duplicate",
+            source_type,
+            source_id,
+            company_id,
+        )
     except IntegrityError as exc:
         if not _is_source_conflict(exc):
             raise
         logger.info(
-            "sales.goods_shipped source_id=%s already deducted for company %s; "
-            "skipping duplicate delivery",
+            "%s source_id=%s already processed for company %s; skipping duplicate delivery",
+            source_type,
             source_id,
             company_id,
         )
@@ -361,6 +430,89 @@ async def handle_goods_received(session: AsyncSession, payload: BaseModel) -> No
             raise
         logger.info(
             "purchase.goods_received source_id=%s already received for company %s; "
+            "skipping duplicate delivery",
+            source_id,
+            company_id,
+        )
+
+
+async def _apply_mrp_material_moves(
+    session: AsyncSession,
+    payload: BaseModel,
+    *,
+    move_type: StockMoveType,
+    source_type: str,
+    sign: int,
+    reason_verb: str,
+) -> None:
+    company_id = require_current_company_id()
+    payload_dict: dict[str, Any] = payload.model_dump()
+    source_id = uuid.UUID(str(payload_dict["source_id"]))
+    wo_no = str(payload_dict.get("wo_no", ""))
+    lines: Sequence[dict[str, Any]] = payload_dict["lines"]
+    reason = f"WO {wo_no} {reason_verb}"[:255] if wo_no else reason_verb
+    await _apply_source_keyed_stock_moves(
+        session,
+        company_id=company_id,
+        lines=lines,
+        move_type=move_type,
+        source_type=source_type,
+        source_id=source_id,
+        sign=sign,
+        reason=reason,
+    )
+
+
+async def handle_material_issued(session: AsyncSession, payload: BaseModel) -> None:
+    """Deduct issued component stock on `mrp.material_issued` inside a SAVEPOINT."""
+    await _apply_mrp_material_moves(
+        session,
+        payload,
+        move_type=StockMoveType.PRODUCTION_ISSUE,
+        source_type=_MATERIAL_ISSUED_SOURCE_TYPE,
+        sign=-1,
+        reason_verb="material issue",
+    )
+
+
+async def handle_material_returned(session: AsyncSession, payload: BaseModel) -> None:
+    """Restore returned component stock on `mrp.material_returned` inside a SAVEPOINT."""
+    await _apply_mrp_material_moves(
+        session,
+        payload,
+        move_type=StockMoveType.PRODUCTION_RETURN,
+        source_type=_MATERIAL_RETURNED_SOURCE_TYPE,
+        sign=1,
+        reason_verb="material return",
+    )
+
+
+async def handle_production_received(session: AsyncSession, payload: BaseModel) -> None:
+    """Receive finished goods into stock on `mrp.production_received` inside a SAVEPOINT."""
+    company_id = require_current_company_id()
+    payload_dict: dict[str, Any] = payload.model_dump()
+    source_id = uuid.UUID(str(payload_dict["source_id"]))
+    product_id = uuid.UUID(str(payload_dict["product_id"]))
+    qty = Decimal(str(payload_dict["qty"]))
+    wo_no = str(payload_dict.get("wo_no", ""))
+
+    try:
+        async with session.begin_nested():
+            await apply_stock_move(
+                session,
+                company_id,
+                product_id,
+                qty,
+                StockMoveType.PRODUCTION_RECEIPT,
+                source_type=_PRODUCTION_RECEIVED_SOURCE_TYPE,
+                source_id=source_id,
+                reason=f"WO {wo_no} production receipt"[:255] if wo_no else "production receipt",
+            )
+    except IntegrityError as exc:
+        if not _is_source_conflict(exc):
+            raise
+        logger.info(
+            "mrp.production_received source_id=%s already received for company %s; "
             "skipping duplicate delivery",
             source_id,
             company_id,
