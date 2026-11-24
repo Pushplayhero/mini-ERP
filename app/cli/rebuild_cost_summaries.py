@@ -60,13 +60,19 @@ async def _rebuild_company(
                 .where(ProductCostSummary.company_id == company_id)
                 .order_by(ProductCostSummary.product_id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
             existing = {row.product_id: row for row in locked.scalars().all()}
 
             moves_result = await session.execute(
                 select(CostMove)
                 .where(CostMove.company_id == company_id)
-                .order_by(CostMove.created_at, CostMove.id)
+                .order_by(
+                    CostMove.created_at,
+                    CostMove.qty_delta.desc(),
+                    CostMove.value_delta.desc(),
+                    CostMove.id,
+                )
             )
             recomputed: dict[uuid.UUID, tuple[Decimal, Decimal, Decimal]] = {}
             for move in moves_result.scalars().all():
@@ -75,7 +81,11 @@ async def _rebuild_company(
                 )
                 new_qty = _round_half_even_6dp(prev_qty + move.qty_delta)
                 new_val = _round_half_even_6dp(prev_val + move.value_delta)
-                new_avg = _round_half_even_6dp(new_val / new_qty) if new_qty > 0 else prev_avg
+                new_avg = (
+                    _round_half_even_6dp(new_val / new_qty)
+                    if new_qty > 0
+                    else (prev_avg if prev_avg > 0 else move.resulting_avg_cost)
+                )
                 recomputed[move.product_id] = (new_qty, new_val, new_avg)
 
             updated = 0

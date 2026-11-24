@@ -53,7 +53,7 @@ fresh exact-SHA review.
 Per explicit owner decision (2026-10-12 / 2026-10-22), completed `micro-v2`
 unit scans for `u01_identity` through `u11_operations_e2e` (all 183 application,
 platform, migration, CLI, and E2E files at the 2026-10-22 baseline; expanded
-through Week 15 / `ADR-015` Payables to **248 files**) remain accepted pass evidence when
+through Week 16 / `ADR-016` Costing to **262 files**) remain accepted pass evidence when
 unmodified units' files are unchanged; post-baseline additions and modifications
 in `u01_identity` and business/CLI units are covered by deterministic verification
 (`pytest`, `mypy --strict`, `ruff`, `import-linter`, and D.5 manifest checks).
@@ -67,17 +67,17 @@ To prevent non-application units (`u12_gate`, `u13_governance`,
 runner scripts, markdown documentation, or `uv.lock`, the owner authorized a
 **Hybrid Right-Tool-for-the-Job Gate** to close Slice D.5:
 
-1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 183 files at 2026-10-22 baseline / 248 files current)**:
+1. **Tier 1 — Core Application, Platform RBAC, Migrations & E2E (`u01`–`u11`, 183 files at 2026-10-22 baseline / 262 files current)**:
    Verified by `@openai/codex-security` (`gpt-5.6-sol`, high effort) with zero
    blocking findings; owner-accepted baseline pass evidence is preserved, with
-   subsequent Week 10–15 additions/changes verified deterministically.
+   subsequent Week 10–16 additions/changes verified deterministically.
 2. **Tier 2 — Scanner Gate Runner (`u12_gate`, 2 files: `scripts/d5_security_gate.py`, `tests/security/test_d5_security_gate.py`)**:
    The single High finding from `b56c164` (`fsmonitor` / Git config isolation)
    is remediated in `95c5382`. Verified deterministically via `ruff check`,
    `ruff format --check`, `mypy --strict` (`scripts/`), and the 281 contract
    tests in `tests/security/test_d5_security_gate.py`. No recursive paid LLM
    rescan of the runner script is required.
-3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 22 files at 2026-10-22 baseline / 29 files current)**:
+3. **Tier 3 — Governance, CI Workflows & Documentation (`u13_governance`, 22 files at 2026-10-22 baseline / 30 files current)**:
    All four findings from `454b2e7` (predictable quick-start passwords,
    password exposure in shell history / `curl` arguments, mutable GitHub Action
    tags, and coverage test execution under `contents: write`) are remediated in

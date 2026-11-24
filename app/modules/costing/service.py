@@ -152,6 +152,8 @@ async def _validate_order_for_adjustment(
     order_id: uuid.UUID | None,
     product_id: uuid.UUID,
 ) -> None:
+    if adjustment_type == CostAdjustmentType.REVALUATION and order_id is not None:
+        raise DomainValidationError("order_id is not permitted for revaluation cost adjustments")
     if order_id is None:
         return
     po_res = await session.execute(

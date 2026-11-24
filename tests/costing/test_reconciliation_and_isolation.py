@@ -144,13 +144,20 @@ async def test_adjustment_domain_and_state_guards(client: AsyncClient) -> None:
         )
     ).status_code == 422
 
-    # 3. Schema invariants: zero amount, negative landed_cost, missing order_id
+    # 3. Schema invariants: zero amount, negative landed_cost, missing order_id, order_id on reval
     for bad_payload in (
         {
             "adjustment_type": "revaluation",
             "product_id": str(ctx.product_id),
             "amount": "0",
             "reason": "Zero",
+        },
+        {
+            "adjustment_type": "revaluation",
+            "product_id": str(ctx.product_id),
+            "order_id": ctx.order["id"],
+            "amount": "10",
+            "reason": "Revaluation should not reference PO",
         },
         {
             "adjustment_type": "landed_cost",
@@ -267,3 +274,42 @@ async def test_rebuild_cost_summaries_recovers_corrupted_and_deleted_rows(
     await rebuild_cost_summaries.rebuild_cost_summaries()
     rebuilt_2 = await get_summaries(client, ctx.company_id, product_id=ctx.product_id)
     assert rebuilt_2 == expected_before
+
+    # Ship all 4 units so tracked inventory reaches 0 while preserving moving_avg_cost = 45
+    cust_id = await create_customer(client, ctx.company_id, "RBLDCUST")
+    so = await create_sales_draft(
+        client, ctx.company_id, cust_id, [sales_order_line(ctx.product_id, "4")]
+    )
+    assert (await confirm_sales_order(client, ctx.company_id, so["id"])).status_code == 200
+    assert (await ship_order(client, ctx.company_id, so["id"])).status_code == 200
+
+    # Force identical created_at and put SHIPMENT UUID before RECEIPT/LANDED_COST UUIDs;
+    # deterministic qty_delta DESC ordering must still preserve moving_avg_cost = 45 at qty=0.
+    async with db_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE cost_moves "
+                "SET created_at = '2026-11-24T00:00:00+00:00', "
+                "    id = CASE move_type "
+                "        WHEN 'SHIPMENT' THEN '00000000-0000-0000-0000-000000000001'::uuid "
+                "        WHEN 'LANDED_COST' THEN 'ffffffff-ffff-ffff-ffff-fffffffffff1'::uuid "
+                "        ELSE 'ffffffff-ffff-ffff-ffff-fffffffffff2'::uuid "
+                "    END "
+                "WHERE company_id = :cid AND product_id = :pid"
+            ),
+            {"cid": str(ctx.company_id), "pid": str(ctx.product_id)},
+        )
+        await conn.execute(
+            text(
+                "UPDATE product_cost_summaries "
+                "SET moving_avg_cost = 999 "
+                "WHERE company_id = :cid AND product_id = :pid"
+            ),
+            {"cid": str(ctx.company_id), "pid": str(ctx.product_id)},
+        )
+
+    await rebuild_cost_summaries.rebuild_cost_summaries()
+    rebuilt_3 = await get_summaries(client, ctx.company_id, product_id=ctx.product_id)
+    assert Decimal(rebuilt_3[0]["tracked_qty"]) == Decimal("0")
+    assert Decimal(rebuilt_3[0]["total_cost_value"]) == Decimal("0")
+    assert Decimal(rebuilt_3[0]["moving_avg_cost"]) == Decimal("45")

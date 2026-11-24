@@ -85,6 +85,8 @@ class CostAdjustmentCreate(BaseModel):
             raise ValueError(
                 f"order_id is required for {self.adjustment_type.value} cost adjustments"
             )
+        if self.adjustment_type is CostAdjustmentType.REVALUATION and self.order_id is not None:
+            raise ValueError("order_id must not be provided for revaluation cost adjustments")
         if self.adjustment_type is CostAdjustmentType.LANDED_COST and self.amount <= 0:
             raise ValueError("amount must be positive for landed_cost adjustments")
         return self
