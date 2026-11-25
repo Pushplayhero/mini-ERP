@@ -190,6 +190,7 @@ async def test_check_credit_limit_reads_exposure_in_two_statements(
     try:
         async with session_factory() as session:
             with company_context(company_id):
+                await session.connection()
                 statement_count = 0
                 await check_credit_limit(
                     session,

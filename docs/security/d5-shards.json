@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 316,
+  "expected_total_files": 326,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 316,
+      "expected_total_files": 326,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -54,16 +54,22 @@
           ]
         },
         "u02_runtime_config": {
-          "expected_file_count": 13,
+          "expected_file_count": 19,
           "paths": [
             "app/__init__.py",
             "app/main.py",
             "app/core/__init__.py",
+            "app/core/crypto.py",
             "app/core/db.py",
             "app/core/exceptions.py",
             "app/core/settings.py",
+            "scripts/secret_scan.py",
             "tests/__init__.py",
             "tests/conftest.py",
+            "tests/core/test_crypto.py",
+            "tests/security/test_cors_and_runtime_security.py",
+            "tests/security/test_rls_isolation.py",
+            "tests/security/test_secret_scan.py",
             "tests/test_smoke.py",
             ".env.example",
             "Dockerfile",
@@ -172,7 +178,7 @@
           ]
         },
         "u10_migrations": {
-          "expected_file_count": 23,
+          "expected_file_count": 24,
           "paths": [
             "alembic",
             "alembic.ini",
@@ -180,7 +186,7 @@
           ]
         },
         "u11_operations_e2e": {
-          "expected_file_count": 29,
+          "expected_file_count": 31,
           "paths": [
             "app/cli/__init__.py",
             "app/cli/demo_o2c.py",
@@ -193,6 +199,7 @@
             "app/cli/manage_custom_fields.py",
             "app/cli/manage_workflows.py",
             "app/cli/manage_integrations.py",
+            "app/cli/manage_sessions.py",
             "app/cli/run_outbox_worker.py",
             "app/cli/replay_outbox.py",
             "tests/cli",
@@ -207,7 +214,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 32,
+          "expected_file_count": 33,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -226,6 +233,7 @@
             "docs/adr/ADR-015-payables.md",
             "docs/adr/ADR-016-costing.md",
             "docs/adr/ADR-017-mrp.md",
+            "docs/adr/ADR-018-staging-security-hardening.md",
             "docs/adr/PHASE2-platform-architecture-overview.md",
             "docs/adr/PHASE3-suites-architecture-overview.md",
             "docs/adr/README.md",
@@ -252,7 +260,7 @@
   "shards": [
     {
       "id": "a_identity_runtime",
-      "expected_file_count": 83,
+      "expected_file_count": 87,
       "max_cost_usd": 11.75,
       "paths": [
         "app/__init__.py",
@@ -263,6 +271,8 @@
         "tests/conftest.py",
         "tests/core",
         "tests/platform",
+        "tests/security/test_cors_and_runtime_security.py",
+        "tests/security/test_rls_isolation.py",
         "tests/test_smoke.py"
       ]
     },
@@ -313,7 +323,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 64,
+      "expected_file_count": 69,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -328,6 +338,7 @@
         "app/cli/manage_custom_fields.py",
         "app/cli/manage_workflows.py",
         "app/cli/manage_integrations.py",
+        "app/cli/manage_sessions.py",
         "app/cli/run_outbox_worker.py",
         "app/cli/seed_demo.py",
         "tests/masterdata",
@@ -343,12 +354,14 @@
         "pyproject.toml",
         "uv.lock",
         "scripts/d5_security_gate.py",
-        "tests/security/test_d5_security_gate.py"
+        "scripts/secret_scan.py",
+        "tests/security/test_d5_security_gate.py",
+        "tests/security/test_secret_scan.py"
       ]
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 34,
+      "expected_file_count": 35,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",
@@ -370,6 +383,7 @@
         "docs/adr/ADR-015-payables.md",
         "docs/adr/ADR-016-costing.md",
         "docs/adr/ADR-017-mrp.md",
+        "docs/adr/ADR-018-staging-security-hardening.md",
         "docs/adr/PHASE2-platform-architecture-overview.md",
         "docs/adr/PHASE3-suites-architecture-overview.md",
         "docs/adr/README.md",

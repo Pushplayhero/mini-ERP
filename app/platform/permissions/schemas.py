@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,3 +35,11 @@ class SwitchCompanyRequest(BaseModel):
 
 class SwitchCompanyResponse(BaseModel):
     active_company_id: uuid.UUID
+
+
+class RotateSessionResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: uuid.UUID
+    active_company_id: uuid.UUID
+    expires_at: datetime

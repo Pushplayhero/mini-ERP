@@ -289,15 +289,16 @@ async def test_gate_fail_closed_error_conditions(
     )
     loader.bootstrap_plugins([corrupt_manifest], enable_entrypoints=False)
 
-    corrupt_row = CompanyPlugin(
-        id=uuid.uuid4(),
-        company_id=c1_id,
-        plugin_name="corrupt_cfg_plugin",
-        is_enabled=True,
-        config={"max_amount": "corrupted_not_a_decimal"},
-    )
-    db_session.add(corrupt_row)
-    await db_session.commit()
+    with company_context(c1_id):
+        corrupt_row = CompanyPlugin(
+            id=uuid.uuid4(),
+            company_id=c1_id,
+            plugin_name="corrupt_cfg_plugin",
+            is_enabled=True,
+            config={"max_amount": "corrupted_not_a_decimal"},
+        )
+        db_session.add(corrupt_row)
+        await db_session.commit()
 
     with (
         company_context(c1_id),

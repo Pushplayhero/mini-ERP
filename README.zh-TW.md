@@ -101,9 +101,10 @@ Trial balance:
 ```
 
 其他 Makefile 指令：`make down`（停止）、`make clean`（停止並清掉
-volume）、`make test`（在你自己的環境裡跑 `pytest`）、`make check`
+volume）、`make test`（在你自己的環境裡跑 `pytest`）、`make secret-scan`
+（`scripts/secret_scan.py --git-history`）、`make check`
 （跟 CI 跑的完全一樣的 `ruff check` → `ruff format --check` → `mypy`
-→ `pytest` 那串流程）。
+→ `lint-imports` → `secret-scan` → `pytest` 那串流程）。
 
 ### 直接在本機跑（不用 Docker）
 
@@ -369,6 +370,7 @@ binary，一樣是真的 Postgres，只是不需要容器執行環境。不管�
 | Payables ——應付帳單、GR/IR 結清、供應商付款與 AP 帳齡 | [ADR-015](docs/adr/ADR-015-payables.md) |
 | Costing ——移動加權平均成本子帳、附帶成本、PPV 與存貨重估 | [ADR-016](docs/adr/ADR-016-costing.md) |
 | MRP ——多階 BOM、工單執行、`1310` WIP 明細帳與拓撲淨需求 | [ADR-017](docs/adr/ADR-017-mrp.md) |
+| Pre-Phase 4 Staging 安全加固（VULN-06 密鑰加密、PostgreSQL RLS、Session 強化與 CORS／Secret Scan） | [ADR-018](docs/adr/ADR-018-staging-security-hardening.md) |
 
 還有幾個沒有獨立編號 ADR、但看程式碼的人一定要知道的跨模組決策：
 
@@ -475,8 +477,8 @@ TOCTOU 競爭條件；業務模組在建立與更新時僅透過輕量核心埠�
 
 ```
 app/
-├── core/            # 設定、async DB session 管理、租戶 context/過濾器、
-│                     # event bus、hook registry、workflow/customfields/plugins/auth 公開埠、例外
+├── core/            # 設定、crypto（VULN-06 MultiFernet 加密）、async DB session 與 PostgreSQL RLS 同步、
+│                     # 租戶 context/過濾器、event bus、hook registry、平台公開埠、例外
 ├── modules/
 │   ├── masterdata/   # 公司、客戶、供應商、商品、UoM、科目、幣別
 │   ├── ledger/       # 傳票、會計期間、試算表、過帳引擎
@@ -494,9 +496,10 @@ app/
 │   ├── workflow/     # ADR-012 workflow 定義/實例服務、執行期審批閘門、/api/v1/workflows router
 │   └── integration/  # ADR-013 webhooks、outbox worker、批次引擎、/api/v1/integrations router
 ├── plugins/          # credit_limit.py ——內建客戶信用額度把關 manifest
-├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、run_outbox_worker、seed_demo、demo_o2c、demo_platform、demo_suites、replay_outbox、rebuild_ar_balances、rebuild_ap_balances、rebuild_stock_summary、rebuild_cost_summaries、rebuild_mrp_balances
-└── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、manage_sessions、run_outbox_worker、seed_demo、demo_o2c、demo_platform、demo_suites、replay_outbox、rebuild_ar_balances、rebuild_ap_balances、rebuild_stock_summary、rebuild_cost_summaries、rebuild_mrp_balances
+└── main.py           # FastAPI app、最外層 CORS + AuthenticationMiddleware、執行期安全驗證、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
+scripts/               # secret_scan.py（ADR-018）、d5_security_gate.py
 docs/
 ├── adr/               # 架構決策紀錄，含 WEEK7-phase1-hardening-brief.md
 │                       # （見上方「設計決策」表）
@@ -512,9 +515,9 @@ tests/
 
 `ruff check`（lint）→ `ruff format --check` → `mypy` → `import-linter`
 （模組獨立性契約——業務模組之間不能 import 彼此的 `models`/`service`，
-core 不能 import 業務模組或 plugins）→ 對著一個真的 Postgres service
-container 跑 `pytest`。跟 `make check` 一模一樣的順序。見
-`.github/workflows/ci.yml`。
+core 不能 import 業務模組或 plugins）→ `secret-scan`（`scripts/secret_scan.py --git-history`）
+→ 對著一個真的 Postgres service container 跑 `pytest`。跟 `make check`
+一模一樣的順序。見 `.github/workflows/ci.yml`。
 
 ## 授權條款
 

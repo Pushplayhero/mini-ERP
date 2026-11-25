@@ -11,10 +11,14 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.platform.permissions._helpers import create_company
 
 from app.cli import manage_integrations, run_outbox_worker
+from app.core.crypto import decrypt_secret, needs_reencryption
+from app.core.tenancy import company_context
+from app.platform.integration.models import WebhookEndpoint
 
 
 @pytest.mark.asyncio
@@ -58,6 +62,11 @@ async def test_manage_integrations_webhooks_cli(
     captured = capsys.readouterr().out
     assert "Endpoint created successfully:" in captured
     assert "Signing Secret (SAVE NOW):" in captured
+    returned_secret = next(
+        line.split("Signing Secret (SAVE NOW):", 1)[1].strip()
+        for line in captured.splitlines()
+        if "Signing Secret (SAVE NOW):" in line
+    )
 
     # 2. webhooks list
     rc_list = await manage_integrations._amain(
@@ -69,9 +78,40 @@ async def test_manage_integrations_webhooks_cli(
     assert "CLI Hook" in captured_list
     assert "https://api.clihook.com/callback" in captured_list
 
-    # 3. webhooks delete (soft deactivation)
+    # Verify secret is stored encrypted at rest (enc:v1:...) and reencrypt-secrets works
     ep_id_line = next(line for line in captured_list.splitlines() if "ID:" in line)
     ep_id_str = ep_id_line.split("|")[0].replace("ID:", "").strip()
+    # Query under company_context to satisfy fail-closed ORM + RLS
+    from app.modules.masterdata.models import Company
+
+    company = await db_session.scalar(select(Company).where(Company.code == "CLI_INT_CO"))
+    assert company is not None
+    with company_context(company.id):
+        ep_row = (
+            await db_session.scalars(
+                select(WebhookEndpoint).where(WebhookEndpoint.name == "CLI Hook")
+            )
+        ).one()
+        assert ep_row.signing_secret.startswith("enc:v1:")
+        assert ep_row.signing_secret != returned_secret
+        assert decrypt_secret(ep_row.signing_secret) == returned_secret
+        assert needs_reencryption(ep_row.signing_secret) is False
+
+    rc_reenc = await manage_integrations._amain(
+        ["webhooks", "reencrypt-secrets", "--company-code", "CLI_INT_CO"],
+        dispose=False,
+    )
+    assert rc_reenc == 0
+    assert "Re-encrypted webhook secrets for 0 endpoint(s)." in capsys.readouterr().out
+
+    rc_reenc_all = await manage_integrations._amain(
+        ["webhooks", "reencrypt-secrets", "--all-companies"],
+        dispose=False,
+    )
+    assert rc_reenc_all == 0
+    assert "Re-encrypted webhook secrets across" in capsys.readouterr().out
+
+    # 3. webhooks delete (soft deactivation)
     rc_del = await manage_integrations._amain(
         ["webhooks", "delete", "--company-code", "CLI_INT_CO", "--endpoint-id", ep_id_str],
         dispose=False,

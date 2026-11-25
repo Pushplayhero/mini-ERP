@@ -209,6 +209,7 @@ async def test_get_ar_aging_reads_invoice_and_payment_sides_in_one_statement(
     try:
         async with session_factory() as session:
             with company_context(company_id):
+                await session.connection()
                 statement_count = 0
                 await receivables_service.get_ar_aging(session)
     finally:

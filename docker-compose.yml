@@ -36,6 +36,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mini_erp}:${POSTGRES_PASSWORD:-mini_erp}@postgres:5432/${POSTGRES_DB:-mini_erp}
       APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      MINI_ERP_SECRET_ENCRYPTION_KEYS: ${MINI_ERP_SECRET_ENCRYPTION_KEYS:-}
+      MINI_ERP_DATABASE_ENFORCE_RLS: ${MINI_ERP_DATABASE_ENFORCE_RLS:-true}
+      MINI_ERP_CORS_ALLOWED_ORIGINS: ${MINI_ERP_CORS_ALLOWED_ORIGINS:-[]}
+      MINI_ERP_CORS_ALLOW_CREDENTIALS: ${MINI_ERP_CORS_ALLOW_CREDENTIALS:-false}
     ports:
       - "${APP_PORT:-8000}:8000"
     # Run migrations then start the API — fine for a Week-1 single-instance

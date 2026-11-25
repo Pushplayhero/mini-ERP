@@ -19,6 +19,7 @@
 | [ADR-015](ADR-015-payables.md) | `payables` — vendor bills, GR/IR clearing, outgoing supplier payments, and AP aging | Accepted |
 | [ADR-016](ADR-016-costing.md) | `costing` — moving weighted average valuation, landed cost, PPV clearing, and revaluation | Accepted |
 | [ADR-017](ADR-017-mrp.md) | `mrp` — multi-level BOM, work orders, `1310` WIP subledger, and topological MRP planning | Accepted |
+| [ADR-018](ADR-018-staging-security-hardening.md) | Pre-Phase 4 staging security hardening — VULN-06 `MultiFernet` encryption, PostgreSQL RLS (`44` tables), session hardening & CORS / secret scan | Accepted |
 
 See also:
 - [Phase 2 Architecture Overview](PHASE2-platform-architecture-overview.md)

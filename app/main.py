@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import select
@@ -163,13 +164,29 @@ def _classify_routes_or_crash(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    get_settings().validate_runtime_security()
     _classify_routes_or_crash(app)
     app.state.login_rate_limiter = LoginRateLimiter()
     app.state.login_verification_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LOGIN_VERIFICATIONS)
     yield
 
 
+def _configure_cors_middleware(application: FastAPI) -> None:
+    runtime_settings = get_settings()
+    runtime_settings.validate_runtime_security()
+    if runtime_settings.cors_allowed_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=runtime_settings.cors_allowed_origins,
+            allow_credentials=runtime_settings.cors_allow_credentials,
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-Id"],
+            max_age=runtime_settings.cors_max_age_seconds,
+        )
+
+
 def create_app() -> FastAPI:
+    get_settings().validate_runtime_security()
     application = FastAPI(
         title="mini-ERP",
         version="0.3.0",
@@ -196,23 +213,33 @@ async def authentication_middleware(
     Fail-closed: all non-public routes require a valid bearer token matching an
     active user session.
     """
+    is_auth_route = request.url.path == "/auth" or request.url.path.startswith("/auth/")
+
+    def _finalize_auth_headers(resp: Response) -> Response:
+        if is_auth_route:
+            resp.headers.setdefault("Cache-Control", "no-store")
+            resp.headers.setdefault("Pragma", "no-cache")
+        return resp
+
     if (
         request.url.path in _TIER1_PUBLIC_PATHS
         and request.method in _TIER1_ALLOWED_METHODS
         and _match_route(request) is None
     ):
-        return await call_next(request)
+        return _finalize_auth_headers(await call_next(request))
 
     route = _match_route(request)
     if route is not None and _route_is_public(route):
-        return await call_next(request)
+        return _finalize_auth_headers(await call_next(request))
 
     auth_header = request.headers.get("authorization")
     parts = auth_header.split(maxsplit=1) if auth_header else []
     if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        return JSONResponse(
-            {"detail": "Not authenticated."},
-            status_code=status.HTTP_401_UNAUTHORIZED,
+        return _finalize_auth_headers(
+            JSONResponse(
+                {"detail": "Not authenticated."},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
         )
     raw_token = parts[1].strip()
 
@@ -221,19 +248,28 @@ async def authentication_middleware(
         try:
             resolved = await permissions_service.resolve_actor(db_session, raw_token)
         except permissions_service.InvalidSessionError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_401_UNAUTHORIZED)
+            return _finalize_auth_headers(
+                JSONResponse({"detail": str(exc)}, status_code=status.HTTP_401_UNAUTHORIZED)
+            )
         except permissions_service.UserDisabledError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_403_FORBIDDEN)
+            return _finalize_auth_headers(
+                JSONResponse({"detail": str(exc)}, status_code=status.HTTP_403_FORBIDDEN)
+            )
 
     actor_token = set_current_actor(resolved.actor_context)
     session_token = set_current_session_id(resolved.session_id)
     company_token = set_current_company_id(resolved.active_company_id)
     try:
-        return await call_next(request)
+        return _finalize_auth_headers(await call_next(request))
     finally:
         reset_current_company_id(company_token)
         reset_current_session_id(session_token)
         reset_current_actor(actor_token)
+
+
+# Registered after `@app.middleware("http")` so CORSMiddleware sits outermost
+# and intercepts preflight OPTIONS / attaches CORS headers to 401/403 responses.
+_configure_cors_middleware(app)
 
 
 @app.exception_handler(NotFoundError)

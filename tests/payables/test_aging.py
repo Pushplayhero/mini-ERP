@@ -140,6 +140,7 @@ async def test_get_ap_aging_reads_in_one_union_statement(
     try:
         async with session_factory() as session:
             with company_context(ctx.company_id):
+                await session.connection()
                 statement_count = 0
                 await payables_service.get_ap_aging(session)
     finally:

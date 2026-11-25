@@ -471,3 +471,66 @@ async def test_auth_requests_forbid_extra_fields_and_switch_checks_user_active(
     )
     assert disabled_switch.status_code == 403
     _assert_no_leaked_context()
+
+
+@pytest.mark.asyncio
+async def test_auth_rotate_logout_all_and_no_store_headers(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    company_id = await create_company(db_session, "ROTHEAD")
+    await create_user_with_role(
+        db_session, email="rothead@example.com", password="pw12345", company_id=company_id
+    )
+
+    login_1 = await client.post(
+        "/auth/login", json={"email": "rothead@example.com", "password": "pw12345"}
+    )
+    assert login_1.status_code == 200
+    assert login_1.headers.get("cache-control") == "no-store"
+    assert login_1.headers.get("pragma") == "no-cache"
+    token_1 = login_1.json()["access_token"]
+
+    login_2 = await client.post(
+        "/auth/login", json={"email": "rothead@example.com", "password": "pw12345"}
+    )
+    assert login_2.status_code == 200
+    token_2 = login_2.json()["access_token"]
+
+    # Unauthenticated /auth/rotate fails 401 with no-store
+    unauth_rot = await client.post("/auth/rotate")
+    assert unauth_rot.status_code == 401
+    assert unauth_rot.headers.get("cache-control") == "no-store"
+    _assert_no_leaked_context()
+
+    # Rotate token_1 -> new_token works, token_1 invalidated
+    rot_resp = await client.post("/auth/rotate", headers={"Authorization": f"Bearer {token_1}"})
+    assert rot_resp.status_code == 200, rot_resp.text
+    assert rot_resp.headers.get("cache-control") == "no-store"
+    assert rot_resp.headers.get("pragma") == "no-cache"
+    new_token = rot_resp.json()["access_token"]
+    assert new_token != token_1
+    _assert_no_leaked_context()
+
+    assert (
+        await client.get("/api/v1/customers", headers={"Authorization": f"Bearer {token_1}"})
+    ).status_code == 401
+    assert (
+        await client.get("/api/v1/customers", headers={"Authorization": f"Bearer {new_token}"})
+    ).status_code == 200
+    _assert_no_leaked_context()
+
+    # logout-all revokes both new_token and token_2
+    logout_all_resp = await client.post(
+        "/auth/logout-all", headers={"Authorization": f"Bearer {new_token}"}
+    )
+    assert logout_all_resp.status_code == 204
+    assert logout_all_resp.headers.get("cache-control") == "no-store"
+    _assert_no_leaked_context()
+
+    assert (
+        await client.get("/api/v1/customers", headers={"Authorization": f"Bearer {new_token}"})
+    ).status_code == 401
+    assert (
+        await client.get("/api/v1/customers", headers={"Authorization": f"Bearer {token_2}"})
+    ).status_code == 401
+    _assert_no_leaked_context()

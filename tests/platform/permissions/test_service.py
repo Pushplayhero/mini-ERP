@@ -7,13 +7,14 @@ SHA-256 lookup correctness.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.authorization import ActorContext, actor_context
 from app.core.exceptions import ActionDeniedError
@@ -430,3 +431,173 @@ async def test_switch_company_rejects_expired_session_and_disabled_user(
         pytest.raises(service.InvalidSessionError, match="expired"),
     ):
         await service.switch_company(db_session, company_b)
+
+
+# ---------------------------------------------------------------------------
+# ADR-018: idle timeout, throttled touch, active cap, rotate_session, logout_all
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_idle_timeout_and_throttled_touch(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("MINI_ERP_SESSION_IDLE_TIMEOUT_MINUTES", "30")
+    monkeypatch.setenv("MINI_ERP_SESSION_TOUCH_INTERVAL_SECONDS", "60")
+    get_settings.cache_clear()
+    try:
+        co_id = await create_company(db_session, "IDLECO")
+        await create_user_with_role(
+            db_session, email="idle@example.com", password="pw12345", company_id=co_id
+        )
+        res = await service.login(
+            db_session,
+            "idle@example.com",
+            "pw12345",
+            None,
+            ip_address="203.0.113.10",
+            user_agent="pytest-agent/1.0",
+        )
+        row = await db_session.get(SessionModel, res.session_id)
+        assert row is not None
+        assert row.ip_address == "203.0.113.10"
+        assert row.user_agent == "pytest-agent/1.0"
+        initial_touch = row.last_active_at
+
+        # Within touch interval -> last_active_at is not rewritten
+        await service.resolve_actor(db_session, res.raw_token)
+        await db_session.refresh(row)
+        assert row.last_active_at == initial_touch
+
+        # Past touch interval (5 minutes ago) -> resolve_actor refreshes last_active_at
+        past_touch = datetime.now(UTC) - timedelta(minutes=5)
+        row.last_active_at = past_touch
+        await db_session.commit()
+        await service.resolve_actor(db_session, res.raw_token)
+        await db_session.refresh(row)
+        assert row.last_active_at > past_touch
+
+        # Past idle timeout (31 minutes ago) -> rejected with InvalidSessionError
+        row.last_active_at = datetime.now(UTC) - timedelta(minutes=31)
+        await db_session.commit()
+        with pytest.raises(service.InvalidSessionError, match="inactivity"):
+            await service.resolve_actor(db_session, res.raw_token)
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_login_enforces_max_active_sessions_per_user(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("MINI_ERP_SESSION_MAX_ACTIVE_PER_USER", "2")
+    get_settings.cache_clear()
+    try:
+        co_id = await create_company(db_session, "CAPCO")
+        await create_user_with_role(
+            db_session, email="cap@example.com", password="pw12345", company_id=co_id
+        )
+        s1 = await service.login(db_session, "cap@example.com", "pw12345", None)
+        s2 = await service.login(db_session, "cap@example.com", "pw12345", None)
+        s3 = await service.login(db_session, "cap@example.com", "pw12345", None)
+
+        # s1 evicted; s2 and s3 remain active
+        with pytest.raises(service.InvalidSessionError):
+            await service.resolve_actor(db_session, s1.raw_token)
+        assert (await service.resolve_actor(db_session, s2.raw_token)).session_id == s2.session_id
+        assert (await service.resolve_actor(db_session, s3.raw_token)).session_id == s3.session_id
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_rotate_session_and_logout_all_lifecycle(db_session: AsyncSession) -> None:
+    co_id = await create_company(db_session, "ROTCO")
+    await create_user_with_role(
+        db_session, email="rot@example.com", password="pw12345", company_id=co_id
+    )
+    await create_user_with_role(
+        db_session, email="other@example.com", password="pw12345", company_id=co_id
+    )
+
+    s1 = await service.login(db_session, "rot@example.com", "pw12345", None)
+    s2 = await service.login(db_session, "rot@example.com", "pw12345", None)
+    s_other = await service.login(db_session, "other@example.com", "pw12345", None)
+
+    row1 = await db_session.get(SessionModel, s1.session_id)
+    assert row1 is not None
+    original_expires_at = row1.expires_at
+
+    resolved = await service.resolve_actor(db_session, s1.raw_token)
+    with actor_context(resolved.actor_context), session_context(s1.session_id):
+        rotated = await service.rotate_session(db_session)
+
+    assert rotated.raw_token != s1.raw_token
+    assert rotated.session_id == s1.session_id
+    assert rotated.expires_at == original_expires_at  # absolute cap is never extended
+
+    # Old token immediately invalid; new token resolves
+    with pytest.raises(service.InvalidSessionError):
+        await service.resolve_actor(db_session, s1.raw_token)
+    resolved_new = await service.resolve_actor(db_session, rotated.raw_token)
+    assert resolved_new.session_id == s1.session_id
+
+    # logout_all removes both s1 and s2, leaving other@example.com untouched
+    with actor_context(resolved_new.actor_context), session_context(s1.session_id):
+        revoked_count = await service.logout_all(db_session)
+    assert revoked_count == 2
+
+    with pytest.raises(service.InvalidSessionError):
+        await service.resolve_actor(db_session, rotated.raw_token)
+    with pytest.raises(service.InvalidSessionError):
+        await service.resolve_actor(db_session, s2.raw_token)
+    other_actor = await service.resolve_actor(db_session, s_other.raw_token)
+    assert other_actor.session_id == s_other.session_id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_logins_respect_max_active_sessions_per_user(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("MINI_ERP_SESSION_MAX_ACTIVE_PER_USER", "1")
+    get_settings.cache_clear()
+    try:
+        co_id = await create_company(db_session, "CONCLOGINCO")
+        user_id = await create_user_with_role(
+            db_session, email="conclogin@example.com", password="pw12345", company_id=co_id
+        )
+        await db_session.commit()
+
+        session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+        async def _login_once() -> service.LoginResult:
+            async with session_factory() as s:
+                return await service.login(s, "conclogin@example.com", "pw12345", co_id)
+
+        results = await asyncio.gather(*[_login_once() for _ in range(4)])
+
+        session_count = await db_session.scalar(
+            select(func.count()).select_from(SessionModel).where(SessionModel.user_id == user_id)
+        )
+        assert session_count == 1
+
+        valid_count = 0
+        for res in results:
+            try:
+                await service.resolve_actor(db_session, res.raw_token)
+                valid_count += 1
+            except service.InvalidSessionError:
+                pass
+        assert valid_count == 1
+    finally:
+        get_settings.cache_clear()

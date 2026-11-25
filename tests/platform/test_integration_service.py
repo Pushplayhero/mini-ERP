@@ -218,7 +218,11 @@ async def test_webhook_endpoint_service_lifecycle(
         assert endpoint.id is not None
         assert endpoint.company_id == co_id
         assert endpoint.name == "Primary Webhook"
-        assert endpoint.signing_secret == secret
+        assert endpoint.signing_secret.startswith("enc:v1:")
+        assert endpoint.signing_secret != secret
+        from app.core.crypto import decrypt_secret
+
+        assert decrypt_secret(endpoint.signing_secret) == secret
         assert endpoint.secret_prefix == secret[:12]
         assert endpoint.is_active is True
 
@@ -251,9 +255,13 @@ async def test_webhook_endpoint_service_lifecycle(
             db_session, endpoint.id, overlap_seconds=300
         )
         assert new_secret != secret
-        assert rotated.signing_secret == new_secret
+        assert rotated.signing_secret.startswith("enc:v1:")
+        assert rotated.signing_secret != new_secret
+        assert decrypt_secret(rotated.signing_secret) == new_secret
         assert rotated.secret_prefix == new_secret[:12]
-        assert rotated.previous_signing_secret == secret
+        assert rotated.previous_signing_secret is not None
+        assert rotated.previous_signing_secret.startswith("enc:v1:")
+        assert decrypt_secret(rotated.previous_signing_secret) == secret
         assert rotated.previous_secret_expires_at is not None
 
         # 7. Soft-deactivate endpoint (record stays readable for audit trail)
@@ -465,3 +473,77 @@ async def test_service_rbac_and_deactivation_cancels_pending_deliveries(
     # Retrying a DEAD delivery while its endpoint is deactivated fails closed
     with pytest.raises(DomainValidationError, match="inactive webhook endpoint"):
         await service.retry_webhook_delivery(db_session, pending_deliv.id)
+
+
+@pytest.mark.asyncio
+async def test_reencrypt_webhook_secrets_upgrades_plaintext_and_old_keys(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cryptography.fernet import Fernet
+
+    from app.core.crypto import decrypt_secret, needs_reencryption
+    from app.core.settings import get_settings
+    from app.core.tenancy import company_context
+    from app.platform.integration.models import WebhookEndpoint
+
+    key_old = Fernet.generate_key().decode("ascii")
+    key_new = Fernet.generate_key().decode("ascii")
+
+    monkeypatch.setenv("MINI_ERP_SECRET_ENCRYPTION_KEYS", key_old)
+    get_settings.cache_clear()
+    try:
+        co_id = await create_company(db_session, "INTEG_REENC_CO")
+        set_current_company_id(co_id)
+        set_current_actor(
+            ActorContext(
+                user_id=uuid.uuid4(),
+                permission_codes=frozenset({"platform.integration.manage"}),
+            )
+        )
+
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo):
+            ep_encrypted, sec1 = await service.create_webhook_endpoint(
+                db_session,
+                WebhookEndpointCreate(name="Old Key Hook", url="https://api.external.com/old"),
+            )
+            _, prev_sec1 = await service.rotate_webhook_endpoint_secret(
+                db_session, ep_encrypted.id, overlap_seconds=600
+            )
+
+        legacy_plain_sec = generate_webhook_secret()
+        with company_context(co_id):
+            ep_legacy = WebhookEndpoint(
+                company_id=co_id,
+                name="Legacy Plaintext Hook",
+                url="https://api.external.com/legacy",
+                signing_secret=legacy_plain_sec,
+                secret_prefix=get_secret_prefix(legacy_plain_sec),
+                event_types=["*"],
+                is_active=True,
+            )
+            db_session.add(ep_legacy)
+            await db_session.commit()
+
+        # Rotate platform encryption key: [key_new, key_old]
+        monkeypatch.setenv("MINI_ERP_SECRET_ENCRYPTION_KEYS", f"{key_new},{key_old}")
+        get_settings.cache_clear()
+
+        updated_count = await service.reencrypt_webhook_secrets(db_session)
+        assert updated_count == 2
+
+        await db_session.refresh(ep_encrypted)
+        await db_session.refresh(ep_legacy)
+        assert needs_reencryption(ep_encrypted.signing_secret) is False
+        assert ep_encrypted.previous_signing_secret is not None
+        assert needs_reencryption(ep_encrypted.previous_signing_secret) is False
+        assert decrypt_secret(ep_encrypted.signing_secret) == prev_sec1
+        assert decrypt_secret(ep_encrypted.previous_signing_secret) == sec1
+        assert needs_reencryption(ep_legacy.signing_secret) is False
+        assert decrypt_secret(ep_legacy.signing_secret) == legacy_plain_sec
+
+        # Second pass is an idempotent no-op
+        assert await service.reencrypt_webhook_secrets(db_session) == 0
+    finally:
+        get_settings.cache_clear()

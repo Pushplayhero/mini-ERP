@@ -31,6 +31,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core import events
+from app.core.crypto import decrypt_secret
+from app.core.exceptions import SecretDecryptionError
 from app.core.settings import get_settings
 from app.core.tenancy import company_context
 from app.platform.integration.models import (
@@ -188,30 +190,32 @@ async def _fan_out_single_row(
             )
             endpoints = list((await session.scalars(ep_stmt)).all())
 
-        for ep in endpoints:
-            subscribed = not ep.event_types or "*" in ep.event_types or event_type in ep.event_types
-            if not subscribed:
-                continue
-
-            deliv_stmt = (
-                pg_insert(WebhookDelivery)
-                .values(
-                    id=uuid.uuid4(),
-                    company_id=company_id,
-                    endpoint_id=ep.id,
-                    outbox_event_id=outbox_id,
-                    event_type=event_type,
-                    payload=raw_payload,
-                    status="PENDING",
-                    attempts=0,
-                    max_attempts=ep.max_attempts,
+            for ep in endpoints:
+                subscribed = (
+                    not ep.event_types or "*" in ep.event_types or event_type in ep.event_types
                 )
-                .on_conflict_do_nothing(constraint="uq_webhook_deliveries_idempotency")
-                .returning(WebhookDelivery.id)
-            )
-            inserted_id = await session.scalar(deliv_stmt)
-            if inserted_id is not None:
-                created_deliveries += 1
+                if not subscribed:
+                    continue
+
+                deliv_stmt = (
+                    pg_insert(WebhookDelivery)
+                    .values(
+                        id=uuid.uuid4(),
+                        company_id=company_id,
+                        endpoint_id=ep.id,
+                        outbox_event_id=outbox_id,
+                        event_type=event_type,
+                        payload=raw_payload,
+                        status="PENDING",
+                        attempts=0,
+                        max_attempts=ep.max_attempts,
+                    )
+                    .on_conflict_do_nothing(constraint="uq_webhook_deliveries_idempotency")
+                    .returning(WebhookDelivery.id)
+                )
+                inserted_id = await session.scalar(deliv_stmt)
+                if inserted_id is not None:
+                    created_deliveries += 1
 
         await _record_outbox_receipt(session, outbox_id)
     return created_deliveries
@@ -619,10 +623,22 @@ async def dispatch_single_delivery(
 
     assert endpoint is not None
     now = datetime.now(UTC)
-    prev_secret = _active_previous_secret(endpoint, now)
+    try:
+        active_secret = decrypt_secret(endpoint.signing_secret)
+        raw_prev_secret = _active_previous_secret(endpoint, now)
+        prev_secret = decrypt_secret(raw_prev_secret) if raw_prev_secret is not None else None
+    except SecretDecryptionError as exc:
+        return await _settle_dispatch_outcome(
+            session,
+            claimed,
+            success=False,
+            http_status=None,
+            error_message=str(exc),
+        )
+
     sig_header, ts = sign_webhook_payload(
         prepared.payload_bytes,
-        endpoint.signing_secret,
+        active_secret,
         previous_secret=prev_secret,
     )
     headers = {

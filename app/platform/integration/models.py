@@ -64,8 +64,8 @@ class WebhookEndpoint(Base, TenantScopedMixin, TimestampAuditMixin):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
-    signing_secret: Mapped[str] = mapped_column(String(255), nullable=False)
-    previous_signing_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    signing_secret: Mapped[str] = mapped_column(String(512), nullable=False)
+    previous_signing_secret: Mapped[str | None] = mapped_column(String(512), nullable=True)
     previous_secret_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

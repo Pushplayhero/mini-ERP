@@ -53,8 +53,7 @@ invariants they must maintain *across* tables:
   bookkeeping:** A shipment posts COGS + Inventory; an invoice posts AR +
   Revenue; a payment posts Cash + AR. No money moves without two balanced
   sides.
-- **Fail-closed multi-tenancy:** A query without an active company context
-  RAISES; it does not return all rows or silently filter to nothing.
+- **Fail-closed multi-tenancy (ORM + PostgreSQL RLS):** Queries without an active company context RAISE at the ORM layer and see/mutate zero rows under forced PostgreSQL Row-Level Security (`mini_erp_app` `NOBYPASSRLS` across all 44 single-tenant tables, ADR-018); nothing returns all rows or silently falls back.
 
 This codebase is a clean, minimal reference implementation of those
 rules. It is structured to be read top-to-bottom, with ADRs documenting
@@ -141,9 +140,10 @@ Trial balance:
 ```
 
 Other Makefile targets: `make down` (stop), `make clean` (stop + drop the
-volume), `make test` (`pytest` inside your own environment), `make check`
+volume), `make test` (`pytest` inside your own environment), `make secret-scan`
+(`scripts/secret_scan.py --git-history`), `make check`
 (the exact `ruff check` → `ruff format --check` → `mypy` → `lint-imports`
-→ `pytest` sequence CI runs).
+→ `secret-scan` → `pytest` sequence CI runs).
 
 ### Running on your host (no Docker)
 
@@ -420,6 +420,7 @@ substitute — follow the links for the actual reasoning.
 | Payables — vendor bills, GR/IR clearing, outgoing payments, AP aging | [ADR-015](docs/adr/ADR-015-payables.md) |
 | Costing — moving weighted average subledger, landed cost, PPV & revaluation | [ADR-016](docs/adr/ADR-016-costing.md) |
 | MRP — multi-level BOM, work orders, `1310` WIP subledger & net requirements | [ADR-017](docs/adr/ADR-017-mrp.md) |
+| Pre-Phase 4 Staging Security Hardening (VULN-06 encryption, PostgreSQL RLS, sessions, CORS/secret scan) | [ADR-018](docs/adr/ADR-018-staging-security-hardening.md) |
 
 A few cross-cutting decisions that don't have their own numbered ADR but
 matter to anyone reading the code:
@@ -541,8 +542,8 @@ are exposed via `/api/v1/workflows` and `app/cli/manage_workflows.py`.
 
 ```
 app/
-├── core/            # settings, async DB session mgmt, tenancy context/filter,
-│                     # event bus, hook registry, workflow/customfields/plugins/auth ports, exceptions
+├── core/            # settings, crypto (VULN-06 MultiFernet), async DB session + RLS hooks,
+│                     # tenancy context/filter, event bus, hook registry, platform ports, exceptions
 ├── modules/
 │   ├── masterdata/   # companies, customers, suppliers, products, UoM, accounts, currencies
 │   ├── ledger/       # journal entries, accounting periods, trial balance, posting engine
@@ -560,9 +561,10 @@ app/
 │   ├── workflow/     # ADR-012 workflow definitions/instances service, runtime approval gate, /api/v1/workflows router
 │   └── integration/  # ADR-013 webhooks, outbox worker, batch engine, /api/v1/integrations router
 ├── plugins/          # credit_limit.py — built-in customer credit limit guard manifest
-├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, run_outbox_worker, seed_demo, demo_o2c, demo_platform, demo_suites, replay_outbox, rebuild_ar_balances, rebuild_ap_balances, rebuild_stock_summary, rebuild_cost_summaries, rebuild_mrp_balances
-└── main.py           # FastAPI app, AuthenticationMiddleware, route classification, exception handlers, router mounting
+├── cli/              # bootstrap_admin, manage_companies, manage_reference_data, manage_plugins, manage_custom_fields, manage_workflows, manage_integrations, manage_sessions, run_outbox_worker, seed_demo, demo_o2c, demo_platform, demo_suites, replay_outbox, rebuild_ar_balances, rebuild_ap_balances, rebuild_stock_summary, rebuild_cost_summaries, rebuild_mrp_balances
+└── main.py           # FastAPI app, outermost CORS + AuthenticationMiddleware, runtime security checks, route classification, exception handlers, router mounting
 alembic/               # async migrations; single source of truth is app.core.settings
+scripts/               # secret_scan.py (ADR-018), d5_security_gate.py
 docs/
 ├── adr/               # architecture decision records, incl. WEEK7-phase1-hardening-brief.md
 │                       # (see the Design Decisions table above)
@@ -579,8 +581,9 @@ tests/
 `ruff check` (lint) → `ruff format --check` → `mypy` → `import-linter`
 (module independence contracts — business modules may not import each
 other's `models`/`service`, core may not import business modules or
-plugins) → `pytest` against a real Postgres service container. Same
-sequence as `make check`. See `.github/workflows/ci.yml`.
+plugins) → `secret-scan` (`scripts/secret_scan.py --git-history`) → `pytest`
+against a real Postgres service container. Same sequence as `make check`. See
+`.github/workflows/ci.yml`.
 
 ## License
 

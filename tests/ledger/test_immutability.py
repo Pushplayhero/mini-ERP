@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tenancy import company_context
 from tests.conftest import company_headers
 from tests.ledger._helpers import balanced_lines, create_account, create_company, create_period
 
@@ -45,7 +46,7 @@ async def test_direct_sql_update_on_journal_entries_is_blocked(
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
     entry = await _post_entry(client, company_id, cash, revenue)
 
-    with pytest.raises(DBAPIError):
+    with company_context(company_id), pytest.raises(DBAPIError):
         await db_session.execute(
             text("UPDATE journal_entries SET entry_no = 'HACKED' WHERE id = :id"),
             {"id": entry["id"]},
@@ -62,7 +63,7 @@ async def test_direct_sql_delete_on_journal_entries_is_blocked(
     revenue = await create_account(client, company_id, "4000", "Revenue", "revenue")
     entry = await _post_entry(client, company_id, cash, revenue)
 
-    with pytest.raises(DBAPIError):
+    with company_context(company_id), pytest.raises(DBAPIError):
         await db_session.execute(
             text("DELETE FROM journal_entries WHERE id = :id"), {"id": entry["id"]}
         )
@@ -79,7 +80,7 @@ async def test_direct_sql_update_on_journal_lines_is_blocked(
     entry = await _post_entry(client, company_id, cash, revenue)
     line_id = entry["lines"][0]["id"]
 
-    with pytest.raises(DBAPIError):
+    with company_context(company_id), pytest.raises(DBAPIError):
         await db_session.execute(
             text("UPDATE journal_lines SET debit = 999999 WHERE id = :id"), {"id": line_id}
         )
@@ -96,7 +97,7 @@ async def test_direct_sql_delete_on_journal_lines_is_blocked(
     entry = await _post_entry(client, company_id, cash, revenue)
     line_id = entry["lines"][0]["id"]
 
-    with pytest.raises(DBAPIError):
+    with company_context(company_id), pytest.raises(DBAPIError):
         await db_session.execute(text("DELETE FROM journal_lines WHERE id = :id"), {"id": line_id})
     await db_session.rollback()
 

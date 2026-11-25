@@ -95,3 +95,11 @@ class CreditLimitExceededError(ConflictError):
     indistinguishable, to `app.main`'s handlers, from any other
     `ConflictError` a module might raise.
     """
+
+
+class SecretEncryptionConfigError(AppError):
+    """Raised when application secret encryption keys are missing or invalid."""
+
+
+class SecretDecryptionError(AppError):
+    """Raised when an encrypted secret fails decryption or integrity validation."""

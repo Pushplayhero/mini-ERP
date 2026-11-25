@@ -218,16 +218,17 @@ async def test_batch_export_customer_csv_and_json(
         permission_codes=frozenset({"platform.integration.read"}),
     )
 
-    c1 = Customer(
-        company_id=co_id,
-        code="EXP01",
-        name="=HYPERLINK() Dangerous Customer",
-        credit_limit=Decimal("12000.000000"),
-        currency_code="TWD",
-        payment_terms_days=30,
-    )
-    db_session.add(c1)
-    await db_session.commit()
+    with company_context(co_id):
+        c1 = Customer(
+            company_id=co_id,
+            code="EXP01",
+            name="=HYPERLINK() Dangerous Customer",
+            credit_limit=Decimal("12000.000000"),
+            currency_code="TWD",
+            payment_terms_days=30,
+        )
+        db_session.add(c1)
+        await db_session.commit()
 
     with company_context(co_id), actor_context(actor):
         # 1. Export CSV with BOM
@@ -331,18 +332,19 @@ async def test_batch_import_preserves_literal_text_and_validates_custom_data(
         permission_codes=frozenset({"platform.integration.import", "platform.integration.read"}),
     )
 
-    cf_def = CustomFieldDefinition(
-        company_id=co_id,
-        entity_type="customer",
-        field_key="vip_tier",
-        label="VIP Tier",
-        field_type="ENUM",
-        is_required=True,
-        is_active=True,
-        validation_rules={"choices": ["GOLD", "SILVER"]},
-    )
-    db_session.add(cf_def)
-    await db_session.commit()
+    with company_context(co_id):
+        cf_def = CustomFieldDefinition(
+            company_id=co_id,
+            entity_type="customer",
+            field_key="vip_tier",
+            label="VIP Tier",
+            field_type="ENUM",
+            is_required=True,
+            is_active=True,
+            validation_rules={"choices": ["GOLD", "SILVER"]},
+        )
+        db_session.add(cf_def)
+        await db_session.commit()
 
     orig_validator = cf_port.get_custom_data_validator()
     cf_port.set_custom_data_validator(validate_and_normalize_custom_data_unchecked)
@@ -611,61 +613,62 @@ async def test_batch_export_vendor_bill_and_vendor_payment(
         permission_codes=frozenset({"platform.integration.read"}),
     )
 
-    sup = Supplier(
-        company_id=co_id,
-        code="APSUP1",
-        name="AP Vendor",
-        currency_code="TWD",
-        payment_terms_days=30,
-    )
-    db_session.add(sup)
-    await db_session.flush()
+    with company_context(co_id):
+        sup = Supplier(
+            company_id=co_id,
+            code="APSUP1",
+            name="AP Vendor",
+            currency_code="TWD",
+            payment_terms_days=30,
+        )
+        db_session.add(sup)
+        await db_session.flush()
 
-    now_utc = datetime.now(timezone.utc)  # noqa: UP017
-    po = PurchaseOrder(
-        company_id=co_id,
-        order_no="PO-2026-000099",
-        supplier_id=sup.id,
-        status=PurchaseOrderStatus.RECEIVED,
-        currency_code="TWD",
-        total=Decimal("250.000000"),
-        snapshot_supplier_code="APSUP1",
-        snapshot_supplier_name="AP Vendor",
-        received_at=now_utc,
-    )
-    db_session.add(po)
-    await db_session.flush()
+        now_utc = datetime.now(timezone.utc)  # noqa: UP017
+        po = PurchaseOrder(
+            company_id=co_id,
+            order_no="PO-2026-000099",
+            supplier_id=sup.id,
+            status=PurchaseOrderStatus.RECEIVED,
+            currency_code="TWD",
+            total=Decimal("250.000000"),
+            snapshot_supplier_code="APSUP1",
+            snapshot_supplier_name="AP Vendor",
+            received_at=now_utc,
+        )
+        db_session.add(po)
+        await db_session.flush()
 
-    today_utc = now_utc.date()
-    bill = VendorBill(
-        company_id=co_id,
-        bill_no="BILL-2026-000001",
-        order_id=po.id,
-        supplier_id=sup.id,
-        supplier_invoice_no="SUP-BILL-99",
-        status=VendorBillStatus.OPEN,
-        currency_code="TWD",
-        order_received_at=now_utc,
-        bill_date=today_utc,
-        due_date=date(today_utc.year, today_utc.month, today_utc.day),
-        total=Decimal("250.000000"),
-        settled_amount=Decimal("0.000000"),
-        snapshot_supplier_code="APSUP1",
-        snapshot_supplier_name="AP Vendor",
-    )
-    pay = VendorPayment(
-        company_id=co_id,
-        payment_no="APAY-2026-000001",
-        supplier_id=sup.id,
-        status=VendorPaymentStatus.ISSUED,
-        external_ref="AP-EXP-REF-1",
-        currency_code="TWD",
-        amount=Decimal("250.000000"),
-        allocated_amount=Decimal("0.000000"),
-        paid_at=now_utc,
-    )
-    db_session.add_all([bill, pay])
-    await db_session.commit()
+        today_utc = now_utc.date()
+        bill = VendorBill(
+            company_id=co_id,
+            bill_no="BILL-2026-000001",
+            order_id=po.id,
+            supplier_id=sup.id,
+            supplier_invoice_no="SUP-BILL-99",
+            status=VendorBillStatus.OPEN,
+            currency_code="TWD",
+            order_received_at=now_utc,
+            bill_date=today_utc,
+            due_date=date(today_utc.year, today_utc.month, today_utc.day),
+            total=Decimal("250.000000"),
+            settled_amount=Decimal("0.000000"),
+            snapshot_supplier_code="APSUP1",
+            snapshot_supplier_name="AP Vendor",
+        )
+        pay = VendorPayment(
+            company_id=co_id,
+            payment_no="APAY-2026-000001",
+            supplier_id=sup.id,
+            status=VendorPaymentStatus.ISSUED,
+            external_ref="AP-EXP-REF-1",
+            currency_code="TWD",
+            amount=Decimal("250.000000"),
+            allocated_amount=Decimal("0.000000"),
+            paid_at=now_utc,
+        )
+        db_session.add_all([bill, pay])
+        await db_session.commit()
 
     with company_context(co_id), actor_context(actor):
         csv_bill, bill_job = await batch.export_batch_data(

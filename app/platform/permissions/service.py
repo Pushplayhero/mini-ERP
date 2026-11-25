@@ -1,7 +1,7 @@
-"""platform.permissions service layer (ADR-009 Decision 2/3/8).
+"""platform.permissions service layer (ADR-009 Decision 2/3/8 & ADR-018).
 
-`login()` / `resolve_actor()` / `switch_company()` / `logout()` — the sole
-producer of `app.core.authorization.ActorContext` (ADR-009 Decision 4).
+`login()` / `resolve_actor()` / `switch_company()` / `rotate_session()` /
+`logout()` / `logout_all()` — the sole producer of `app.core.authorization.ActorContext`.
 Session-lifecycle entry points call `require_current_actor()` and may raise
 `ActionDeniedError` when called without an actor. Ownership and entitlement failures
 remain this module's own exceptions; `router.py` maps its domain exceptions to HTTP
@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import (
@@ -28,7 +28,7 @@ from app.core.authorization import (
     require_current_actor,
 )
 from app.core.exceptions import AppError
-from app.core.settings import get_settings
+from app.core.settings import Settings, get_settings
 from app.platform.permissions.context import (
     InvalidSessionError as InvalidSessionError,  # noqa: PLC0414
 )
@@ -71,6 +71,15 @@ def _hash_token(raw_token: str) -> str:
     need.
     """
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _truncate_metadata(value: str | None, max_len: int) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned[:max_len]
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +125,35 @@ class LoginResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RotateSessionResult:
+    raw_token: str
+    session_id: uuid.UUID
+    user_id: uuid.UUID
+    active_company_id: uuid.UUID
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedActor:
     actor_context: ActorContext
     session_id: uuid.UUID
     active_company_id: uuid.UUID
+
+
+def _session_invalidation_reason(
+    session_row: SessionModel,
+    now: datetime,
+    settings: Settings,
+) -> str | None:
+    """Return error reason if `session_row` exceeded hard TTL or idle timeout."""
+    if session_row.expires_at <= now:
+        return "Session has expired."
+    idle_deadline = session_row.last_active_at + timedelta(
+        minutes=settings.session_idle_timeout_minutes
+    )
+    if idle_deadline <= now:
+        return "Session has expired due to inactivity."
+    return None
 
 
 async def _resolve_permission_codes(
@@ -139,20 +173,15 @@ async def _resolve_permission_codes(
 
 
 async def login(
-    session: AsyncSession, email: str, password: str, company_id: uuid.UUID | None
+    session: AsyncSession,
+    email: str,
+    password: str,
+    company_id: uuid.UUID | None,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> LoginResult:
-    """ADR-009 Decision 8: multi-company selection, entitlement-validated immediately.
-
-    Codex diff-review finding (Slice B round 1): `verify_password()` — an
-    intentionally slow Argon2id call — must run exactly once on every login
-    attempt, regardless of whether the email resolves to a usable user.
-    Short-circuiting past it for an unknown/disabled-user email would make
-    those two cases measurably faster than a known-active-user-wrong-
-    password attempt, a timing side channel that defeats
-    `InvalidCredentialsError`'s whole "one response for all three causes"
-    point — the response body already refuses to distinguish them; the
-    clock must not either.
-    """
+    """ADR-009 Decision 8 & ADR-018: login with constant-time Argon2id and session cap."""
     result = await session.execute(select(User).where(func.lower(User.email) == email.lower()))
     found_user = result.scalars().first()
     usable_user = found_user if (found_user is not None and found_user.is_active) else None
@@ -184,14 +213,49 @@ async def login(
             f"User {user.id} has multiple company entitlements; company_id is required."
         )
 
-    raw_token = secrets.token_urlsafe(32)
     settings = get_settings()
-    expires_at = datetime.now(UTC) + timedelta(hours=settings.session_ttl_hours)
+    now = datetime.now(UTC)
+
+    # Serialize per-user session issuance under row locks (locking User first so
+    # zero-row / delete+insert READ COMMITTED races cannot exceed the cap),
+    # purge stale sessions, and evict least-recently-active sessions beyond limit.
+    await session.execute(select(User.id).where(User.id == user.id).with_for_update())
+    existing_sessions = list(
+        (
+            await session.scalars(
+                select(SessionModel)
+                .where(SessionModel.user_id == user.id)
+                .order_by(
+                    SessionModel.last_active_at.asc(),
+                    SessionModel.created_at.asc(),
+                    SessionModel.id.asc(),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+    active_sessions: list[SessionModel] = []
+    for existing in existing_sessions:
+        if _session_invalidation_reason(existing, now, settings) is not None:
+            await session.delete(existing)
+        else:
+            active_sessions.append(existing)
+
+    overflow = len(active_sessions) - (settings.session_max_active_per_user - 1)
+    for stale in active_sessions[: max(0, overflow)]:
+        await session.delete(stale)
+
+    raw_token = secrets.token_urlsafe(32)
+    expires_at = now + timedelta(hours=settings.session_ttl_hours)
     session_row = SessionModel(
         user_id=user.id,
         token_hash=_hash_token(raw_token),
         active_company_id=active_company_id,
         expires_at=expires_at,
+        last_active_at=now,
+        ip_address=_truncate_metadata(ip_address, 64),
+        user_agent=_truncate_metadata(user_agent, 255),
     )
     session.add(session_row)
     await session.commit()
@@ -206,30 +270,28 @@ async def login(
 
 
 async def resolve_actor(session: AsyncSession, raw_token: str) -> ResolvedActor:
-    """Resolve a bearer token to a fresh `ActorContext` (ADR-009 Decision 8:
-
-    per-request revalidation, never cached beyond the `sessions` row).
-    Raises `InvalidSessionError` (401) for a missing/expired session, or
-    `UserDisabledError` (403) for a valid session whose user is now
-    disabled — the two are deliberately distinct exceptions, not one,
-    since ADR-009 Decision 8 requires they map to different HTTP statuses.
-    """
+    """Resolve a bearer token to a fresh `ActorContext` (ADR-009 Decision 8 & ADR-018)."""
     token_hash = _hash_token(raw_token)
     result = await session.execute(
-        select(SessionModel).where(SessionModel.token_hash == token_hash)
+        select(SessionModel)
+        .where(SessionModel.token_hash == token_hash)
+        .execution_options(populate_existing=True)
     )
     session_row = result.scalars().first()
     if session_row is None:
         raise InvalidSessionError("No session matches the presented token.")
-    if session_row.expires_at <= datetime.now(UTC):
-        raise InvalidSessionError("Session has expired.")
 
-    user_result = await session.execute(select(User).where(User.id == session_row.user_id))
+    settings = get_settings()
+    now = datetime.now(UTC)
+    invalid_reason = _session_invalidation_reason(session_row, now, settings)
+    if invalid_reason is not None:
+        raise InvalidSessionError(invalid_reason)
+
+    user_result = await session.execute(
+        select(User).where(User.id == session_row.user_id).execution_options(populate_existing=True)
+    )
     user = user_result.scalars().first()
     if user is None:
-        # A session whose user no longer resolves is indistinguishable,
-        # from the caller's point of view, from a session that never
-        # existed at all — same 401 as a bad token.
         raise InvalidSessionError(f"Session {session_row.id} has no resolvable user.")
     if not user.is_active:
         raise UserDisabledError(f"User {user.id} is disabled.")
@@ -237,6 +299,14 @@ async def resolve_actor(session: AsyncSession, raw_token: str) -> ResolvedActor:
     permission_codes = await _resolve_permission_codes(
         session, user.id, session_row.active_company_id
     )
+
+    elapsed_seconds = (now - session_row.last_active_at).total_seconds()
+    if elapsed_seconds >= settings.session_touch_interval_seconds:
+        await session.execute(
+            update(SessionModel).where(SessionModel.id == session_row.id).values(last_active_at=now)
+        )
+        await session.commit()
+
     actor_ctx = ActorContext(user_id=user.id, permission_codes=permission_codes)
     return ResolvedActor(
         actor_context=actor_ctx,
@@ -253,8 +323,13 @@ def _assert_current_actor_owns_session(session_row: SessionModel) -> None:
         raise InvalidSessionError("The current actor does not own the requested session.")
 
 
-async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.UUID:
-    """Re-point a session's active company, re-checking entitlement immediately."""
+async def _lock_owned_active_session(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    settings: Settings,
+) -> tuple[SessionModel, User]:
+    """Lock the current session row FOR UPDATE and validate ownership, TTL, idle, and user."""
     require_current_actor()
     session_id = require_current_session_id()
     result = await session.execute(
@@ -269,8 +344,9 @@ async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.U
 
     _assert_current_actor_owns_session(session_row)
 
-    if session_row.expires_at <= datetime.now(UTC):
-        raise InvalidSessionError("Session has expired.")
+    invalid_reason = _session_invalidation_reason(session_row, now, settings)
+    if invalid_reason is not None:
+        raise InvalidSessionError(invalid_reason)
 
     user_result = await session.execute(
         select(User).where(User.id == session_row.user_id).execution_options(populate_existing=True)
@@ -280,6 +356,15 @@ async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.U
         raise InvalidSessionError(f"Session {session_row.id} has no resolvable user.")
     if not user.is_active:
         raise UserDisabledError(f"User {user.id} is disabled.")
+
+    return session_row, user
+
+
+async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.UUID:
+    """Re-point a session's active company, re-checking entitlement immediately."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    session_row, _ = await _lock_owned_active_session(session, now=now, settings=settings)
 
     entitled = await session.execute(
         select(UserCompanyRole.id).where(
@@ -293,15 +378,33 @@ async def switch_company(session: AsyncSession, company_id: uuid.UUID) -> uuid.U
         )
 
     session_row.active_company_id = company_id
+    session_row.last_active_at = now
     await session.commit()
     return company_id
 
 
-async def logout(session: AsyncSession) -> None:
-    """Revoke a session — deletion, not a soft-revoke flag.
+async def rotate_session(session: AsyncSession) -> RotateSessionResult:
+    """Atomically rotate the current bearer token without extending absolute `expires_at`."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    session_row, user = await _lock_owned_active_session(session, now=now, settings=settings)
 
-    ADR-009 Decision 3: "Revocation: Trivial — delete the row."
-    """
+    new_raw_token = secrets.token_urlsafe(32)
+    session_row.token_hash = _hash_token(new_raw_token)
+    session_row.last_active_at = now
+    await session.commit()
+
+    return RotateSessionResult(
+        raw_token=new_raw_token,
+        session_id=session_row.id,
+        user_id=user.id,
+        active_company_id=session_row.active_company_id,
+        expires_at=session_row.expires_at,
+    )
+
+
+async def logout(session: AsyncSession) -> None:
+    """Revoke a session — deletion, not a soft-revoke flag."""
     require_current_actor()
     session_id = require_current_session_id()
     result = await session.execute(
@@ -320,6 +423,51 @@ async def logout(session: AsyncSession) -> None:
     await session.commit()
 
 
+def _rowcount(result: object) -> int:
+    count = getattr(result, "rowcount", 0)
+    return int(count) if isinstance(count, int) else 0
+
+
+async def logout_all(session: AsyncSession) -> int:
+    """Revoke every active session owned by the current authenticated user."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    _, user = await _lock_owned_active_session(session, now=now, settings=settings)
+
+    res = await session.execute(delete(SessionModel).where(SessionModel.user_id == user.id))
+    await session.commit()
+    return _rowcount(res)
+
+
+async def purge_expired_sessions(session: AsyncSession) -> int:
+    """Delete all sessions past absolute expiry or idle timeout (operator CLI)."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    idle_cutoff = now - timedelta(minutes=settings.session_idle_timeout_minutes)
+    res = await session.execute(
+        delete(SessionModel).where(
+            or_(
+                SessionModel.expires_at <= now,
+                SessionModel.last_active_at <= idle_cutoff,
+            )
+        )
+    )
+    await session.commit()
+    return _rowcount(res)
+
+
+async def revoke_user_sessions_by_email(
+    session: AsyncSession, email: str
+) -> tuple[uuid.UUID | None, int]:
+    """Delete all sessions for the user identified by `email` (operator CLI)."""
+    user = await session.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
+    if user is None:
+        return None, 0
+    res = await session.execute(delete(SessionModel).where(SessionModel.user_id == user.id))
+    await session.commit()
+    return user.id, _rowcount(res)
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap-only helpers (used by `app/cli/bootstrap_admin.py`, Rule 10b —
 # no `ActorContext`/`require_permission()` involved, see that module).
@@ -329,30 +477,10 @@ async def logout(session: AsyncSession) -> None:
 async def add_user_with_grant(
     session: AsyncSession, *, email: str, password: str, company_id: uuid.UUID, role_code: str
 ) -> User:
-    """Non-committing: adds `User` + `UserCompanyRole` to the session,
-
-    flushing (assigning both their ids) but never committing — the caller
-    owns the transaction boundary and must commit.
-
-    Codex diff-review finding (Slice B rounds 1/2): `bootstrap_admin.py`
-    originally called separate, each-self-committing `create_user()` +
-    `grant_role()`. A failure between the two left a real `users` row with
-    no entitlement, permanently unrecoverable (`bootstrap_admin.py` refuses
-    to run a second time once any `users` row exists, Rule 10b). Round 1's
-    first fix merged the two writes into one commit here but round 2 caught
-    that this alone was insufficient: `bootstrap_admin.py` also creates
-    reference data/a company *before* calling this, through
-    `masterdata_service`'s own self-committing `create_currency`/
-    `create_uom`/`create_company` — each of those commits independently
-    ends the whole advisory-lock-protected transaction early, defeating the
-    lock. `bootstrap_admin.py` now builds every write (reference data,
-    company, user, grant) in one uncommitted transaction and calls this
-    non-committing function last, committing exactly once itself at the
-    very end — see that module for the full sequence.
-    """
+    """Non-committing: adds `User` + `UserCompanyRole` to the session."""
     user = User(email=email, password_hash=hash_password(password))
     session.add(user)
-    await session.flush()  # assigns user.id without committing
+    await session.flush()
     grant = UserCompanyRole(user_id=user.id, company_id=company_id, role_code=role_code)
     session.add(grant)
     await session.flush()

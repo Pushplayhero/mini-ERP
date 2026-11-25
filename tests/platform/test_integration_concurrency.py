@@ -23,8 +23,14 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core import events
+from app.core.crypto import encrypt_secret
+from app.core.tenancy import company_context
 from app.platform.integration.batch import neutralize_formula, sanitize_row_for_csv
 from app.platform.integration.models import WebhookDelivery, WebhookEndpoint
+from app.platform.integration.signing import (
+    generate_webhook_secret,
+    get_secret_prefix,
+)
 from app.platform.integration.ssrf import (
     SSRFValidationError,
     validate_webhook_url,
@@ -47,18 +53,20 @@ async def test_concurrent_workers_skip_locked_no_double_claim(
     """Two concurrent workers claim from the same queue; no delivery is claimed twice."""
     co_id = await create_company(db_session, "CONC_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Concurrent Worker Endpoint",
         url="https://api.example.com/conc",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     # Pre-seed 10 deliveries
     delivery_ids: list[uuid.UUID] = []
@@ -122,18 +130,20 @@ async def test_crash_recovery_lease_expiry_and_redelivery(
     """
     co_id = await create_company(db_session, "RECOVER_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Recovery Endpoint",
         url="https://api.example.com/recovery",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -258,18 +268,20 @@ async def test_webhook_redirect_prevention(
     """HTTP client does not follow redirects to protect against SSRF bounce attacks."""
     co_id = await create_company(db_session, "REDIRECT_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Redirect Hook",
         url="https://api.partner.com/redirect",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -418,18 +430,20 @@ async def test_dispatch_ssrf_revalidation_dns_rebinding_defense(
     """
     co_id = await create_company(db_session, "REBIND_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Rebinding Hook",
         url="https://rebinding.attacker.com/webhook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -477,8 +491,9 @@ def test_multi_signature_header_verification() -> None:
     from app.platform.integration.signing import sign_webhook_payload, verify_webhook_signature
 
     payload = b'{"event":"test"}'
-    old_secret = "whsec_old0000000000000000000000000000000000000000000000"
-    current_secret = "whsec_cur0000000000000000000000000000000000000000000000"
+    old_secret = generate_webhook_secret()
+    current_secret = generate_webhook_secret()
+    invalid_secret = generate_webhook_secret()
 
     # Generate signature for both secrets with same timestamp
     ts = 1700000000
@@ -502,7 +517,7 @@ def test_multi_signature_header_verification() -> None:
     assert (
         verify_webhook_signature(
             payload,
-            "whsec_invalid00000000000000000000000000000000000000000000",
+            invalid_secret,
             combined_header,
             current_time=ts,
         )
@@ -549,17 +564,19 @@ async def test_pinned_ip_network_backend_closes_dns_rebinding_and_no_second_dns(
 
     # 2. Live dispatch resolves DNS once and dials the pinned IP instead of re-resolving hostname.
     co_id = await create_company(db_session, "PIN_CO")
+    plain_secret = generate_webhook_secret()
     ep = WebhookEndpoint(
         company_id=co_id,
         name="Pinned Hook",
         url="https://pinned.example.com/hook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(ep)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(ep)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -702,17 +719,19 @@ async def test_outbox_fanout_poison_pill_and_dual_worker_skip_locked(
     from app.platform.integration.worker import fan_out_outbox_events
 
     co_id = await create_company(db_session, "FANOUT_CO")
+    plain_secret = generate_webhook_secret()
     ep = WebhookEndpoint(
         company_id=co_id,
         name="Fanout Target",
         url="https://api.example.com/fanout",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(ep)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(ep)
+        await db_session.flush()
 
     # Poison-pill non-dict JSONB string + 4 valid outbox events
     rows = [
@@ -743,26 +762,33 @@ async def test_cross_tenant_fair_claim_round_robin(
     co_a = await create_company(db_session, "FAIR_A")
     co_b = await create_company(db_session, "FAIR_B")
 
+    secret_a = generate_webhook_secret()
     ep_a = WebhookEndpoint(
         company_id=co_a,
         name="Tenant A Hook",
         url="https://api.example.com/a",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(secret_a),
+        secret_prefix=get_secret_prefix(secret_a),
         event_types=["*"],
         is_active=True,
     )
+    with company_context(co_a):
+        db_session.add(ep_a)
+        await db_session.flush()
+
+    secret_b = generate_webhook_secret()
     ep_b = WebhookEndpoint(
         company_id=co_b,
         name="Tenant B Hook",
         url="https://api.example.com/b",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(secret_b),
+        secret_prefix=get_secret_prefix(secret_b),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add_all([ep_a, ep_b])
-    await db_session.flush()
+    with company_context(co_b):
+        db_session.add(ep_b)
+        await db_session.flush()
 
     now = datetime.now(UTC)
     for i in range(5):
@@ -825,21 +851,22 @@ async def test_dual_secret_emission_error_truncation_and_batch_resilience(
     from app.platform.integration.worker import process_outbox_batch
 
     co_id = await create_company(db_session, "DUAL_EMIT_CO")
-    cur_secret = "whsec_cur1234567890123456789012345678901234567890123456"
-    prev_secret = "whsec_prv1234567890123456789012345678901234567890123456"
+    cur_secret = generate_webhook_secret()
+    prev_secret = generate_webhook_secret()
     ep = WebhookEndpoint(
         company_id=co_id,
         name="Dual Secret Hook",
         url="https://93.184.216.34/dual",
-        signing_secret=cur_secret,
-        previous_signing_secret=prev_secret,
+        signing_secret=encrypt_secret(cur_secret),
+        previous_signing_secret=encrypt_secret(prev_secret),
         previous_secret_expires_at=datetime.now(UTC) + timedelta(minutes=5),
-        secret_prefix=cur_secret[:12],
+        secret_prefix=get_secret_prefix(cur_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(ep)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(ep)
+        await db_session.flush()
 
     deliv_ids: list[uuid.UUID] = []
     for i in range(3):
@@ -903,6 +930,23 @@ async def test_dual_secret_emission_error_truncation_and_batch_resilience(
     assert d3 is not None and d3.status == "PENDING"
 
 
+async def _seed_dns_retry_endpoint(db_session: AsyncSession, co_id: uuid.UUID) -> WebhookEndpoint:
+    plain_secret = generate_webhook_secret()
+    ep = WebhookEndpoint(
+        company_id=co_id,
+        name="DNS Retry Hook",
+        url="https://api.example.org/hook",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
+        event_types=["*"],
+        is_active=True,
+    )
+    with company_context(co_id):
+        db_session.add(ep)
+        await db_session.flush()
+    return ep
+
+
 @pytest.mark.asyncio
 async def test_idn_pinning_and_transient_dns_retry_behavior(
     db_session: AsyncSession,
@@ -962,17 +1006,7 @@ async def test_idn_pinning_and_transient_dns_retry_behavior(
     # 3. Worker treats transient socket.gaierror as retryable PENDING (not DEAD),
     # while permanent blocked IP transitions straight to DEAD.
     co_id = await create_company(db_session, "DNS_RETRY_CO")
-    ep = WebhookEndpoint(
-        company_id=co_id,
-        name="DNS Retry Hook",
-        url="https://api.example.org/hook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
-        event_types=["*"],
-        is_active=True,
-    )
-    db_session.add(ep)
-    await db_session.flush()
+    ep = await _seed_dns_retry_endpoint(db_session, co_id)
 
     def _make_delivery_and_claim() -> tuple[uuid.UUID, ClaimedDelivery]:
         return uuid.uuid4(), ClaimedDelivery(

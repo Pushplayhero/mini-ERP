@@ -27,6 +27,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import events
+from app.core.crypto import encrypt_secret
 from app.core.tenancy import company_context
 from app.platform.integration import service
 from app.platform.integration.models import (
@@ -35,6 +36,10 @@ from app.platform.integration.models import (
     WebhookEndpoint,
 )
 from app.platform.integration.schemas import WebhookEndpointCreate
+from app.platform.integration.signing import (
+    generate_webhook_secret,
+    get_secret_prefix,
+)
 from app.platform.integration.worker import (
     claim_due_deliveries,
     dispatch_single_delivery,
@@ -139,20 +144,22 @@ async def test_worker_delivery_success_and_retry_backoff(
 ) -> None:
     co_id = await create_company(db_session, "WORKER_DISP_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Target Dispatch",
         url="https://api.example.com/webhook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
         timeout_seconds=Decimal("5.00"),
         max_attempts=3,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -237,20 +244,22 @@ async def test_worker_dlq_routing_on_max_attempts(
 ) -> None:
     co_id = await create_company(db_session, "WORKER_DLQ_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Target DLQ",
         url="https://api.example.com/webhook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=encrypt_secret(plain_secret),
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
         timeout_seconds=Decimal("5.00"),
         max_attempts=2,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -302,18 +311,20 @@ async def test_worker_crash_lease_recovery(
 ) -> None:
     co_id = await create_company(db_session, "WORKER_LEASE_CO")
     ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         id=ep_id,
         company_id=co_id,
         name="Target Lease",
         url="https://api.example.com/webhook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
+        signing_secret=plain_secret,
+        secret_prefix=get_secret_prefix(plain_secret),
         event_types=["*"],
         is_active=True,
     )
-    db_session.add(endpoint)
-    await db_session.flush()
+    with company_context(co_id):
+        db_session.add(endpoint)
+        await db_session.flush()
 
     outbox_id = uuid.uuid4()
     await db_session.execute(
@@ -346,6 +357,27 @@ async def test_worker_crash_lease_recovery(
     assert claimed[0].id == delivery.id
 
 
+async def _seed_inflight_endpoint(db_session: AsyncSession, co_id: uuid.UUID) -> uuid.UUID:
+    ep_id = uuid.uuid4()
+    plain_secret = generate_webhook_secret()
+    with company_context(co_id):
+        db_session.add(
+            WebhookEndpoint(
+                id=ep_id,
+                company_id=co_id,
+                name="Inflight Hook",
+                url="https://api.example.com/webhook",
+                signing_secret=encrypt_secret(plain_secret),
+                secret_prefix=get_secret_prefix(plain_secret),
+                event_types=["*"],
+                is_active=True,
+                max_attempts=5,
+            )
+        )
+        await db_session.flush()
+    return ep_id
+
+
 @pytest.mark.asyncio
 async def test_worker_dispatch_defends_against_concurrent_settlement_and_deactivation(
     db_session: AsyncSession,
@@ -354,20 +386,7 @@ async def test_worker_dispatch_defends_against_concurrent_settlement_and_deactiv
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     co_id = await create_company(db_session, "WORKER_INFLIGHT_CO")
-    ep_id = uuid.uuid4()
-    endpoint = WebhookEndpoint(
-        id=ep_id,
-        company_id=co_id,
-        name="Inflight Hook",
-        url="https://api.example.com/webhook",
-        signing_secret="whsec_123456789012345678901234567890123456789012345678",
-        secret_prefix="whsec_123456",
-        event_types=["*"],
-        is_active=True,
-        max_attempts=5,
-    )
-    db_session.add(endpoint)
-    await db_session.flush()
+    ep_id = await _seed_inflight_endpoint(db_session, co_id)
 
     ob1, ob2 = uuid.uuid4(), uuid.uuid4()
     await db_session.execute(

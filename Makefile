@@ -9,7 +9,7 @@
 #   make demo-suites   # walk Phase 3 P2P, Costing, Multi-level MRP & O2C loop
 #   make check         # the same ruff/mypy/lint-imports/pytest sequence CI runs
 
-.PHONY: up down bootstrap seed demo demo-platform demo-suites test check clean
+.PHONY: up down bootstrap seed demo demo-platform demo-suites test secret-scan check clean
 
 APP_PORT ?= 8000
 
@@ -77,14 +77,18 @@ demo-suites:
 test:
 	uv run pytest
 
+secret-scan:
+	uv run python scripts/secret_scan.py --git-history
+
 # The exact sequence this project's CI and every Codex diff review this
 # week rely on locally -- ruff check, ruff format --check, mypy, import
-# boundary contracts, then the full test suite.
+# boundary contracts, secret scan, then the full test suite.
 check:
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run python -m mypy .
+	uv run python -m mypy app scripts
 	uv run lint-imports
+	uv run python scripts/secret_scan.py
 	uv run pytest
 
 clean:

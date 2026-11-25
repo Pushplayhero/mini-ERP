@@ -39,6 +39,7 @@ _BEFORE_MIGRATION_0015 = "e7f8a1b2c3d4"  # 0015's own down_revision (0014's revi
 _BEFORE_MIGRATION_0016 = "f8a1b2c3d4e5"  # 0016's own down_revision (0015's revision id)
 _BEFORE_MIGRATION_0017 = "a9b1c2d3e4f5"  # 0017's own down_revision (0016's revision id)
 _BEFORE_MIGRATION_0018 = "b1c2d3e4f5a6"  # 0018's own down_revision (0017's revision id)
+_BEFORE_MIGRATION_0019 = "c2d3e4f5a6b7"  # 0019's own down_revision (0018's revision id)
 
 EXPECTED_TABLES = {
     "companies",
@@ -2260,3 +2261,224 @@ async def test_migration_0018_downgrade_upgrade_cycle_is_safe(
 
         perm_count = await conn.scalar(text("SELECT COUNT(*) FROM permissions"))
         assert perm_count == 90
+
+
+@pytest.mark.asyncio
+async def test_migration_0019_schema_and_rls_matches_adr_018(
+    db_engine: AsyncEngine,
+) -> None:
+    """Verify 0019 staging hardening widens webhook secrets, enhances sessions,
+    creates mini_erp_app + GUC helpers, and enables + forces RLS on all 44 tenant tables.
+    """
+    from sqlalchemy import inspect
+
+    expected_rls_tables = {
+        "accounting_periods",
+        "accounts",
+        "bom_lines",
+        "boms",
+        "company_plugins",
+        "cost_adjustments",
+        "cost_moves",
+        "costing_sequences",
+        "custom_field_definitions",
+        "customers",
+        "integration_batch_jobs",
+        "invoices",
+        "journal_entries",
+        "journal_lines",
+        "ledger_sequences",
+        "mrp_sequences",
+        "payables_sequences",
+        "payment_allocation_commands",
+        "payment_allocations",
+        "payments",
+        "product_cost_summaries",
+        "products",
+        "purchase_order_lines",
+        "purchase_orders",
+        "purchase_sequences",
+        "receivables_sequences",
+        "sales_order_lines",
+        "sales_orders",
+        "sales_sequences",
+        "stock_moves",
+        "stock_summary",
+        "suppliers",
+        "vendor_bills",
+        "vendor_payment_allocation_commands",
+        "vendor_payment_allocations",
+        "vendor_payments",
+        "webhook_endpoints",
+        "work_order_lines",
+        "work_order_transactions",
+        "work_orders",
+        "workflow_approval_logs",
+        "workflow_definitions",
+        "workflow_instances",
+        "workflow_steps",
+    }
+    expected_non_rls_tables = {
+        "alembic_version",
+        "companies",
+        "currencies",
+        "exchange_rates",
+        "integration_outbox_receipts",
+        "outbox",
+        "permissions",
+        "role_permissions",
+        "roles",
+        "sessions",
+        "uom",
+        "uom_conversions",
+        "user_company_roles",
+        "users",
+        "webhook_deliveries",
+    }
+    assert len(expected_rls_tables) == 44
+
+    def _inspect(
+        sync_conn: Connection,
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        insp = inspect(sync_conn)
+        ep_cols = {c["name"]: c for c in insp.get_columns("webhook_endpoints")}
+        sess_cols = {c["name"]: c for c in insp.get_columns("sessions")}
+        sess_indexes = [dict(idx) for idx in insp.get_indexes("sessions")]
+        return ep_cols, sess_cols, sess_indexes
+
+    async with db_engine.connect() as conn:
+        ep_cols, sess_cols, sess_indexes = await conn.run_sync(_inspect)
+
+        assert getattr(ep_cols["signing_secret"]["type"], "length", None) == 512
+        assert getattr(ep_cols["previous_signing_secret"]["type"], "length", None) == 512
+
+        assert {"last_active_at", "ip_address", "user_agent"}.issubset(sess_cols.keys())
+        assert sess_cols["last_active_at"]["nullable"] is False
+        assert sess_cols["ip_address"]["nullable"] is True
+        assert getattr(sess_cols["ip_address"]["type"], "length", None) == 64
+        assert sess_cols["user_agent"]["nullable"] is True
+        assert getattr(sess_cols["user_agent"]["type"], "length", None) == 255
+        assert any(
+            idx["name"] == "ix_sessions_user_id_expires_at"
+            and idx["column_names"] == ["user_id", "expires_at"]
+            for idx in sess_indexes
+        )
+
+        role_row = (
+            await conn.execute(
+                text(
+                    "SELECT rolsuper, rolbypassrls, rolcanlogin "
+                    "FROM pg_roles WHERE rolname = 'mini_erp_app'"
+                )
+            )
+        ).one()
+        assert role_row == (False, False, False)
+
+        fn_names = set(
+            (
+                await conn.execute(
+                    text(
+                        "SELECT proname FROM pg_proc "
+                        "WHERE proname IN ('app_current_company_id', 'app_begin_rls_tx')"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert fn_names == {"app_current_company_id", "app_begin_rls_tx"}
+
+        rls_rows = (
+            await conn.execute(
+                text(
+                    "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'public' AND c.relkind = 'r'"
+                )
+            )
+        ).all()
+        rls_map = {name: (rls, force) for name, rls, force in rls_rows}
+        assert set(rls_map.keys()) == expected_rls_tables | expected_non_rls_tables
+        for t in expected_rls_tables:
+            assert rls_map[t] == (True, True), f"Expected RLS enabled+forced on {t}"
+        for t in expected_non_rls_tables:
+            assert rls_map[t] == (False, False), f"Expected no RLS on global/queue table {t}"
+
+
+@pytest.mark.asyncio
+async def test_migration_0019_downgrade_upgrade_cycle_is_safe(
+    db_engine: AsyncEngine,
+) -> None:
+    """Verify downgrade to _BEFORE_MIGRATION_0019 removes RLS policies/helpers/session
+    extensions and restores webhook column lengths, and upgrade head restores everything.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.core import db as core_db
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+
+    await core_db.dispose_engine()
+    try:
+        await asyncio.to_thread(command.downgrade, cfg, _BEFORE_MIGRATION_0019)
+
+        engine = core_db.get_engine()
+        async with engine.connect() as conn:
+            rls_enabled = (
+                await conn.execute(
+                    text(
+                        "SELECT c.relname FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = 'public' AND c.relkind = 'r' "
+                        "  AND (c.relrowsecurity OR c.relforcerowsecurity)"
+                    )
+                )
+            ).all()
+            assert rls_enabled == []
+
+            policy_count = await conn.scalar(
+                text(
+                    "SELECT COUNT(*) FROM pg_policies "
+                    "WHERE schemaname = 'public' AND policyname = 'tenant_isolation_policy'"
+                )
+            )
+            assert policy_count == 0
+
+            fn_count = await conn.scalar(
+                text(
+                    "SELECT COUNT(*) FROM pg_proc "
+                    "WHERE proname IN ('app_current_company_id', 'app_begin_rls_tx')"
+                )
+            )
+            assert fn_count == 0
+
+            def _check_downgraded(sync_conn: Connection) -> tuple[set[str], int | None]:
+                insp = inspect(sync_conn)
+                sess_cols = {c["name"] for c in insp.get_columns("sessions")}
+                ep_cols = {c["name"]: c for c in insp.get_columns("webhook_endpoints")}
+                return sess_cols, getattr(ep_cols["signing_secret"]["type"], "length", None)
+
+            sess_cols, secret_len = await conn.run_sync(_check_downgraded)
+            assert not ({"last_active_at", "ip_address", "user_agent"} & sess_cols)
+            assert secret_len == 255
+
+        await core_db.dispose_engine()
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    finally:
+        await core_db.dispose_engine()
+
+    engine = core_db.get_engine()
+    async with engine.connect() as conn:
+        forced_count = await conn.scalar(
+            text(
+                "SELECT COUNT(*) FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = 'public' AND c.relkind = 'r' "
+                "  AND c.relrowsecurity AND c.relforcerowsecurity"
+            )
+        )
+        assert forced_count == 44

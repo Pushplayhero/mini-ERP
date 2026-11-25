@@ -20,6 +20,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import require_current_actor, require_permission
+from app.core.crypto import (
+    decrypt_secret,
+    encrypt_secret,
+    needs_reencryption,
+    rotate_encrypted_secret,
+)
 from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.core.settings import get_settings
 from app.core.tenancy import require_current_company_id
@@ -142,7 +148,7 @@ async def create_webhook_endpoint(
         company_id=company_id,
         name=payload.name,
         url=validated_url,
-        signing_secret=secret,
+        signing_secret=encrypt_secret(secret),
         secret_prefix=prefix,
         event_types=payload.event_types,
         is_active=True,
@@ -267,19 +273,60 @@ async def rotate_webhook_endpoint_secret(
 
     new_secret = generate_webhook_secret()
     if overlap_seconds > 0:
-        endpoint.previous_signing_secret = endpoint.signing_secret
+        previous_plaintext = decrypt_secret(endpoint.signing_secret)
+        endpoint.previous_signing_secret = encrypt_secret(previous_plaintext)
         endpoint.previous_secret_expires_at = datetime.now(UTC) + timedelta(seconds=overlap_seconds)
     else:
         endpoint.previous_signing_secret = None
         endpoint.previous_secret_expires_at = None
 
-    endpoint.signing_secret = new_secret
+    endpoint.signing_secret = encrypt_secret(new_secret)
     endpoint.secret_prefix = get_secret_prefix(new_secret)
     endpoint.updated_by = actor.user_id
 
     await db.commit()
     await db.refresh(endpoint)
     return endpoint, new_secret
+
+
+async def reencrypt_webhook_secrets(db: AsyncSession) -> int:
+    """Encrypt plaintext or rotate retired-key webhook secrets to the active primary key."""
+    require_permission("platform.integration.manage")
+    company_id = require_current_company_id()
+    actor = require_current_actor()
+
+    await masterdata_service.lock_company_unchecked(db, company_id)
+    endpoints = list(
+        (
+            await db.scalars(
+                select(WebhookEndpoint)
+                .where(WebhookEndpoint.company_id == company_id)
+                .order_by(WebhookEndpoint.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+
+    updated_count = 0
+    for endpoint in endpoints:
+        changed = False
+        if needs_reencryption(endpoint.signing_secret):
+            endpoint.signing_secret = rotate_encrypted_secret(endpoint.signing_secret)
+            changed = True
+        if endpoint.previous_signing_secret is not None and needs_reencryption(
+            endpoint.previous_signing_secret
+        ):
+            endpoint.previous_signing_secret = rotate_encrypted_secret(
+                endpoint.previous_signing_secret
+            )
+            changed = True
+        if changed:
+            endpoint.updated_by = actor.user_id
+            updated_count += 1
+
+    await db.commit()
+    return updated_count
 
 
 async def deactivate_webhook_endpoint(

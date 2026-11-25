@@ -93,6 +93,18 @@ def build_parser() -> argparse.ArgumentParser:
     wh_del.add_argument("--company-code", required=True, help="Target company code")
     wh_del.add_argument("--endpoint-id", type=uuid.UUID, required=True, help="Endpoint UUID")
 
+    wh_reenc = wh_subs.add_parser(
+        "reencrypt-secrets",
+        help="Encrypt plaintext or re-encrypt webhook secrets under the active primary key",
+    )
+    reenc_target = wh_reenc.add_mutually_exclusive_group(required=True)
+    reenc_target.add_argument("--company-code", help="Target company code")
+    reenc_target.add_argument(
+        "--all-companies",
+        action="store_true",
+        help="Re-encrypt webhook secrets across every company",
+    )
+
     # 2. deliveries group
     deliv_parser = subparsers.add_parser("deliveries", help="Inspect and retry webhook deliveries")
     deliv_subs = deliv_parser.add_subparsers(dest="action", required=True)
@@ -188,6 +200,11 @@ async def _handle_webhooks(session: AsyncSession, args: argparse.Namespace) -> i
         print(f"Deactivated endpoint: {args.endpoint_id}")
         return 0
 
+    if args.action == "reencrypt-secrets":
+        updated = await service.reencrypt_webhook_secrets(session)
+        print(f"Re-encrypted webhook secrets for {updated} endpoint(s).")
+        return 0
+
     return 1
 
 
@@ -263,6 +280,24 @@ async def _amain(argv: list[str] | None = None, *, dispose: bool = True) -> int:
     session_factory = get_session_factory()
     try:
         async with session_factory() as session:
+            if (
+                args.group == "webhooks"
+                and args.action == "reencrypt-secrets"
+                and getattr(args, "all_companies", False)
+            ):
+                companies = list(
+                    (await session.scalars(select(Company).order_by(Company.code))).all()
+                )
+                total_updated = 0
+                for co in companies:
+                    with company_context(co.id), actor_context(INTEGRATION_CLI_ACTOR):
+                        total_updated += await service.reencrypt_webhook_secrets(session)
+                print(
+                    f"Re-encrypted webhook secrets across {len(companies)} company(ies): "
+                    f"{total_updated} endpoint(s) updated."
+                )
+                return 0
+
             company = await session.scalar(select(Company).where(Company.code == args.company_code))
             if company is None:
                 print(f"Error: Company '{args.company_code}' not found", file=sys.stderr)
