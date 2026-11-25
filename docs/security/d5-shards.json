@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "expected_total_files": 313,
+  "expected_total_files": 316,
   "common_knowledge_base": [
     "SECURITY.md",
     "docs/security/threat-model.md",
@@ -10,7 +10,7 @@
     "micro-v2": {
       "schema_version": "2.0",
       "activation": "active",
-      "expected_total_files": 313,
+      "expected_total_files": 316,
       "model": "gpt-5.6-sol",
       "effort": "high",
       "session_capacity": 3,
@@ -180,11 +180,12 @@
           ]
         },
         "u11_operations_e2e": {
-          "expected_file_count": 27,
+          "expected_file_count": 29,
           "paths": [
             "app/cli/__init__.py",
             "app/cli/demo_o2c.py",
             "app/cli/demo_platform.py",
+            "app/cli/demo_suites.py",
             "app/cli/seed_demo.py",
             "app/cli/manage_reference_data.py",
             "app/cli/manage_companies.py",
@@ -206,7 +207,7 @@
           ]
         },
         "u13_governance": {
-          "expected_file_count": 31,
+          "expected_file_count": 32,
           "paths": [
             ".github/workflows",
             ".gitignore",
@@ -267,7 +268,7 @@
     },
     {
       "id": "b_sales_inventory_plugins",
-      "expected_file_count": 78,
+      "expected_file_count": 79,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/__init__.py",
@@ -312,7 +313,7 @@
     },
     {
       "id": "d_masterdata_ops_migrations",
-      "expected_file_count": 63,
+      "expected_file_count": 64,
       "max_cost_usd": 11.75,
       "paths": [
         "app/modules/masterdata",
@@ -320,6 +321,7 @@
         "app/cli/bootstrap_admin.py",
         "app/cli/demo_o2c.py",
         "app/cli/demo_platform.py",
+        "app/cli/demo_suites.py",
         "app/cli/manage_reference_data.py",
         "app/cli/manage_companies.py",
         "app/cli/manage_plugins.py",
@@ -346,7 +348,7 @@
     },
     {
       "id": "e_docs_governance",
-      "expected_file_count": 33,
+      "expected_file_count": 34,
       "max_cost_usd": 11.75,
       "paths": [
         ".github/workflows",

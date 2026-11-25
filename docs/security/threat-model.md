@@ -1,11 +1,11 @@
 # mini-ERP Security Threat Model
 
-Status: Slice D.5 baseline (reconciled through Week 17 / ADR-017 MRP & Phase 2 hardening checkpoint). This document is scan context, not a certification.
+Status: Slice D.5 baseline (reconciled through `v0.3.0-suites` / Week 17 ADR-017 MRP & Phase 3 release checkpoint). This document is scan context, not a certification.
 
 ## System and assets
 
 - The API serves company-scoped ERP data backed by PostgreSQL; CLI/bootstrap paths can access the same domain services.
-- Assets: credentials and sessions (A-001), actor/company/role/permission state (A-002), company-scoped masterdata and transactions (A-003), ledger and receivable balances (A-004), database and migration integrity (A-005), audit and operational evidence (A-006), webhook signing secrets and delivery history (A-007), batch import/export job records and data files (A-008).
+- Assets: credentials and sessions (A-001), actor/company/role/permission state (A-002), company-scoped masterdata and transactions (A-003), ledger, receivable, payable, inventory valuation, and work-in-process balances (A-004), database and migration integrity (A-005), audit and operational evidence (A-006), webhook signing secrets and delivery history (A-007), batch import/export job records and data files (A-008).
 - Actors: authenticated users (AC-001), disabled or unauthenticated clients (AC-002), compromised user sessions (AC-003), operators running trusted CLI/bootstrap code (AC-004), and external callers controlling HTTP input (AC-005).
 
 ## Entry points and trust boundaries
@@ -57,7 +57,8 @@ Token rotation/expiry, database RLS, production TLS/CORS, external secret scanni
   - **Owner**: Project Maintainer.
   - **Rationale**: Outbound workers must possess the raw HMAC-SHA256 signing key to compute valid `X-Webhook-Signature` headers, and the Phase 2 API kernel intentionally avoids introducing new cryptography/KMS runtime dependencies into `pyproject.toml`.
   - **Compensating Controls**: HTTP API responses expose `signing_secret` strictly one time upon creation (`201 Created`) and secret rotation (`POST /rotate-secret`), never return `previous_signing_secret` in any schema, display only `secret_prefix` in list/detail/update/deactivation views, enforce tenant scoping + RBAC (`platform.integration.{read,manage}`), and rely on PostgreSQL credential/disk encryption boundaries (EP-008).
-  - **Expiry Date**: Phase 3 production hardening checkpoint (re-evaluate envelope encryption via KMS / Fernet key management).
+  - **Phase 3 Re-Evaluation (2026-11-24 `v0.3.0-suites` Checkpoint)**: Reviewed and confirmed all compensating controls remain intact without introducing external KMS/cryptography dependencies into the API kernel; renewed acceptance through the next production staging gate.
+  - **Expiry Date**: Phase 4 / Staging production hardening checkpoint (re-evaluate envelope encryption via KMS / Fernet key management).
 
 ## Review triggers
 

@@ -51,11 +51,12 @@ make bootstrap
 make seed
 make demo
 make demo-platform
+make demo-suites
 make check
 ```
 
 `make bootstrap` 是首次安裝時用來建立初始管理員帳號與租戶公司的指令。
-`make seed` 灌入展示資料集（支援冪等重複執行）。`make demo` 透過 live REST API 執行完整的 O2C 訂單生命週期走訪，`make demo-platform` 則進一步展示 Phase 2 平台治理功能（外掛動態切換、自訂欄位動態驗證與多級 SoD 審批工作流）。另可參閱 [CHANGELOG.md](CHANGELOG.md) 與 [`v0.2.0-platform` 發布說明](docs/releases/v0.2.0-platform.md)。
+`make seed` 灌入展示資料集（支援冪等重複執行）。`make demo` 透過 live REST API 執行完整的 O2C 訂單生命週期走訪，`make demo-platform` 展示 Phase 2 平台治理功能（外掛動態切換、自訂欄位動態驗證與多級 SoD 審批工作流），`make demo-suites` 則走訪 Phase 3 完整商業套件閉環（採購與應付沖銷 -> Landed Cost 與 MWA 成本結算 -> 多階 BOM 環路防護／MRP 淨需求／工單 `1310` WIP 結轉 -> 銷售出貨與試算表平衡）。另可參閱 [CHANGELOG.md](CHANGELOG.md)、[`v0.2.0-platform` 發布說明](docs/releases/v0.2.0-platform.md) 與 [`v0.3.0-suites` 發布說明](docs/releases/v0.3.0-suites.md)。
 
 `make test` 會針對短暫的 PostgreSQL 容器執行完整的測試套件。
 Docker-compose 流程（`make up` + `make bootstrap` + `make seed` + `make demo`）是端到端測試的參考工作流程。
@@ -136,9 +137,10 @@ uv run python -m app.cli.bootstrap_admin
 uv run python -m app.cli.seed_demo
 DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_o2c
 DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_platform
+DEMO_BASE_URL=http://127.0.0.1:8000 uv run python -m app.cli.demo_suites
 ```
 
-`seed_demo` 直接連接 PostgreSQL；`demo_o2c` 與 `demo_platform` 皆是 HTTP client，
+`seed_demo` 直接連接 PostgreSQL；`demo_o2c`、`demo_platform` 與 `demo_suites` 皆是 HTTP client，
 因此必須先有正在執行的 uvicorn server。
 
 ## 架構
@@ -492,7 +494,7 @@ app/
 │   ├── workflow/     # ADR-012 workflow 定義/實例服務、執行期審批閘門、/api/v1/workflows router
 │   └── integration/  # ADR-013 webhooks、outbox worker、批次引擎、/api/v1/integrations router
 ├── plugins/          # credit_limit.py ——內建客戶信用額度把關 manifest
-├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、run_outbox_worker、seed_demo、demo_o2c、demo_platform、replay_outbox、rebuild_ar_balances、rebuild_ap_balances、rebuild_stock_summary、rebuild_cost_summaries、rebuild_mrp_balances
+├── cli/              # bootstrap_admin、manage_companies、manage_reference_data、manage_plugins、manage_custom_fields、manage_workflows、manage_integrations、run_outbox_worker、seed_demo、demo_o2c、demo_platform、demo_suites、replay_outbox、rebuild_ar_balances、rebuild_ap_balances、rebuild_stock_summary、rebuild_cost_summaries、rebuild_mrp_balances
 └── main.py           # FastAPI app、AuthenticationMiddleware、路由分類、例外處理、router 掛載
 alembic/               # async migration；唯一真實來源是 app.core.settings
 docs/

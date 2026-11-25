@@ -4,6 +4,36 @@ All notable changes to **mini-erp** are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-24 (`v0.3.0-suites`)
+
+Phase 3 ("Business Suites") milestone release. Expands the Phase 1/2 O2C + multi-tenant governance kernel into a closed-loop SME Procurement, Inventory Valuation, and Manufacturing/MRP suite while preserving strict modular-monolith boundaries and double-entry accounting invariants.
+
+Full release notes: [docs/releases/v0.3.0-suites.md](docs/releases/v0.3.0-suites.md)
+
+### Added
+
+- **`masterdata.Supplier` & `purchase` ([ADR-014](docs/adr/ADR-014-purchase-and-supplier-masterdata.md), migration `0015`)**:
+  - Supplier masterdata and Purchase Order lifecycle (`PO-{YYYY}-{NNNNNN}`, `draft -> confirmed -> received` + `cancelled`) with confirm-time standard-cost repricing, `purchase.order.validate_confirm` plugin hook, and `WorkflowEntityType.PURCHASE_ORDER` (`confirm`/`cancel`).
+  - `purchase.goods_received` outbox event updating `inventory` (`StockMoveType.RECEIPT`) and posting two-stage GR/IR accrual entries (`Dr 1300 Inventory / Cr 2110 Accrued Purchases`).
+- **`payables` ([ADR-015](docs/adr/ADR-015-payables.md), migration `0016`)**:
+  - Vendor bills (`BILL-{YYYY}-{NNNNNN}`) issued 1:1 from `RECEIVED` POs clearing GR/IR accruals (`Dr 2110 Accrued Purchases / Cr 2000 Accounts Payable`), protected by `uq_vendor_bills_order_live` and `uq_vendor_bills_supplier_invoice_no_live`.
+  - Outgoing vendor payments (`APAY-{YYYY}-{NNNNNN}`), idempotent R14 `request_ref`/`request_fingerprint` allocations, `UNION ALL` AP aging report (`/api/v1/payables/reports/ap-aging`), `2000`/`2110` control-account protection, and `app.cli.rebuild_ap_balances`.
+- **`costing` ([ADR-016](docs/adr/ADR-016-costing.md), migration `0017`)**:
+  - Moving Weighted Average (MWA) inventory subledger (`product_cost_summaries`, append-only `cost_moves`) subscribing to `purchase.goods_received`, `sales.goods_shipped`, and `mrp.*` events (`inventory -> costing -> ledger.posting`).
+  - `COST-{YYYY}-{NNNNNN}` adjustments (`LANDED_COST`, `PPV` clearing against `5110 Purchase Price Variance`, `REVALUATION`), `sync-standard-cost`, Valuation Variance report, and `app.cli.rebuild_cost_summaries`.
+- **`mrp` ([ADR-017](docs/adr/ADR-017-mrp.md), migration `0018`)**:
+  - Multi-level Bills of Materials with `uq_boms_company_product_active`, UoM parity, scrap-factor explosion, and tenant-locked DFS DAG cycle guard (`422`).
+  - Work Orders (`WO-{YYYY}-{NNNNNN}`) with `mrp.work_order.validate_confirm` hooks, `WorkflowEntityType.WORK_ORDER` gating, idempotent `request_ref`/`request_fingerprint` material issue/return/production receipt, closed-loop **`1310 Work in Process`** control-account posting, zero-residue WIP absorption / yield-loss short close, Kahn topological MRP net-requirements engine, and `app.cli.rebuild_mrp_balances`.
+- **Phase 3 Demo & Hardening**:
+  - Closed-loop interactive showcase CLI `app.cli.demo_suites` (`make demo-suites`, verified by `tests/e2e/test_demo_suites_smoke.py`).
+  - Phase 2 platform hardening checkpoint (`FOR UPDATE` + `populate_existing=True` locks on session/webhook/workflow mutations, `extra="forbid"` auth schemas, `_MAX_REGEX_LENGTH = 500`, CSV cell/key sanitization, Act 5 integration demo in `app.cli.demo_platform`).
+
+### Changed
+
+- Expanded catalog to **90 permissions**, **131** classified `APIRoute`s (`4 Public / 2 Authenticated / 125 RequiresPermission`), **15** `CustomFieldEntityType` entities, **9** `WorkflowEntityType` entities (`12` transitions), **16** `BatchEntityType` export adapters, and `KERNEL_CONTROL_ACCOUNT_CODES = {"1100", "1310", "2000", "2110"}`.
+- Reconciled `VULN-06` in `docs/security/threat-model.md` at the Phase 3 checkpoint and aligned D.5 Security Gate inventory to **316 tracked files**.
+- Bumped package and FastAPI app version from `0.2.0` to `0.3.0`.
+
 ## [0.2.0] - 2026-11-18 (`v0.2.0-platform`)
 
 Phase 2 ("Platform") milestone release. Transforms the Phase 1 Order-to-Cash kernel into an authenticated, multi-tenant extensible platform with zero compromises on accounting precision, concurrency safety, or module boundary integrity.

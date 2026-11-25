@@ -6,9 +6,10 @@
 #   make seed      # populate a realistic demo dataset (idempotent, opt-in)
 #   make demo          # walk one order through the live API, print the ledger
 #   make demo-platform # walk Phase 2 plugins, customfields, and SoD workflows
+#   make demo-suites   # walk Phase 3 P2P, Costing, Multi-level MRP & O2C loop
 #   make check         # the same ruff/mypy/lint-imports/pytest sequence CI runs
 
-.PHONY: up down bootstrap seed demo demo-platform test check clean
+.PHONY: up down bootstrap seed demo demo-platform demo-suites test check clean
 
 APP_PORT ?= 8000
 
@@ -60,6 +61,18 @@ demo-platform:
 	BOOTSTRAP_ADMIN_EMAIL="$${BOOTSTRAP_ADMIN_EMAIL:-$${DEMO_ADMIN_EMAIL}}" \
 	BOOTSTRAP_ADMIN_PASSWORD="$${BOOTSTRAP_ADMIN_PASSWORD:-$${DEMO_ADMIN_PASSWORD}}" \
 	uv run python -m app.cli.demo_platform
+
+# Walks Phase 3 Business Suites (P2P purchase & payables, MWA costing + landed cost,
+# multi-level BOM & MRP planning + WIP work orders, and O2C settlement) over live HTTP.
+demo-suites:
+	@if [ -z "$${BOOTSTRAP_ADMIN_EMAIL:-$$DEMO_ADMIN_EMAIL}" ] || [ -z "$${BOOTSTRAP_ADMIN_PASSWORD:-$$DEMO_ADMIN_PASSWORD}" ]; then \
+		echo "ERROR: BOOTSTRAP_ADMIN_EMAIL/PASSWORD (or DEMO_ADMIN_EMAIL/PASSWORD) must be set." >&2; \
+		exit 1; \
+	fi
+	DEMO_BASE_URL=http://localhost:$(APP_PORT) \
+	BOOTSTRAP_ADMIN_EMAIL="$${BOOTSTRAP_ADMIN_EMAIL:-$${DEMO_ADMIN_EMAIL}}" \
+	BOOTSTRAP_ADMIN_PASSWORD="$${BOOTSTRAP_ADMIN_PASSWORD:-$${DEMO_ADMIN_PASSWORD}}" \
+	uv run python -m app.cli.demo_suites
 
 test:
 	uv run pytest
